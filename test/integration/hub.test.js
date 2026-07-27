@@ -1,0 +1,268 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { once } from 'node:events';
+
+import WebSocket from 'ws';
+
+import { createHub } from '../../src/hub.js';
+
+function createLogger() {
+  return {
+    errors: [],
+    infos: [],
+    warns: [],
+    error(message, context) {
+      this.errors.push({ message, context });
+    },
+    info(message, context) {
+      this.infos.push({ message, context });
+    },
+    warn(message, context) {
+      this.warns.push({ message, context });
+    },
+  };
+}
+
+async function createClient(port) {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+  await once(socket, 'open');
+
+  const messages = [];
+  socket.on('message', (buffer) => {
+    messages.push(JSON.parse(String(buffer)));
+  });
+
+  return {
+    socket,
+    messages,
+    async send(payload) {
+      socket.send(JSON.stringify(payload));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    },
+    async close() {
+      socket.close();
+      await once(socket, 'close');
+    },
+  };
+}
+
+async function flushMessages() {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+
+test('hub registers clients and routes controller-wide and tab-specific commands', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const targetA = await createClient(port);
+  const targetB = await createClient(port);
+  const other = await createClient(port);
+
+  try {
+    await targetA.send({ type: 'register', role: 'target', controllerId: 'demo1', tabId: 'tabA', capabilities: ['navigate'] });
+    await targetB.send({ type: 'register', role: 'target', controllerId: 'demo1', tabId: 'tabB', capabilities: ['navigate'] });
+    await other.send({ type: 'register', role: 'target', controllerId: 'demo2', capabilities: ['navigate'] });
+
+    await hub.sendCommand({ controllerId: 'demo1', tabId: null }, { type: 'navigate', url: 'https://example.com/one' });
+    await hub.sendCommand({ controllerId: 'demo1', tabId: 'tabA' }, { type: 'navigate', url: 'https://example.com/two' });
+    await flushMessages();
+
+    assert.equal(targetA.messages.filter((message) => message.type === 'registered').length, 1);
+    assert.equal(targetB.messages.filter((message) => message.type === 'registered').length, 1);
+    assert.deepEqual(
+      targetA.messages.filter((message) => message.type === 'command').map((message) => message.command),
+      [
+        { type: 'navigate', url: 'https://example.com/one' },
+        { type: 'navigate', url: 'https://example.com/two' },
+      ],
+    );
+    assert.deepEqual(
+      targetB.messages.filter((message) => message.type === 'command').map((message) => message.command),
+      [{ type: 'navigate', url: 'https://example.com/one' }],
+    );
+    assert.deepEqual(
+      other.messages.filter((message) => message.type === 'command').map((message) => message.command),
+      [],
+    );
+  } finally {
+    await Promise.all([targetA.close(), targetB.close(), other.close()]);
+    await hub.stop();
+  }
+});
+
+test('hub replays the latest sticky presentation state to late-joining observers with matching subscriptions', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const observer = await createClient(port);
+  const driver = await createClient(port);
+  const target = await createClient(port);
+
+  try {
+    await hub.publishSticky('presentationState', {
+      type: 'presentationState',
+      seq: 7,
+      slideId: 'intro',
+      layoutId: 'full-slide',
+      audienceScene: 'Full Slide',
+      slots: [],
+      focus: null,
+      script: null,
+    });
+
+    await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+    await driver.send({ type: 'register', role: 'driver', capabilities: ['next', 'prev'] });
+    await target.send({ type: 'register', role: 'target', controllerId: 'demo1', capabilities: ['navigate'] });
+    await flushMessages();
+
+    assert.deepEqual(
+      observer.messages.filter((message) => message.type === 'presentationState'),
+      [{
+        type: 'presentationState',
+        seq: 7,
+        slideId: 'intro',
+        layoutId: 'full-slide',
+        audienceScene: 'Full Slide',
+        slots: [],
+        focus: null,
+        script: null,
+      }],
+    );
+    assert.deepEqual(driver.messages.filter((message) => message.type === 'presentationState'), []);
+    assert.deepEqual(target.messages.filter((message) => message.type === 'presentationState'), []);
+  } finally {
+    await Promise.all([observer.close(), driver.close(), target.close()]);
+    await hub.stop();
+  }
+});
+
+test('hub publishes presentation state only to subscribed observers', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const stateObserver = await createClient(port);
+  const transcriptObserver = await createClient(port);
+
+  try {
+    await stateObserver.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+    await transcriptObserver.send({ type: 'register', role: 'observer', subscriptions: ['transcript'] });
+
+    await hub.publishSticky('presentationState', {
+      type: 'presentationState',
+      seq: 8,
+      slideId: 'code-walkthrough',
+      layoutId: 'left-terminal-right-slide',
+      audienceScene: 'Left Terminal Right Slide',
+      slots: [],
+      focus: 'Terminal',
+      script: 'hello',
+    });
+    await flushMessages();
+
+    assert.equal(stateObserver.messages.filter((message) => message.type === 'presentationState').length, 1);
+    assert.equal(transcriptObserver.messages.filter((message) => message.type === 'presentationState').length, 0);
+  } finally {
+    await Promise.all([stateObserver.close(), transcriptObserver.close()]);
+    await hub.stop();
+  }
+});
+
+test('hub relays transcripts to subscribed observers and not back to the sender', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const sttObserver = await createClient(port);
+  const teleprompterObserver = await createClient(port);
+  const stateObserver = await createClient(port);
+
+  try {
+    await sttObserver.send({ type: 'register', role: 'observer', subscriptions: ['transcript'] });
+    await teleprompterObserver.send({ type: 'register', role: 'observer', subscriptions: ['transcript'] });
+    await stateObserver.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+
+    await sttObserver.send({
+      type: 'transcript',
+      source: 'whisper',
+      text: 'hello world',
+      capturedAtMs: 1720000000000,
+    });
+    await flushMessages();
+
+    assert.equal(sttObserver.messages.filter((message) => message.type === 'transcript').length, 0);
+    assert.deepEqual(
+      teleprompterObserver.messages.filter((message) => message.type === 'transcript'),
+      [{
+        type: 'transcript',
+        source: 'whisper',
+        text: 'hello world',
+        capturedAtMs: 1720000000000,
+      }],
+    );
+    assert.deepEqual(stateObserver.messages.filter((message) => message.type === 'transcript'), []);
+  } finally {
+    await Promise.all([sttObserver.close(), teleprompterObserver.close(), stateObserver.close()]);
+    await hub.stop();
+  }
+});
+
+test('hub rejects non-observer transcript senders and malformed messages without crashing', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const target = await createClient(port);
+  const malformed = await createClient(port);
+
+  try {
+    await target.send({ type: 'register', role: 'target', controllerId: 'demo1', capabilities: ['navigate'] });
+    await target.send({
+      type: 'transcript',
+      source: 'whisper',
+      text: 'should fail',
+      capturedAtMs: 1720000000001,
+    });
+    malformed.socket.send('{not-json');
+    await flushMessages();
+
+    assert.equal(target.messages.at(-1).type, 'error');
+    assert.match(target.messages.at(-1).message, /Only observer clients/i);
+    assert.equal(malformed.messages.at(-1).type, 'error');
+  } finally {
+    await Promise.all([target.close(), malformed.close()]);
+    await hub.stop();
+  }
+});
+
+test('hub routes observer driverCommand messages to the active driver', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const driver = await createClient(port);
+  const observer = await createClient(port);
+
+  try {
+    await driver.send({ type: 'register', role: 'driver', capabilities: ['next', 'prev', 'goTo'] });
+    await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+    await observer.send({ type: 'driverCommand', command: { type: 'next' } });
+    await flushMessages();
+
+    assert.deepEqual(
+      driver.messages.filter((message) => message.type === 'command').map((message) => message.command),
+      [{ type: 'next' }],
+    );
+  } finally {
+    await Promise.all([driver.close(), observer.close()]);
+    await hub.stop();
+  }
+});

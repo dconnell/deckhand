@@ -1,0 +1,182 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import {
+  assertDriverAdapterContract,
+  assertTargetAdapterContract,
+  createCommandMessage,
+  createErrorMessage,
+  createPresentationStateMessage,
+  createRegisteredMessage,
+  createTranscriptMessage,
+  validateClientMessage,
+} from '../../src/protocol.js';
+
+test('createRegisteredMessage omits null tab identifiers', () => {
+  assert.deepEqual(createRegisteredMessage({ role: 'target', sessionId: 'session-1', controllerId: 'demo1' }), {
+    type: 'registered',
+    role: 'target',
+    sessionId: 'session-1',
+    controllerId: 'demo1',
+  });
+});
+
+test('createRegisteredMessage includes observer subscriptions', () => {
+  assert.deepEqual(createRegisteredMessage({
+    role: 'observer',
+    sessionId: 'observer-1',
+    subscriptions: ['presentationState', 'transcript'],
+  }), {
+    type: 'registered',
+    role: 'observer',
+    sessionId: 'observer-1',
+    subscriptions: ['presentationState', 'transcript'],
+  });
+});
+
+test('createCommandMessage wraps the command payload generically', () => {
+  assert.deepEqual(createCommandMessage({ type: 'navigate', url: 'https://example.com' }), {
+    type: 'command',
+    command: { type: 'navigate', url: 'https://example.com' },
+  });
+});
+
+test('createPresentationStateMessage wraps a resolved state payload', () => {
+  assert.deepEqual(createPresentationStateMessage({
+    type: 'presentationState',
+    seq: 17,
+    slideId: 'intro',
+    layoutId: 'full-slide',
+    audienceScene: 'Full Slide',
+    slots: [],
+    focus: null,
+    script: null,
+    commands: [],
+  }), {
+    type: 'presentationState',
+    seq: 17,
+    slideId: 'intro',
+    layoutId: 'full-slide',
+    audienceScene: 'Full Slide',
+    slots: [],
+    focus: null,
+    script: null,
+  });
+});
+
+test('createTranscriptMessage normalizes transcript payloads', () => {
+  assert.deepEqual(createTranscriptMessage({
+    source: 'whisper',
+    text: 'hello world',
+    capturedAtMs: 1720000000000,
+  }), {
+    type: 'transcript',
+    source: 'whisper',
+    text: 'hello world',
+    capturedAtMs: 1720000000000,
+  });
+});
+
+test('createErrorMessage includes the protocol error code', () => {
+  assert.deepEqual(createErrorMessage('invalid_message', 'Bad message'), {
+    type: 'error',
+    code: 'invalid_message',
+    message: 'Bad message',
+  });
+});
+
+test('validateClientMessage accepts driver registration messages', () => {
+  assert.deepEqual(
+    validateClientMessage({ type: 'register', role: 'driver', capabilities: ['next', 'prev'] }),
+    { type: 'register', role: 'driver', capabilities: ['next', 'prev'] },
+  );
+});
+
+test('validateClientMessage accepts observer registrations with subscriptions', () => {
+  assert.deepEqual(
+    validateClientMessage({
+      type: 'register',
+      role: 'observer',
+      subscriptions: ['presentationState', 'transcript', 'presentationState'],
+    }),
+    {
+      type: 'register',
+      role: 'observer',
+      subscriptions: ['presentationState', 'transcript'],
+      capabilities: [],
+    },
+  );
+});
+
+test('validateClientMessage accepts position events with normalized shape', () => {
+  assert.deepEqual(
+    validateClientMessage({
+      type: 'positionChanged',
+      position: {
+        id: 'intro',
+        index: { h: 0, v: 0 },
+        meta: { indexh: 0, indexv: 0 },
+      },
+    }),
+    {
+      type: 'positionChanged',
+      position: {
+        id: 'intro',
+        index: { h: 0, v: 0 },
+        meta: { indexh: 0, indexv: 0 },
+      },
+    },
+  );
+});
+
+test('validateClientMessage accepts transcript events from observers', () => {
+  assert.deepEqual(
+    validateClientMessage({
+      type: 'transcript',
+      source: 'whisper',
+      text: 'hello world',
+      capturedAtMs: 1720000000000,
+    }),
+    {
+      type: 'transcript',
+      source: 'whisper',
+      text: 'hello world',
+      capturedAtMs: 1720000000000,
+    },
+  );
+});
+
+test('validateClientMessage accepts observer driverCommand messages', () => {
+  assert.deepEqual(
+    validateClientMessage({
+      type: 'driverCommand',
+      command: { type: 'next' },
+    }),
+    {
+      type: 'driverCommand',
+      command: { type: 'next' },
+    },
+  );
+});
+
+test('validateClientMessage rejects observer subscriptions with unknown message types', () => {
+  assert.throws(
+    () => validateClientMessage({ type: 'register', role: 'observer', subscriptions: ['unknown'] }),
+    /subscriptions/i,
+  );
+});
+
+test('validateClientMessage rejects target registrations without controllerId', () => {
+  assert.throws(
+    () => validateClientMessage({ type: 'register', role: 'target' }),
+    /controllerId/i,
+  );
+});
+
+test('assertDriverAdapterContract rejects malformed descriptors', () => {
+  assert.throws(() => assertDriverAdapterContract({ name: 'broken', kind: 'driver' }), /capabilities/i);
+});
+
+test('assertTargetAdapterContract rejects malformed descriptors', () => {
+  assert.throws(() => assertTargetAdapterContract({ name: 'broken', kind: 'target' }), /capabilities/i);
+});

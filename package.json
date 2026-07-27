@@ -1,0 +1,28 @@
+{
+  "name": "deckhand",
+  "version": "0.1.0",
+  "description": "OBS scene and target coordinator for presentations.",
+  "type": "module",
+  "scripts": {
+    "start": "node ./src/index.js",
+    "presentation:serve": "node ./src/presentationServe.js",
+    "setup:obs": "node ./src/setupObs.js",
+    "presenter:stt": "node ./src/presenter/stt/cli.js",
+    "presenter:smoke": "node ./src/presenterSmoke.js",
+    "presenter:doctor": "node ./src/presenterDoctor.js",
+    "test": "node --test",
+    "test:integration": "node --test test/integration",
+    "test:unit": "node --test test/unit"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "dependencies": {
+    "obs-websocket-js": "^5.0.8",
+    "uiohook-napi": "^1.5.5",
+    "ws": "^8.21.1"
+  },
+  "allowScripts": {
+    "uiohook-napi@1.5.5": true
+  }
+}

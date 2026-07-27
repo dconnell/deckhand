@@ -1,0 +1,216 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { once } from 'node:events';
+
+import WebSocket from 'ws';
+
+import { createCoordinator } from '../../src/coordinator.js';
+import { createHub } from '../../src/hub.js';
+
+function createLogger() {
+  return {
+    errors: [],
+    infos: [],
+    warns: [],
+    error(message, context) {
+      this.errors.push({ message, context });
+    },
+    info(message, context) {
+      this.infos.push({ message, context });
+    },
+    warn(message, context) {
+      this.warns.push({ message, context });
+    },
+  };
+}
+
+function createConfig(port) {
+  return {
+    driver: { type: 'revealjs' },
+    obs: { url: 'ws://127.0.0.1:4455', password: '' },
+    hub: { host: '127.0.0.1', port },
+    hotkeys: { next: 'F13', prev: 'F14' },
+    layouts: {
+      'full-slide': {
+        id: 'full-slide',
+        audienceScene: 'Full Slide',
+        slots: [{ source: 'Slide', position: 'full' }],
+        sources: ['Slide'],
+      },
+      'dual-browser': {
+        id: 'dual-browser',
+        audienceScene: 'Dual Browser',
+        slots: [
+          { source: 'BrowserPrimary', position: 'left' },
+          { source: 'BrowserSecondary', position: 'right' },
+        ],
+        sources: ['BrowserPrimary', 'BrowserSecondary'],
+      },
+    },
+    slides: {
+      'id.p16': {
+        layoutId: 'dual-browser',
+        focus: 'BrowserSecondary',
+        script: 'Primary goes left. Secondary goes right.',
+        commands: [
+          {
+            type: 'navigate',
+            target: { controllerId: 'demo1', tabId: 'tabA' },
+            url: 'https://example.com/step2',
+          },
+          {
+            type: 'navigate',
+            target: { controllerId: 'demo2', tabId: null },
+            url: 'https://example.com/other-app',
+          },
+        ],
+      },
+    },
+    presenter: {
+      platform: 'macos',
+      stage: { x: 0, y: 0, width: 1800, height: 1168 },
+      windows: {
+        Slide: { app: 'Safari' },
+        BrowserPrimary: { app: 'Google Chrome', titleIncludes: 'Primary' },
+        BrowserSecondary: { app: 'Google Chrome', titleIncludes: 'Secondary' },
+      },
+      stt: null,
+      teleprompter: { followEnabledByDefault: true },
+      http: { host: '127.0.0.1', port: 3001 },
+    },
+  };
+}
+
+async function createClient(port) {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+  await once(socket, 'open');
+  const messages = [];
+  socket.on('message', (buffer) => {
+    messages.push(JSON.parse(String(buffer)));
+  });
+
+  return {
+    socket,
+    messages,
+    async send(payload) {
+      socket.send(JSON.stringify(payload));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    },
+    async close() {
+      socket.close();
+      await once(socket, 'close');
+    },
+  };
+}
+
+async function flushMessages() {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+
+test('coordinator integration publishes presentation state, routes targets, and hotkeys to the driver', async () => {
+  const logger = createLogger();
+  const obsCalls = [];
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+  await hub.start();
+
+  const port = hub.getAddress().port;
+  const hotkeyHandlers = new Map();
+  const hotkeys = {
+    on(eventName, handler) {
+      hotkeyHandlers.set(eventName, handler);
+    },
+    async start() {},
+    async stop() {},
+    async emit(action) {
+      await hotkeyHandlers.get('action')?.(action);
+    },
+  };
+
+  const coordinator = createCoordinator({
+    config: createConfig(port),
+    obs: {
+      async connect() {},
+      async disconnect() {},
+      async setScene(sceneName) {
+        obsCalls.push(sceneName);
+      },
+      isConnected() {
+        return true;
+      },
+    },
+    hub,
+    hotkeys,
+    logger,
+  });
+
+  const driver = await createClient(port);
+  const targetA = await createClient(port);
+  const targetB = await createClient(port);
+  const observer = await createClient(port);
+
+  try {
+    await coordinator.start();
+    await driver.send({ type: 'register', role: 'driver', capabilities: ['next', 'prev', 'goTo'] });
+    await targetA.send({ type: 'register', role: 'target', controllerId: 'demo1', tabId: 'tabA', capabilities: ['navigate'] });
+    await targetB.send({ type: 'register', role: 'target', controllerId: 'demo2', capabilities: ['navigate'] });
+    await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+
+    await driver.send({
+      type: 'positionChanged',
+      position: {
+        id: 'id.p16',
+        index: { h: 15, v: 0 },
+        meta: { indexh: 15, indexv: 0 },
+      },
+    });
+    await hotkeys.emit({ type: 'next' });
+    await hotkeys.emit({ type: 'prev' });
+    await flushMessages();
+
+    assert.deepEqual(obsCalls, ['Dual Browser']);
+    assert.deepEqual(
+      targetA.messages.filter((message) => message.type === 'command').map((message) => message.command),
+      [{ type: 'navigate', url: 'https://example.com/step2' }],
+    );
+    assert.deepEqual(
+      targetB.messages.filter((message) => message.type === 'command').map((message) => message.command),
+      [{ type: 'navigate', url: 'https://example.com/other-app' }],
+    );
+    assert.deepEqual(
+      driver.messages.filter((message) => message.type === 'command').map((message) => message.command),
+      [{ type: 'next' }, { type: 'prev' }],
+    );
+
+    assert.deepEqual(observer.messages.filter((message) => message.type === 'presentationState'), [
+      {
+        type: 'presentationState',
+        seq: 1,
+        slideId: 'id.p16',
+        layoutId: 'dual-browser',
+        audienceScene: 'Dual Browser',
+        slots: [
+          {
+            source: 'BrowserPrimary',
+            position: 'left',
+            rect: { x: 0, y: 0, w: 900, h: 1168 },
+          },
+          {
+            source: 'BrowserSecondary',
+            position: 'right',
+            rect: { x: 900, y: 0, w: 900, h: 1168 },
+          },
+        ],
+        windowBindings: {
+          BrowserPrimary: { app: 'Google Chrome', titleIncludes: 'Primary' },
+          BrowserSecondary: { app: 'Google Chrome', titleIncludes: 'Secondary' },
+        },
+        focus: 'BrowserSecondary',
+        script: 'Primary goes left. Secondary goes right.',
+      },
+    ]);
+  } finally {
+    await Promise.all([driver.close(), targetA.close(), targetB.close(), observer.close()]);
+    await coordinator.stop();
+    await hub.stop();
+  }
+});

@@ -1,0 +1,5 @@
+.devcontainer/
+/config.json
+presentation/*/config.local.json
+node_modules/
+plans/

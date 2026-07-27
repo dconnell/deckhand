@@ -1,0 +1,215 @@
+{
+  "driver": {
+    "type": "revealjs"
+  },
+  "obs": {
+    "url": "ws://127.0.0.1:4455",
+    "password": ""
+  },
+  "hub": {
+    "port": 8765
+  },
+  "hotkeys": {
+    "next": "F13",
+    "prev": "F14"
+  },
+  "layouts": {
+    "full-slide": {
+      "audienceScene": "Full Slide",
+      "slots": [
+        {
+          "source": "Slide",
+          "position": "full"
+        }
+      ]
+    },
+    "full-terminal": {
+      "audienceScene": "Full Terminal",
+      "slots": [
+        {
+          "source": "Terminal",
+          "position": "full"
+        }
+      ]
+    },
+    "full-browser": {
+      "audienceScene": "Full Browser",
+      "slots": [
+        {
+          "source": "BrowserPrimary",
+          "position": "full"
+        }
+      ]
+    },
+    "left-terminal-right-slide": {
+      "audienceScene": "Left Terminal Right Slide",
+      "slots": [
+        {
+          "source": "Terminal",
+          "position": "left"
+        },
+        {
+          "source": "Slide",
+          "position": "right"
+        }
+      ]
+    },
+    "right-terminal-left-slide": {
+      "audienceScene": "Right Terminal Left Slide",
+      "slots": [
+        {
+          "source": "Slide",
+          "position": "left"
+        },
+        {
+          "source": "Terminal",
+          "position": "right"
+        }
+      ]
+    },
+    "left-terminal-right-browser": {
+      "audienceScene": "Left Terminal Right Browser",
+      "slots": [
+        {
+          "source": "Terminal",
+          "position": "left"
+        },
+        {
+          "source": "BrowserPrimary",
+          "position": "right"
+        }
+      ]
+    },
+    "left-browser-right-terminal": {
+      "audienceScene": "Left Browser Right Terminal",
+      "slots": [
+        {
+          "source": "BrowserPrimary",
+          "position": "left"
+        },
+        {
+          "source": "Terminal",
+          "position": "right"
+        }
+      ]
+    },
+    "dual-browser": {
+      "audienceScene": "Dual Browser",
+      "slots": [
+        {
+          "source": "BrowserPrimary",
+          "position": "left"
+        },
+        {
+          "source": "BrowserSecondary",
+          "position": "right"
+        }
+      ]
+    }
+  },
+  "slides": {
+    "welcome": {
+      "layout": "full-slide",
+      "script": "Welcome to Deckhand presenter mode.\nThe audience sees OBS while you keep the cockpit local."
+    },
+    "code-walkthrough": {
+      "layout": "left-terminal-right-slide",
+      "focus": "Terminal",
+      "script": "Walk through the init flow.\nEmphasize line 42.\nThen run the demo."
+    },
+    "architecture": {
+      "layout": "right-terminal-left-slide",
+      "script": "One layout model drives OBS, the presenter stage, and the teleprompter."
+    },
+    "terminal-deep-dive": {
+      "layout": "full-terminal",
+      "focus": "Terminal",
+      "script": "Stay in the terminal here.\nKeep the presenter focus on live commands."
+    },
+    "live-demo": {
+      "layout": "left-terminal-right-browser",
+      "focus": "Terminal",
+      "script": "Open the live demo.\nNarrate the setup before switching to the browser details.",
+      "navigate": [
+        {
+          "target": "demo1",
+          "url": "https://example.com/demo/start"
+        }
+      ]
+    },
+    "api-demo": {
+      "layout": "left-browser-right-terminal",
+      "focus": "Terminal",
+      "script": "Call the API from the terminal while the audience sees the browser response.",
+      "navigate": [
+        {
+          "target": "demo1",
+          "url": "https://example.com/demo/api"
+        }
+      ]
+    },
+    "browser-fullscreen": {
+      "layout": "full-browser",
+      "script": "Full browser for the showcase page.",
+      "navigate": [
+        {
+          "target": "demo1",
+          "url": "https://example.com/demo/full"
+        }
+      ]
+    },
+    "dual-demo": {
+      "layout": "dual-browser",
+      "focus": "BrowserSecondary",
+      "navigate": [
+        {
+          "target": "demo1:tabA",
+          "url": "https://example.com/demo/primary"
+        },
+        {
+          "target": "demo2",
+          "url": "https://example.com/demo/secondary"
+        }
+      ]
+    }
+  },
+  "presenter": {
+    "platform": "macos",
+    "stage": {
+      "x": 0,
+      "y": 0,
+      "width": 1800,
+      "height": 1168
+    },
+    "windows": {
+      "Slide": {
+        "app": "Safari",
+        "titleIncludes": "Deckhand Deck"
+      },
+      "Terminal": {
+        "app": "iTerm2"
+      },
+      "BrowserPrimary": {
+        "app": "Google Chrome",
+        "titleIncludes": "Deckhand Demo Primary"
+      },
+      "BrowserSecondary": {
+        "app": "Google Chrome",
+        "titleIncludes": "Deckhand Demo Secondary"
+      }
+    },
+    "stt": {
+      "whisperBin": "/absolute/path/to/whisper-cli",
+      "model": "/absolute/path/to/ggml-base.en.bin",
+      "chunkSeconds": 2.5,
+      "language": "en"
+    },
+    "teleprompter": {
+      "followEnabledByDefault": true
+    },
+    "http": {
+      "host": "127.0.0.1",
+      "port": 3001
+    }
+  }
+}

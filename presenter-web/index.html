@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Deckhand Presenter</title>
+    <link rel="stylesheet" href="/presenter/styles.css" />
+  </head>
+  <body>
+    <main class="presenter-app">
+      <header class="presenter-header">
+        <div>
+          <p class="eyebrow">Deckhand Presenter</p>
+          <h1 id="slide-title">Waiting for slide state</h1>
+        </div>
+        <div class="status-panel">
+          <span id="connection-status" class="status-chip">Connecting</span>
+          <span id="follow-status" class="status-chip status-chip-muted">Follow On</span>
+        </div>
+      </header>
+
+      <section class="meta-row">
+        <div>
+          <span class="meta-label">Slide</span>
+          <span id="slide-meta">No active slide</span>
+        </div>
+        <div>
+          <span class="meta-label">Focus</span>
+          <span id="focus-meta">-</span>
+        </div>
+      </section>
+
+      <section class="controls">
+        <button id="prev-line" type="button">Prev Line</button>
+        <button id="next-line" type="button">Next Line</button>
+        <button id="reset-lines" type="button">Reset Lines</button>
+        <button id="toggle-follow" type="button">Toggle Follow</button>
+      </section>
+
+      <section class="script-shell">
+        <div class="section-header">
+          <h2>Teleprompter</h2>
+          <p>These buttons move the highlighted script line. Slide navigation still comes from the deck or global hotkeys.</p>
+        </div>
+        <ol id="script-lines" class="script-lines"></ol>
+        <p id="empty-state" class="empty-state">Waiting for a scripted slide.</p>
+      </section>
+
+      <section class="transcript-shell">
+        <h2>Transcript</h2>
+        <ul id="transcript-items" class="transcript-items"></ul>
+      </section>
+    </main>
+
+    <script type="module" src="/presenter/app.js"></script>
+  </body>
+</html>
