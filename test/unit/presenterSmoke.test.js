@@ -79,6 +79,9 @@ test('runPresenterSmoke validates presenter HTTP surfaces and hub registration',
       obs: { url: 'ws://127.0.0.1:4455', password: '' },
       hub: { host: '127.0.0.1', port: 8765 },
       hotkeys: { next: 'F13', prev: 'F14' },
+      sources: {
+        Slide: { kind: 'browser' },
+      },
       layouts: {
         'full-slide': {
           audienceScene: 'Full Slide',

@@ -30,6 +30,11 @@ function createConfig(port) {
     obs: { url: 'ws://127.0.0.1:4455', password: '' },
     hub: { host: '127.0.0.1', port },
     hotkeys: { next: 'F13', prev: 'F14' },
+    sources: {
+      Slide: { id: 'Slide', kind: 'browser' },
+      BrowserA: { id: 'BrowserA', kind: 'browser' },
+      BrowserB: { id: 'BrowserB', kind: 'browser' },
+    },
     layouts: {
       'full-slide': {
         id: 'full-slide',
@@ -41,26 +46,28 @@ function createConfig(port) {
         id: 'dual-browser',
         audienceScene: 'Dual Browser',
         slots: [
-          { source: 'BrowserPrimary', position: 'left' },
-          { source: 'BrowserSecondary', position: 'right' },
+          { source: 'BrowserA', position: 'left' },
+          { source: 'BrowserB', position: 'right' },
         ],
-        sources: ['BrowserPrimary', 'BrowserSecondary'],
+        sources: ['BrowserA', 'BrowserB'],
       },
     },
     slides: {
       'id.p16': {
         layoutId: 'dual-browser',
-        focus: 'BrowserSecondary',
-        script: 'Primary goes left. Secondary goes right.',
+        focus: 'BrowserB',
+        script: 'BrowserA goes left. BrowserB goes right.',
         commands: [
           {
             type: 'navigate',
-            target: { controllerId: 'demo1', tabId: 'tabA' },
+            source: 'BrowserA',
+            tab: 'tabA',
             url: 'https://example.com/step2',
           },
           {
             type: 'navigate',
-            target: { controllerId: 'demo2', tabId: null },
+            source: 'BrowserB',
+            tab: null,
             url: 'https://example.com/other-app',
           },
         ],
@@ -71,8 +78,8 @@ function createConfig(port) {
       stage: { x: 0, y: 0, width: 1800, height: 1168 },
       windows: {
         Slide: { app: 'Safari' },
-        BrowserPrimary: { app: 'Google Chrome', titleIncludes: 'Primary' },
-        BrowserSecondary: { app: 'Google Chrome', titleIncludes: 'Secondary' },
+        BrowserA: { app: 'Google Chrome', titleIncludes: 'Primary' },
+        BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
       },
       stt: null,
       teleprompter: { followEnabledByDefault: true },
@@ -151,8 +158,8 @@ test('coordinator integration publishes presentation state, routes targets, and 
   try {
     await coordinator.start();
     await driver.send({ type: 'register', role: 'driver', capabilities: ['next', 'prev', 'goTo'] });
-    await targetA.send({ type: 'register', role: 'target', controllerId: 'demo1', tabId: 'tabA', capabilities: ['navigate'] });
-    await targetB.send({ type: 'register', role: 'target', controllerId: 'demo2', capabilities: ['navigate'] });
+    await targetA.send({ type: 'register', role: 'target', controllerId: 'BrowserA', tabId: 'tabA', capabilities: ['navigate'] });
+    await targetB.send({ type: 'register', role: 'target', controllerId: 'BrowserB', capabilities: ['navigate'] });
     await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
 
     await driver.send({
@@ -190,22 +197,22 @@ test('coordinator integration publishes presentation state, routes targets, and 
         audienceScene: 'Dual Browser',
         slots: [
           {
-            source: 'BrowserPrimary',
+            source: 'BrowserA',
             position: 'left',
             rect: { x: 0, y: 0, w: 900, h: 1168 },
           },
           {
-            source: 'BrowserSecondary',
+            source: 'BrowserB',
             position: 'right',
             rect: { x: 900, y: 0, w: 900, h: 1168 },
           },
         ],
         windowBindings: {
-          BrowserPrimary: { app: 'Google Chrome', titleIncludes: 'Primary' },
-          BrowserSecondary: { app: 'Google Chrome', titleIncludes: 'Secondary' },
+          BrowserA: { app: 'Google Chrome', titleIncludes: 'Primary' },
+          BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
         },
-        focus: 'BrowserSecondary',
-        script: 'Primary goes left. Secondary goes right.',
+        focus: 'BrowserB',
+        script: 'BrowserA goes left. BrowserB goes right.',
       },
     ]);
   } finally {

@@ -5,7 +5,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 
-import { ConfigError, loadConfig, normalizeConfig, parseTargetSelector } from '../../src/config.js';
+import { ConfigError, loadConfig, normalizeConfig } from '../../src/config.js';
 import { assertDriverAdapterContract, assertTargetAdapterContract } from '../../src/protocol.js';
 import { revealjsDriver } from '../../src/drivers/revealjs.js';
 import { browserTarget } from '../../src/targets/browser.js';
@@ -18,6 +18,12 @@ function createValidConfig() {
     obs: { url: 'ws://127.0.0.1:4455', password: '' },
     hub: { port: 8765 },
     hotkeys: { next: 'F13', prev: 'F14' },
+    sources: {
+      Slide: { kind: 'browser' },
+      Terminal: { kind: 'terminal' },
+      BrowserA: { kind: 'browser' },
+      BrowserB: { kind: 'browser' },
+    },
     layouts: {
       'full-slide': {
         audienceScene: 'Full Slide',
@@ -33,8 +39,8 @@ function createValidConfig() {
       'dual-browser': {
         audienceScene: 'Dual Browser',
         slots: [
-          { source: 'BrowserPrimary', position: 'left' },
-          { source: 'BrowserSecondary', position: 'right' },
+          { source: 'BrowserA', position: 'left' },
+          { source: 'BrowserB', position: 'right' },
         ],
       },
     },
@@ -48,8 +54,8 @@ function createValidConfig() {
       'dual-demo': {
         layout: 'dual-browser',
         navigate: [
-          { target: 'demo1:tabA', url: 'https://example.com/step2' },
-          { target: 'demo2', url: 'https://example.com/other-app' },
+          { source: 'BrowserA', tab: 'tabA', url: 'https://example.com/step2' },
+          { source: 'BrowserB', url: 'https://example.com/other-app' },
         ],
       },
     },
@@ -59,8 +65,8 @@ function createValidConfig() {
       windows: {
         Slide: { app: 'Safari', titleIncludes: 'Deckhand Deck' },
         Terminal: { app: 'iTerm2' },
-        BrowserPrimary: { app: 'Google Chrome', titleIncludes: 'Primary' },
-        BrowserSecondary: { app: 'Google Chrome', titleIncludes: 'Secondary' },
+        BrowserA: { app: 'Google Chrome', titleIncludes: 'Primary' },
+        BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
       },
       stt: {
         whisperBin: '/opt/homebrew/bin/whisper-cli',
@@ -89,26 +95,13 @@ test('built-in driver and target adapters satisfy the common metadata contract',
   assert.doesNotThrow(() => assertTargetAdapterContract(browserTarget));
 });
 
-test('parseTargetSelector accepts controller-only selectors', () => {
-  assert.deepEqual(parseTargetSelector('demo1'), {
-    controllerId: 'demo1',
-    tabId: null,
-  });
-});
-
-test('parseTargetSelector accepts controller-plus-tab selectors', () => {
-  assert.deepEqual(parseTargetSelector('demo1:tabA'), {
-    controllerId: 'demo1',
-    tabId: 'tabA',
-  });
-});
-
 test('normalizeConfig accepts the greenfield presenter-mode model', () => {
   const config = normalizeConfig(createValidConfig());
 
   assert.deepEqual(config.driver, { type: 'revealjs' });
   assert.equal(config.layouts['full-slide'].audienceScene, 'Full Slide');
-  assert.deepEqual(config.layouts['dual-browser'].sources, ['BrowserPrimary', 'BrowserSecondary']);
+  assert.deepEqual(config.layouts['dual-browser'].sources, ['BrowserA', 'BrowserB']);
+  assert.deepEqual(config.sources.BrowserA, { id: 'BrowserA', kind: 'browser' });
   assert.deepEqual(config.slides['code-walkthrough'], {
     layoutId: 'left-terminal-right-slide',
     focus: 'Terminal',
@@ -129,21 +122,79 @@ test('normalizeConfig accepts audience-only mode when presenter is omitted', () 
   assert.equal(normalized.slides.welcome.layoutId, 'full-slide');
 });
 
-test('normalizeConfig converts navigate entries into generic command objects', () => {
+test('normalizeConfig converts navigate entries into source-based command objects', () => {
   const config = normalizeConfig(createValidConfig());
 
   assert.deepEqual(config.slides['dual-demo'].commands, [
     {
       type: 'navigate',
-      target: { controllerId: 'demo1', tabId: 'tabA' },
+      source: 'BrowserA',
+      tab: 'tabA',
       url: 'https://example.com/step2',
     },
     {
       type: 'navigate',
-      target: { controllerId: 'demo2', tabId: null },
+      source: 'BrowserB',
+      tab: null,
       url: 'https://example.com/other-app',
     },
   ]);
+});
+
+test('normalizeConfig rejects missing sources catalog', () => {
+  const config = createValidConfig();
+  delete config.sources;
+
+  assertConfigError(() => normalizeConfig(config), 'sources', /must be an object/i);
+});
+
+test('normalizeConfig rejects empty sources catalog', () => {
+  const config = createValidConfig();
+  config.sources = {};
+
+  assertConfigError(() => normalizeConfig(config), 'sources', /must define at least one source/i);
+});
+
+test('normalizeConfig rejects unknown source kinds', () => {
+  const config = createValidConfig();
+  config.sources.Slide.kind = 'slide-deck';
+
+  assertConfigError(() => normalizeConfig(config), 'sources.Slide.kind', /browser, terminal/i);
+});
+
+test('normalizeConfig rejects layout slots that reference unknown sources', () => {
+  const config = createValidConfig();
+  config.layouts['full-slide'].slots[0].source = 'Mystery';
+
+  assertConfigError(() => normalizeConfig(config), 'layouts.full-slide.slots[0].source', /known source/i);
+});
+
+test('normalizeConfig rejects navigate entries that reference unknown sources', () => {
+  const config = createValidConfig();
+  config.slides['dual-demo'].navigate[0].source = 'Mystery';
+
+  assertConfigError(() => normalizeConfig(config), 'slides.dual-demo.navigate[0].source', /known source/i);
+});
+
+test('normalizeConfig rejects navigate entries that target non-browser sources', () => {
+  const config = createValidConfig();
+  config.slides['dual-demo'].navigate[0].source = 'Terminal';
+
+  assertConfigError(() => normalizeConfig(config), 'slides.dual-demo.navigate[0].source', /browser-capable/i);
+});
+
+test('normalizeConfig rejects focus values that are not known sources', () => {
+  const config = createValidConfig();
+  config.slides.welcome.focus = 'Mystery';
+
+  assertConfigError(() => normalizeConfig(config), 'slides.welcome.focus', /known source/i);
+});
+
+test('normalizeConfig rejects presenter windows that reference unknown sources', () => {
+  const config = createValidConfig();
+  config.presenter.windows.Mystery = { app: 'Safari' };
+
+  assertConfigError(() => normalizeConfig(config), 'presenter.windows.Mystery', /known source/i);
 });
 
 test('normalizeConfig rejects missing layouts', () => {

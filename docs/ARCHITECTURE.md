@@ -21,14 +21,29 @@ presenter behavior lives outside the coordinator.
 
 ## Source Of Truth
 
-The `layouts` catalog is the single source of truth for:
+The `sources` catalog is the authoritative registry of logical source IDs.
+Layouts, slide actions, and presenter bindings all build on that catalog.
+
+The canonical presentation sources are:
+
+- `Slide`
+- `Terminal`
+- `BrowserA`
+- `BrowserB`
+
+These names describe what the operator is coordinating in the talk. They do not
+encode position, runtime transport, or OBS implementation details.
+
+The `layouts` catalog builds on `sources` and is the single source of truth for:
 
 - audience OBS scene names
 - logical source placement
 - presenter-stage rectangles
 
 Slides reference layouts by stable `layout` IDs rather than hardcoding scene
-names directly.
+names directly. Browser-oriented slide actions target source IDs declared in
+`sources`, with an optional source-local tab alias when a browser source exposes
+multiple named tabs.
 
 ## Flow
 

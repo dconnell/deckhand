@@ -21,10 +21,10 @@ function createConfig() {
         id: 'dual-browser',
         audienceScene: 'Dual Browser',
         slots: [
-          { source: 'BrowserPrimary', position: 'left' },
-          { source: 'BrowserSecondary', position: 'right' },
+          { source: 'BrowserA', position: 'left' },
+          { source: 'BrowserB', position: 'right' },
         ],
-        sources: ['BrowserPrimary', 'BrowserSecondary'],
+        sources: ['BrowserA', 'BrowserB'],
       },
     },
     presenter: {
@@ -56,7 +56,7 @@ test('buildObsSceneDefinitions derives scenes and unique sources from layouts', 
         sceneName: 'Dual Browser',
         items: [
           {
-            sourceName: 'BrowserPrimary',
+            sourceName: 'BrowserA',
             position: 'left',
             transform: {
               positionX: 0,
@@ -67,7 +67,7 @@ test('buildObsSceneDefinitions derives scenes and unique sources from layouts', 
             },
           },
           {
-            sourceName: 'BrowserSecondary',
+            sourceName: 'BrowserB',
             position: 'right',
             transform: {
               positionX: 900,
@@ -80,7 +80,7 @@ test('buildObsSceneDefinitions derives scenes and unique sources from layouts', 
         ],
       },
     ],
-    sources: ['Slide', 'BrowserPrimary', 'BrowserSecondary'],
+    sources: ['Slide', 'BrowserA', 'BrowserB'],
   });
 });
 

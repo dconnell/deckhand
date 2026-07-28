@@ -26,6 +26,11 @@ function createConfig() {
     obs: { url: 'ws://127.0.0.1:4455', password: '' },
     hub: { host: '127.0.0.1', port: 8765 },
     hotkeys: { next: 'F13', prev: 'F14' },
+    sources: {
+      Slide: { id: 'Slide', kind: 'browser' },
+      BrowserA: { id: 'BrowserA', kind: 'browser' },
+      BrowserB: { id: 'BrowserB', kind: 'browser' },
+    },
     layouts: {
       'full-slide': {
         id: 'full-slide',
@@ -37,10 +42,10 @@ function createConfig() {
         id: 'dual-browser',
         audienceScene: 'Dual Browser',
         slots: [
-          { source: 'BrowserPrimary', position: 'left' },
-          { source: 'BrowserSecondary', position: 'right' },
+          { source: 'BrowserA', position: 'left' },
+          { source: 'BrowserB', position: 'right' },
         ],
-        sources: ['BrowserPrimary', 'BrowserSecondary'],
+        sources: ['BrowserA', 'BrowserB'],
       },
     },
     slides: {
@@ -52,17 +57,19 @@ function createConfig() {
       },
       demo: {
         layoutId: 'dual-browser',
-        focus: 'BrowserSecondary',
+        focus: 'BrowserB',
         script: 'Demo script',
         commands: [
           {
             type: 'navigate',
-            target: { controllerId: 'demo1', tabId: 'tabA' },
+            source: 'BrowserA',
+            tab: 'tabA',
             url: 'https://example.com/step2',
           },
           {
             type: 'navigate',
-            target: { controllerId: 'demo2', tabId: null },
+            source: 'BrowserB',
+            tab: null,
             url: 'https://example.com/other-app',
           },
         ],
@@ -73,8 +80,8 @@ function createConfig() {
       stage: { x: 0, y: 0, width: 1800, height: 1168 },
       windows: {
         Slide: { app: 'Safari' },
-        BrowserPrimary: { app: 'Google Chrome', titleIncludes: 'Primary' },
-        BrowserSecondary: { app: 'Google Chrome', titleIncludes: 'Secondary' },
+        BrowserA: { app: 'Google Chrome', titleIncludes: 'Primary' },
+        BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
       },
       stt: null,
       teleprompter: { followEnabledByDefault: true },
@@ -305,11 +312,11 @@ test('coordinator publishes state and multiple target commands for a slide', asy
   assert.equal(hub.state.stickyPublishes[0].payload.seq, 1);
   assert.deepEqual(hub.state.sentCommands, [
     {
-      target: { controllerId: 'demo1', tabId: 'tabA' },
+      target: { controllerId: 'BrowserA', tabId: 'tabA' },
       command: { type: 'navigate', url: 'https://example.com/step2' },
     },
     {
-      target: { controllerId: 'demo2', tabId: null },
+      target: { controllerId: 'BrowserB' },
       command: { type: 'navigate', url: 'https://example.com/other-app' },
     },
   ]);
@@ -379,7 +386,7 @@ test('coordinator continues after partial command failures', async () => {
     async stop() {},
     async sendCommand(target, command) {
       sent.push({ target, command });
-      if (target.controllerId === 'demo1') {
+      if (target.controllerId === 'BrowserA') {
         throw new Error('tab offline');
       }
     },

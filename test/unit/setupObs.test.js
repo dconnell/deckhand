@@ -37,10 +37,10 @@ function createConfig() {
         id: 'dual-browser',
         audienceScene: 'Dual Browser',
         slots: [
-          { source: 'BrowserPrimary', position: 'left' },
-          { source: 'BrowserSecondary', position: 'right' },
+          { source: 'BrowserA', position: 'left' },
+          { source: 'BrowserB', position: 'right' },
         ],
-        sources: ['BrowserPrimary', 'BrowserSecondary'],
+        sources: ['BrowserA', 'BrowserB'],
       },
     },
     presenter: {
@@ -247,7 +247,7 @@ test('setupObs reports invalid config errors clearly without throwing', async ()
     const exitCode = await setupObs({ configPath, logger });
 
     assert.equal(exitCode, 1);
-    assert.match(logger.errors[0].message, /Invalid configuration at layouts:/i);
+    assert.match(logger.errors[0].message, /Invalid configuration at sources:/i);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

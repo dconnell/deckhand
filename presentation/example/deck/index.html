@@ -55,32 +55,32 @@ $ npm start my-talk
         <section data-deckhand-id="live-demo">
           <h3>Live Demo</h3>
           <p>Reaching this slide switches OBS and navigates
-            <code>demo1</code> (controller-wide) to the start URL.</p>
-          <span class="deckhand-tag">data-deckhand-id="live-demo" → layout: left-terminal-right-browser · focus: Terminal · script: yes · navigate demo1</span>
+            <code>BrowserA</code> to the start URL.</p>
+          <span class="deckhand-tag">data-deckhand-id="live-demo" → layout: left-terminal-right-browser · focus: Terminal · script: yes · navigate BrowserA</span>
         </section>
 
         <section data-deckhand-id="api-demo">
           <h3>API Demo</h3>
           <p>Browser on the left; Deckhand navigates
-            <code>demo1</code> to the API page.</p>
-          <span class="deckhand-tag">data-deckhand-id="api-demo" → layout: left-browser-right-terminal · focus: Terminal · script: yes · navigate demo1</span>
+            <code>BrowserA</code> to the API page.</p>
+          <span class="deckhand-tag">data-deckhand-id="api-demo" → layout: left-browser-right-terminal · focus: Terminal · script: yes · navigate BrowserA</span>
         </section>
 
         <section data-deckhand-id="browser-fullscreen">
           <h3>Fullscreen Browser Demo</h3>
           <p>Full-screen browser; Deckhand navigates
-            <code>demo1</code> to the showcase page.</p>
-          <span class="deckhand-tag">data-deckhand-id="browser-fullscreen" → layout: full-browser · script: yes · navigate demo1</span>
+            <code>BrowserA</code> to the showcase page.</p>
+          <span class="deckhand-tag">data-deckhand-id="browser-fullscreen" → layout: full-browser · script: yes · navigate BrowserA</span>
         </section>
 
         <section data-deckhand-id="dual-demo">
           <h3>Dual Browser Demo</h3>
           <p>Two targets at once:</p>
           <ul>
-            <li><code>demo1:tabA</code> → primary</li>
-            <li><code>demo2</code> → secondary</li>
+            <li><code>BrowserA</code> (tab <code>tabA</code>) → primary</li>
+            <li><code>BrowserB</code> → secondary</li>
           </ul>
-          <span class="deckhand-tag">data-deckhand-id="dual-demo" → layout: dual-browser · BrowserPrimary + BrowserSecondary · navigate demo1:tabA + demo2</span>
+          <span class="deckhand-tag">data-deckhand-id="dual-demo" → layout: dual-browser · BrowserA + BrowserB · navigate BrowserA:tabA + BrowserB</span>
         </section>
       </div>
     </div>

@@ -20,8 +20,7 @@ Highlights:
 
 - `welcome`: full-slide layout with script
 - `code-walkthrough`: split layout with terminal focus and script
-- `dual-demo`: dual-browser layout using `BrowserPrimary` and
-  `BrowserSecondary`
+- `dual-demo`: dual-browser layout using `BrowserA` and `BrowserB`
 
 ## Run It
 

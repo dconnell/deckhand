@@ -9,14 +9,24 @@ function createNoopLogger() {
 }
 
 function buildOutboundCommand(command) {
-  const { target, ...payload } = command;
+  const { source, tab, ...payload } = command;
   return payload;
+}
+
+function buildHubTarget(command) {
+  const target = { controllerId: command.source };
+
+  if (command.tab !== null) {
+    target.tabId = command.tab;
+  }
+
+  return target;
 }
 
 /**
  * Create the coordinator orchestration layer.
  *
- * @param {{ config: { driver: { type: string }, layouts: Record<string, unknown>, slides: Record<string, { layoutId: string, commands: Array<{ type: string, target: { controllerId: string, tabId: string | null }, [key: string]: unknown }> }> }, obs: { connect(): Promise<unknown>, disconnect(): Promise<unknown>, setScene(sceneName: string): Promise<unknown>, isConnected?(): boolean }, hub: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown>, sendCommand(target: Record<string, unknown>, command: Record<string, unknown>): Promise<unknown>, publishSticky(channel: string, payload: Record<string, unknown>): Promise<unknown>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown>, targets: Array<Record<string, unknown>> } }, hotkeys: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Coordinator dependencies.
+ * @param {{ config: { driver: { type: string }, layouts: Record<string, unknown>, slides: Record<string, { layoutId: string, commands: Array<{ type: string, source: string, tab: string | null, [key: string]: unknown }> }> }, obs: { connect(): Promise<unknown>, disconnect(): Promise<unknown>, setScene(sceneName: string): Promise<unknown>, isConnected?(): boolean }, hub: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown>, sendCommand(target: Record<string, unknown>, command: Record<string, unknown>): Promise<unknown>, publishSticky(channel: string, payload: Record<string, unknown>): Promise<unknown>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown>, targets: Array<Record<string, unknown>> } }, hotkeys: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Coordinator dependencies.
  * @returns {{ start(): Promise<void>, stop(): Promise<void>, handleDriverPositionChanged(position: { id: string, index?: Record<string, unknown>, meta?: Record<string, unknown> }): Promise<void>, handleHotkeyAction(action: { type: 'next' | 'prev' | 'goTo', id?: string }), getCurrentPresentationState(): Record<string, unknown> | null }}
  */
 export function createCoordinator(options) {
@@ -77,19 +87,20 @@ export function createCoordinator(options) {
     }
 
     for (const command of slideConfig.commands) {
+      const hubTarget = buildHubTarget(command);
       try {
-        await options.hub.sendCommand(command.target, buildOutboundCommand(command));
+        await options.hub.sendCommand(hubTarget, buildOutboundCommand(command));
         logger.info('Dispatched slide command', {
           commandType: command.type,
           slideId: position.id,
-          target: command.target,
+          target: hubTarget,
         });
       } catch (error) {
         logger.error('Target command failed', {
           commandType: command.type,
           error: error instanceof Error ? error.message : String(error),
           slideId: position.id,
-          target: command.target,
+          target: hubTarget,
         });
       }
     }

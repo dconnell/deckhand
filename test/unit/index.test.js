@@ -165,6 +165,9 @@ test('run does not create the presenter HTTP server for audience-only configs', 
       obs: { url: 'ws://127.0.0.1:4455', password: '' },
       hub: { port: 8765 },
       hotkeys: { next: 'F13', prev: 'F14' },
+      sources: {
+        Slide: { kind: 'browser' },
+      },
       layouts: {
         'full-slide': {
           audienceScene: 'Full Slide',

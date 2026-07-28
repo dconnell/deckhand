@@ -32,10 +32,10 @@ function createConfig() {
         id: 'dual-browser',
         audienceScene: 'Dual Browser',
         slots: [
-          { source: 'BrowserPrimary', position: 'left' },
-          { source: 'BrowserSecondary', position: 'right' },
+          { source: 'BrowserA', position: 'left' },
+          { source: 'BrowserB', position: 'right' },
         ],
-        sources: ['BrowserPrimary', 'BrowserSecondary'],
+        sources: ['BrowserA', 'BrowserB'],
       },
     },
     slides: {
@@ -53,7 +53,7 @@ function createConfig() {
       },
       'dual-demo': {
         layoutId: 'dual-browser',
-        focus: 'BrowserSecondary',
+        focus: 'BrowserB',
         script: null,
         commands: [],
       },
@@ -63,8 +63,8 @@ function createConfig() {
       windows: {
         Slide: { app: 'Safari', titleIncludes: 'Deckhand Deck' },
         Terminal: { app: 'iTerm2' },
-        BrowserPrimary: { app: 'Google Chrome', titleIncludes: 'Primary' },
-        BrowserSecondary: { app: 'Google Chrome', titleIncludes: 'Secondary' },
+        BrowserA: { app: 'Google Chrome', titleIncludes: 'Primary' },
+        BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
       },
     },
   };
@@ -117,8 +117,8 @@ test('listLayoutSources returns unique logical sources from the layout catalog',
   assert.deepEqual(listLayoutSources(createConfig()), [
     'Slide',
     'Terminal',
-    'BrowserPrimary',
-    'BrowserSecondary',
+    'BrowserA',
+    'BrowserB',
   ]);
 });
 

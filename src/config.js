@@ -3,6 +3,8 @@ import path from 'node:path';
 
 const BUILTIN_DRIVER_TYPES = ['revealjs'];
 const VALID_SLOT_POSITIONS = new Set(['full', 'left', 'right']);
+const BROWSER_SOURCE_KIND = 'browser';
+const VALID_SOURCE_KINDS = new Set([BROWSER_SOURCE_KIND, 'terminal']);
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -117,6 +119,45 @@ function normalizeDriver(driver) {
   return { type };
 }
 
+/**
+ * Normalize the `sources` catalog entry.
+ *
+ * @param {string} sourceId The source ID key from the catalog.
+ * @param {unknown} entry The raw source descriptor.
+ * @returns {{ id: string, kind: string }}
+ */
+function normalizeSourceEntry(sourceId, entry) {
+  const pathName = `sources.${sourceId}`;
+  const value = assertPlainObject(entry, pathName);
+  const kind = assertNonEmptyString(value.kind, `${pathName}.kind`);
+
+  if (!VALID_SOURCE_KINDS.has(kind)) {
+    throw new ConfigError(`${pathName}.kind`, `must be one of: ${[...VALID_SOURCE_KINDS].join(', ')}`);
+  }
+
+  return {
+    id: sourceId,
+    kind,
+  };
+}
+
+/**
+ * Normalize the authoritative `sources` catalog.
+ *
+ * @param {unknown} sources The raw sources object.
+ * @returns {Record<string, { id: string, kind: string }>}
+ */
+function normalizeSources(sources) {
+  const value = assertPlainObject(sources, 'sources');
+  const entries = Object.entries(value);
+
+  if (entries.length === 0) {
+    throw new ConfigError('sources', 'must define at least one source');
+  }
+
+  return Object.fromEntries(entries.map(([sourceId, entry]) => [sourceId, normalizeSourceEntry(sourceId, entry)]));
+}
+
 function normalizeObs(obs) {
   const value = assertPlainObject(obs, 'obs');
 
@@ -144,7 +185,7 @@ function normalizeHotkeys(hotkeys) {
   };
 }
 
-function normalizeLayoutSlot(layoutId, slot, index) {
+function normalizeLayoutSlot(layoutId, slot, index, sources) {
   const pathName = `layouts.${layoutId}.slots[${index}]`;
   const value = assertPlainObject(slot, pathName);
   const source = assertNonEmptyString(value.source, `${pathName}.source`);
@@ -154,13 +195,17 @@ function normalizeLayoutSlot(layoutId, slot, index) {
     throw new ConfigError(`${pathName}.position`, 'must be one of: full, left, right');
   }
 
+  if (!Object.prototype.hasOwnProperty.call(sources, source)) {
+    throw new ConfigError(`${pathName}.source`, 'must reference a known source');
+  }
+
   return {
     source,
     position,
   };
 }
 
-function normalizeLayout(layoutId, layout) {
+function normalizeLayout(layoutId, layout, sources) {
   const pathName = `layouts.${layoutId}`;
   const value = assertPlainObject(layout, pathName);
   const audienceScene = assertNonEmptyString(value.audienceScene, `${pathName}.audienceScene`);
@@ -174,9 +219,9 @@ function normalizeLayout(layoutId, layout) {
     throw new ConfigError(`${pathName}.slots`, 'must contain at least one slot');
   }
 
-  const normalizedSlots = slots.map((slot, index) => normalizeLayoutSlot(layoutId, slot, index));
+  const normalizedSlots = slots.map((slot, index) => normalizeLayoutSlot(layoutId, slot, index, sources));
   const seenSources = new Set();
-  const sources = [];
+  const layoutSources = [];
 
   for (let index = 0; index < normalizedSlots.length; index += 1) {
     const slotInfo = normalizedSlots[index];
@@ -186,18 +231,18 @@ function normalizeLayout(layoutId, layout) {
     }
 
     seenSources.add(slotInfo.source);
-    sources.push(slotInfo.source);
+    layoutSources.push(slotInfo.source);
   }
 
   return {
     id: layoutId,
     audienceScene,
     slots: normalizedSlots,
-    sources,
+    sources: layoutSources,
   };
 }
 
-function normalizeLayouts(layouts) {
+function normalizeLayouts(layouts, sources) {
   const value = assertPlainObject(layouts, 'layouts');
   const entries = Object.entries(value);
 
@@ -205,28 +250,35 @@ function normalizeLayouts(layouts) {
     throw new ConfigError('layouts', 'must define at least one layout');
   }
 
-  return Object.fromEntries(entries.map(([layoutId, layout]) => [layoutId, normalizeLayout(layoutId, layout)]));
+  return Object.fromEntries(entries.map(([layoutId, layout]) => [layoutId, normalizeLayout(layoutId, layout, sources)]));
 }
 
-function normalizeNavigateEntry(entry, pathName) {
+function normalizeNavigateEntry(entry, pathName, sources) {
   const value = assertPlainObject(entry, pathName);
+  const source = assertNonEmptyString(value.source, `${pathName}.source`);
 
-  try {
-    return {
-      type: 'navigate',
-      target: parseTargetSelector(value.target),
-      url: normalizeNavigateUrl(value.url, `${pathName}.url`),
-    };
-  } catch (error) {
-    if (error instanceof ConfigError) {
-      throw error;
-    }
-
-    throw new ConfigError(`${pathName}.target`, 'must be a valid target selector');
+  if (!Object.prototype.hasOwnProperty.call(sources, source)) {
+    throw new ConfigError(`${pathName}.source`, 'must reference a known source');
   }
+
+  if (sources[source].kind !== BROWSER_SOURCE_KIND) {
+    throw new ConfigError(`${pathName}.source`, 'must reference a browser-capable source');
+  }
+
+  let tab = null;
+  if (value.tab !== undefined) {
+    tab = assertNonEmptyString(value.tab, `${pathName}.tab`);
+  }
+
+  return {
+    type: 'navigate',
+    source,
+    tab,
+    url: normalizeNavigateUrl(value.url, `${pathName}.url`),
+  };
 }
 
-function normalizeSlideEntry(slideId, entry, layouts) {
+function normalizeSlideEntry(slideId, entry, layouts, sources) {
   const pathName = `slides.${slideId}`;
   const value = assertPlainObject(entry, pathName);
   const layoutId = assertNonEmptyString(value.layout, `${pathName}.layout`);
@@ -244,6 +296,10 @@ function normalizeSlideEntry(slideId, entry, layouts) {
   let focus = null;
   if (value.focus !== undefined) {
     focus = assertNonEmptyString(value.focus, `${pathName}.focus`);
+
+    if (!Object.prototype.hasOwnProperty.call(sources, focus)) {
+      throw new ConfigError(`${pathName}.focus`, 'must reference a known source');
+    }
 
     if (!layouts[layoutId].sources.includes(focus)) {
       throw new ConfigError(`${pathName}.focus`, 'must reference a source present in layout');
@@ -263,15 +319,15 @@ function normalizeSlideEntry(slideId, entry, layouts) {
     layoutId,
     focus,
     script,
-    commands: navigate.map((item, index) => normalizeNavigateEntry(item, `${pathName}.navigate[${index}]`)),
+    commands: navigate.map((item, index) => normalizeNavigateEntry(item, `${pathName}.navigate[${index}]`, sources)),
   };
 }
 
-function normalizeSlides(slides, layouts) {
+function normalizeSlides(slides, layouts, sources) {
   const value = assertPlainObject(slides, 'slides');
 
   return Object.fromEntries(
-    Object.entries(value).map(([slideId, entry]) => [slideId, normalizeSlideEntry(slideId, entry, layouts)]),
+    Object.entries(value).map(([slideId, entry]) => [slideId, normalizeSlideEntry(slideId, entry, layouts, sources)]),
   );
 }
 
@@ -360,7 +416,7 @@ function normalizePresenterHttp(http) {
   };
 }
 
-function normalizePresenter(presenter, layouts) {
+function normalizePresenter(presenter, layouts, sources) {
   if (presenter === undefined) {
     return null;
   }
@@ -379,6 +435,12 @@ function normalizePresenter(presenter, layouts) {
   for (const source of requiredSources) {
     if (!Object.prototype.hasOwnProperty.call(windows, source)) {
       throw new ConfigError(`presenter.windows.${source}`, 'must be configured for every layout source');
+    }
+  }
+
+  for (const windowSource of Object.keys(windows)) {
+    if (!Object.prototype.hasOwnProperty.call(sources, windowSource)) {
+      throw new ConfigError(`presenter.windows.${windowSource}`, 'must reference a known source');
     }
   }
 
@@ -408,47 +470,26 @@ export class ConfigError extends Error {
 }
 
 /**
- * Parse a target selector into controller and tab identifiers.
- *
- * @param {string} selector The target selector string.
- * @returns {{ controllerId: string, tabId: string | null }}
- */
-export function parseTargetSelector(selector) {
-  if (typeof selector !== 'string' || selector.trim() === '') {
-    throw new Error('Target selector must be a non-empty string');
-  }
-
-  const parts = selector.trim().split(':');
-
-  if (parts.length > 2 || parts.some((part) => part.trim() === '')) {
-    throw new Error('Target selector must be a valid target selector');
-  }
-
-  return {
-    controllerId: parts[0],
-    tabId: parts[1] ?? null,
-  };
-}
-
-/**
  * Normalize a raw config object into the coordinator's internal model.
  *
  * @param {unknown} rawConfig The parsed config JSON.
- * @returns {{ driver: { type: string }, obs: { url: string, password: string }, hub: { host: string, port: number }, hotkeys: { next: string, prev: string }, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'navigate', target: { controllerId: string, tabId: string | null }, url: string }> }>, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, chunkSeconds: number, language?: string }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
+ * @returns {{ driver: { type: string }, obs: { url: string, password: string }, hub: { host: string, port: number }, hotkeys: { next: string, prev: string }, sources: Record<string, { id: string, kind: string }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'navigate', source: string, tab: string | null, url: string }> }>, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, chunkSeconds: number, language?: string }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
  */
 export function normalizeConfig(rawConfig) {
   const root = assertPlainObject(rawConfig, 'config');
-  const layouts = normalizeLayouts(root.layouts);
-  const slides = normalizeSlides(root.slides, layouts);
+  const sources = normalizeSources(root.sources);
+  const layouts = normalizeLayouts(root.layouts, sources);
+  const slides = normalizeSlides(root.slides, layouts, sources);
 
   return {
     driver: normalizeDriver(root.driver),
     obs: normalizeObs(root.obs),
     hub: normalizeHub(root.hub),
     hotkeys: normalizeHotkeys(root.hotkeys),
+    sources,
     layouts,
     slides,
-    presenter: normalizePresenter(root.presenter, layouts),
+    presenter: normalizePresenter(root.presenter, layouts, sources),
   };
 }
 

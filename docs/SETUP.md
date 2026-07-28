@@ -211,8 +211,9 @@ On first use, macOS may prompt for microphone access for the terminal or Node.
 To use the sample `navigate` commands:
 
 1. Install the `violentmonkey/browser.user.js` userscript.
-2. Register browser target identities such as `demo1`, `demo1:tabA`, and
-   `demo2`.
+2. Register browser target identities using the source IDs declared in
+   `sources`. For the sample config, register `BrowserA` (optionally with a
+   `tabId` such as `tabA`) and `BrowserB`.
 
 ## Hotkeys
 

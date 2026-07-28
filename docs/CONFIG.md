@@ -15,6 +15,12 @@ model for OBS, presenter stage, and slide actions.
   "obs": { "url": "ws://127.0.0.1:4455", "password": "" },
   "hub": { "port": 8765 },
   "hotkeys": { "next": "F13", "prev": "F14" },
+  "sources": {
+    "Slide": { "kind": "browser" },
+    "Terminal": { "kind": "terminal" },
+    "BrowserA": { "kind": "browser" },
+    "BrowserB": { "kind": "browser" }
+  },
   "layouts": {
     "full-slide": {
       "audienceScene": "Full Slide",
@@ -23,8 +29,8 @@ model for OBS, presenter stage, and slide actions.
     "dual-browser": {
       "audienceScene": "Dual Browser",
       "slots": [
-        { "source": "BrowserPrimary", "position": "left" },
-        { "source": "BrowserSecondary", "position": "right" }
+        { "source": "BrowserA", "position": "left" },
+        { "source": "BrowserB", "position": "right" }
       ]
     }
   },
@@ -34,10 +40,10 @@ model for OBS, presenter stage, and slide actions.
     },
     "demo": {
       "layout": "dual-browser",
-      "focus": "BrowserSecondary",
-      "script": "Walk through the demo.\nCall out the secondary browser.",
+      "focus": "BrowserB",
+      "script": "Walk through the demo.\nCall out BrowserB.",
       "navigate": [
-        { "target": "demo1:tabA", "url": "https://example.com/step2" }
+        { "source": "BrowserA", "tab": "tabA", "url": "https://example.com/step2" }
       ]
     }
   },
@@ -46,8 +52,8 @@ model for OBS, presenter stage, and slide actions.
     "stage": { "x": 0, "y": 0, "width": 1800, "height": 1168 },
     "windows": {
       "Slide": { "app": "Safari", "titleIncludes": "Deckhand Deck" },
-      "BrowserPrimary": { "app": "Google Chrome", "titleIncludes": "Primary" },
-      "BrowserSecondary": { "app": "Google Chrome", "titleIncludes": "Secondary" }
+      "BrowserA": { "app": "Google Chrome", "titleIncludes": "Primary" },
+      "BrowserB": { "app": "Google Chrome", "titleIncludes": "Secondary" }
     },
     "stt": {
       "whisperBin": "/absolute/path/to/whisper-cli",
@@ -74,6 +80,28 @@ model for OBS, presenter stage, and slide actions.
 - `hub.port`: localhost WebSocket port for driver, target, and observer clients
 - `hotkeys.next` / `hotkeys.prev`: key names understood by `uiohook-napi`
 
+## Sources
+
+`sources` is the authoritative catalog of logical source IDs. Layouts, slide
+actions, and presenter bindings all reference IDs declared here.
+
+The canonical presentation sources are:
+
+- `Slide`
+- `Terminal`
+- `BrowserA`
+- `BrowserB`
+
+Each entry declares a `kind`. Current kinds:
+
+- `browser`: browser-capable source; can be the target of `navigate` actions
+- `terminal`: terminal source
+
+Source IDs are position-agnostic and stay stable across layouts. They do not
+encode OBS scene names, transport identifiers, or window-match hints. If you
+need two live browser windows, declare two browser sources such as `BrowserA`
+and `BrowserB`.
+
 ## Layouts
 
 `layouts` is the source of truth for audience scene names and logical source
@@ -86,16 +114,15 @@ Each layout contains:
 
 Each slot contains:
 
-- `source`: logical source name
+- `source`: logical source ID declared in `sources`
 - `position`: `full`, `left`, or `right`
 
 Rules:
 
 - each layout must define at least one slot
 - slot source names must be unique within a layout
+- every slot source must exist in `sources`
 - `audienceScene` should be unique across layouts
-- if you need two live browser windows, use two logical sources such as
-  `BrowserPrimary` and `BrowserSecondary`
 
 ## Slides
 
@@ -108,7 +135,9 @@ Each slide entry supports:
 
 Each `navigate` item contains:
 
-- `target`: `controllerId` or `controllerId:tabId`
+- `source`: browser-capable source ID declared in `sources`
+- `tab`: optional source-local tab alias when a browser source exposes multiple
+  named tabs
 - `url`: absolute `http` or `https` URL
 
 ## Presenter
@@ -120,7 +149,8 @@ When present:
 
 - `platform` must be `macos`
 - `stage` defines the presenter-stage rectangle; width must be even
-- `windows` maps each logical source to a macOS window selector
+- `windows` maps each logical source to a macOS window selector; every key must
+  exist in `sources`
 - `stt` configures the local whisper.cpp observer
 - `teleprompter.followEnabledByDefault` controls initial follow mode
 - `http` configures the presenter web app/status surface
@@ -144,10 +174,15 @@ For the `reveal.js` driver:
 The config loader returns path-based errors for invalid input, including:
 
 - missing or invalid `driver.type`
+- missing or empty `sources`
+- unknown source `kind`
 - missing `layouts`
 - unknown `slides.<id>.layout`
+- layout slots that reference unknown sources
 - invalid slot positions
+- `navigate` sources that do not exist or are not browser-capable
 - invalid `focus` source for the chosen layout
+- `presenter.windows` entries that reference unknown sources
 - malformed target selectors or URLs
 - invalid presenter stage dimensions
 - malformed window selectors
