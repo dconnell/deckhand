@@ -29,7 +29,8 @@ test('presenter HTTP server serves presenter assets and status without exposing 
         service: 'deckhand',
         presenterEnabled: true,
         obs: { connected: true },
-        hub: { host: '127.0.0.1', port: 8765, driverConnected: true, observerCount: 1, targetCount: 2 },
+        hub: { host: '127.0.0.1', port: 8765, driverConnected: true, observerCount: 1 },
+        browserSession: { connected: true, chromePid: 47213, sources: { BrowserA: { ready: true, activeTab: 'home', tabs: ['home', 'checkout'] } } },
         current: null,
       };
     },
@@ -64,7 +65,8 @@ test('presenter HTTP server serves presenter assets and status without exposing 
       service: 'deckhand',
       presenterEnabled: true,
       obs: { connected: true },
-      hub: { host: '127.0.0.1', port: 8765, driverConnected: true, observerCount: 1, targetCount: 2 },
+      hub: { host: '127.0.0.1', port: 8765, driverConnected: true, observerCount: 1 },
+      browserSession: { connected: true, chromePid: 47213, sources: { BrowserA: { ready: true, activeTab: 'home', tabs: ['home', 'checkout'] } } },
       current: null,
     });
 

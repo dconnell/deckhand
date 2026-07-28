@@ -2,12 +2,12 @@
 
 ## Model
 
-Deckhand has five runtime boundaries:
+Deckhand has these runtime boundaries:
 
 - coordinator
 - OBS adapter
 - driver client boundary
-- target client boundary
+- browser session runtime (CDP-owned Chrome windows and tabs)
 - observer client boundary
 
 Observer clients power presenter mode. Current observer implementations are:
@@ -34,6 +34,11 @@ The canonical presentation sources are:
 These names describe what the operator is coordinating in the talk. They do not
 encode position, runtime transport, or OBS implementation details.
 
+Browser sources declare a catalog of named tabs. Deckhand launches one dedicated
+Chrome session, creates one window per browser source, and preloads the declared
+tabs. Window and tab identity are runtime handles owned by Deckhand, never URL
+or title lookup.
+
 The `layouts` catalog builds on `sources` and is the single source of truth for:
 
 - audience OBS scene names
@@ -41,9 +46,8 @@ The `layouts` catalog builds on `sources` and is the single source of truth for:
 - presenter-stage rectangles
 
 Slides reference layouts by stable `layout` IDs rather than hardcoding scene
-names directly. Browser-oriented slide actions target source IDs declared in
-`sources`, with an optional source-local tab alias when a browser source exposes
-multiple named tabs.
+names directly. Browser-oriented slide actions target logical `source` IDs and
+source-local tab aliases.
 
 ## Flow
 
@@ -53,10 +57,12 @@ multiple named tabs.
    state.
 4. Hub publishes `presentationState` to subscribed observers.
 5. Coordinator switches OBS to `presentationState.audienceScene`.
-6. Coordinator dispatches generic target commands.
+6. Coordinator dispatches typed browser commands (activateTab / navigate) through
+   the injected executor, which routes them to the Deckhand-owned browser
+   session by runtime handle.
 
-Each step is isolated so OBS failures, observer failures, or target failures do
-not suppress the other work.
+Each step is isolated so OBS failures, observer failures, or browser-session
+failures do not suppress the other work.
 
 Normalized driver event shape:
 
@@ -83,7 +89,7 @@ Presenter-state payload shape:
   ],
   windowBindings: {
     Terminal: { app: 'iTerm2' },
-    Slide: { app: 'Safari', titleIncludes: 'Deckhand Deck' }
+    Slide: { app: 'Google Chrome', titleIncludes: 'Deckhand Deck' }
   },
   focus: 'Terminal',
   script: 'Walk through the init flow.\nEmphasize line 42.'
@@ -107,8 +113,11 @@ Messages used in the current design:
 Roles are generic:
 
 - `driver`
-- `target`
 - `observer`
+
+The earlier `target` role has been removed. Browser windows and tabs are now
+owned directly by Deckhand through the Chrome DevTools Protocol; command routing
+no longer depends on remote target clients.
 
 Observer registrations include subscriptions, such as:
 
@@ -132,27 +141,32 @@ Startup order:
 
 1. OBS connect
 2. hub start
-3. hotkeys start
-4. presenter HTTP start, when presenter mode is enabled
+3. browser session start (launches Chrome, creates source windows, preloads tabs)
+4. hotkeys start
+5. presenter HTTP start, when presenter mode is enabled
 
 Shutdown order:
 
 1. presenter HTTP stop
 2. hotkeys stop
-3. hub stop
-4. OBS disconnect
+3. browser session stop
+4. hub stop
+5. OBS disconnect
 
-## Driver, Target, And Observer Boundaries
+## Driver, Browser Session, And Observer Boundaries
 
 Driver responsibilities:
 
 - emit normalized position events
 - accept `next`, `prev`, and optional `goTo(id)` commands
 
-Target responsibilities:
+Browser session responsibilities:
 
-- register identity and capabilities
-- accept generic commands, starting with `navigate`
+- launch and own the dedicated Deckhand Chrome session
+- create one window per browser source and preload declared tabs
+- maintain the authoritative source/tab runtime-handle registry
+- resolve `activateTab` and `navigate` commands to runtime handles, never URL or
+  title lookup
 
 Observer responsibilities:
 
@@ -171,14 +185,15 @@ Observer responsibilities:
 
 - unknown slides warn and do nothing
 - OBS errors are logged and do not crash the coordinator
-- target command failures are logged and the coordinator keeps running
-- observer publish failures are logged and do not suppress OBS or target work
+- browser command failures are logged and the coordinator keeps running
+- observer publish failures are logged and do not suppress OBS or browser work
 - malformed hub messages return protocol errors instead of crashing the server
 
 ## Extensibility Notes
 
-- command routing is based on `command.type`
+- browser command routing is based on `command.type` (`activateTab`, `navigate`)
+- the coordinator dispatches through an injected executor seam so new command
+  types stay decoupled from slide-event orchestration
 - observer traffic is channel-based and subscription-filtered
-- shared modules do not import browser userscript code
 - shared modules do not import `reveal.js` bridge code
 - shared modules do not import macOS Hammerspoon code

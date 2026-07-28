@@ -8,32 +8,24 @@ function createNoopLogger() {
   };
 }
 
-function buildOutboundCommand(command) {
-  const { source, tab, ...payload } = command;
-  return payload;
-}
-
-function buildHubTarget(command) {
-  const target = { controllerId: command.source };
-
-  if (command.tab !== null) {
-    target.tabId = command.tab;
-  }
-
-  return target;
-}
-
 /**
  * Create the coordinator orchestration layer.
  *
- * @param {{ config: { driver: { type: string }, layouts: Record<string, unknown>, slides: Record<string, { layoutId: string, commands: Array<{ type: string, source: string, tab: string | null, [key: string]: unknown }> }> }, obs: { connect(): Promise<unknown>, disconnect(): Promise<unknown>, setScene(sceneName: string): Promise<unknown>, isConnected?(): boolean }, hub: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown>, sendCommand(target: Record<string, unknown>, command: Record<string, unknown>): Promise<unknown>, publishSticky(channel: string, payload: Record<string, unknown>): Promise<unknown>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown>, targets: Array<Record<string, unknown>> } }, hotkeys: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Coordinator dependencies.
+ * The coordinator resolves slide config into typed browser commands and
+ * dispatches them through an injected executor. It does not own browser logic
+ * directly; the executor seam keeps slide-event orchestration decoupled from the
+ * Deckhand browser session runtime.
+ *
+ * @param {{ config: { driver: { type: string }, layouts: Record<string, unknown>, slides: Record<string, { layoutId: string, commands: Array<{ type: string, source: string, tab?: string, url?: string, [key: string]: unknown }> }> }, obs: { connect(): Promise<unknown>, disconnect(): Promise<unknown>, setScene(sceneName: string): Promise<unknown>, isConnected?(): boolean }, hub: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown>, sendCommand(target: { role?: 'driver' }, command: Record<string, unknown>): Promise<unknown>, publishSticky(channel: string, payload: Record<string, unknown>): Promise<unknown>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown> } }, hotkeys: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown> }, executor?: { start(): Promise<void>, stop(): Promise<void>, execute(command: Record<string, unknown>): Promise<void> } | null, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Coordinator dependencies.
  * @returns {{ start(): Promise<void>, stop(): Promise<void>, handleDriverPositionChanged(position: { id: string, index?: Record<string, unknown>, meta?: Record<string, unknown> }): Promise<void>, handleHotkeyAction(action: { type: 'next' | 'prev' | 'goTo', id?: string }), getCurrentPresentationState(): Record<string, unknown> | null }}
  */
 export function createCoordinator(options) {
   const logger = options.logger ?? createNoopLogger();
+  const executor = options.executor ?? null;
   let started = false;
   let obsStarted = false;
   let hubStarted = false;
+  let executorStarted = false;
   let hotkeysStarted = false;
   let presentationSeq = 0;
   let currentPresentationState = null;
@@ -44,6 +36,32 @@ export function createCoordinator(options) {
     currentPresentationState = state;
     await options.hub.publishSticky('presentationState', state);
     return state;
+  }
+
+  async function dispatchBrowserCommands(slideConfig, slideId) {
+    if (executor === null) {
+      return;
+    }
+
+    for (const command of slideConfig.commands) {
+      try {
+        await executor.execute(command);
+        logger.info('Dispatched browser command', {
+          commandType: command.type,
+          slideId,
+          source: command.source,
+          tab: command.tab,
+        });
+      } catch (error) {
+        logger.error('Browser command failed', {
+          commandType: command.type,
+          error: error instanceof Error ? error.message : String(error),
+          slideId,
+          source: command.source,
+          tab: command.tab,
+        });
+      }
+    }
   }
 
   async function handleDriverPositionChanged(position) {
@@ -86,24 +104,7 @@ export function createCoordinator(options) {
       });
     }
 
-    for (const command of slideConfig.commands) {
-      const hubTarget = buildHubTarget(command);
-      try {
-        await options.hub.sendCommand(hubTarget, buildOutboundCommand(command));
-        logger.info('Dispatched slide command', {
-          commandType: command.type,
-          slideId: position.id,
-          target: hubTarget,
-        });
-      } catch (error) {
-        logger.error('Target command failed', {
-          commandType: command.type,
-          error: error instanceof Error ? error.message : String(error),
-          slideId: position.id,
-          target: hubTarget,
-        });
-      }
-    }
+    await dispatchBrowserCommands(slideConfig, position.id);
   }
 
   async function handleHotkeyAction(action) {
@@ -131,7 +132,6 @@ export function createCoordinator(options) {
   options.hub.on('driverPositionChanged', handleDriverPositionChanged);
   options.hub.on('driverRegistered', () => logSnapshot('Driver client registered'));
   options.hub.on('observerRegistered', () => logSnapshot('Observer client registered'));
-  options.hub.on('targetRegistered', () => logSnapshot('Target client registered'));
   options.hub.on('clientDisconnected', () => logSnapshot('Client disconnected'));
   options.hotkeys.on('action', handleHotkeyAction);
 
@@ -148,6 +148,12 @@ export function createCoordinator(options) {
         obsStarted = true;
         await options.hub.start();
         hubStarted = true;
+
+        if (executor !== null) {
+          await executor.start();
+          executorStarted = true;
+        }
+
         await options.hotkeys.start();
         hotkeysStarted = true;
         started = true;
@@ -156,6 +162,11 @@ export function createCoordinator(options) {
         if (hotkeysStarted) {
           await options.hotkeys.stop().catch(() => {});
           hotkeysStarted = false;
+        }
+
+        if (executorStarted) {
+          await executor?.stop().catch(() => {});
+          executorStarted = false;
         }
 
         if (hubStarted) {
@@ -186,18 +197,25 @@ export function createCoordinator(options) {
         }
       } finally {
         try {
-          if (hubStarted) {
-            await options.hub.stop();
-            hubStarted = false;
+          if (executorStarted) {
+            await executor?.stop();
+            executorStarted = false;
           }
         } finally {
-          if (obsStarted) {
-            await options.obs.disconnect();
-            obsStarted = false;
-          }
+          try {
+            if (hubStarted) {
+              await options.hub.stop();
+              hubStarted = false;
+            }
+          } finally {
+            if (obsStarted) {
+              await options.obs.disconnect();
+              obsStarted = false;
+            }
 
-          started = false;
-          logger.info('Coordinator stopped');
+            started = false;
+            logger.info('Coordinator stopped');
+          }
         }
       }
     },

@@ -1,8 +1,12 @@
 /**
  * Build a compact operator-facing runtime status payload.
  *
- * @param {{ currentPresentationState: null | { seq: number, slideId: string, layoutId: string, audienceScene: string, focus: string | null, slots: Array<Record<string, unknown>> }, hubAddress: { host: string, port: number }, hubSnapshot: { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, targets: Array<Record<string, unknown>> }, obsConnected: boolean, presenterEnabled: boolean }} input Runtime state.
- * @returns {{ service: 'deckhand', presenterEnabled: boolean, obs: { connected: boolean }, hub: { host: string, port: number, driverConnected: boolean, observerCount: number, targetCount: number }, current: null | { seq: number, slideId: string, layoutId: string, audienceScene: string, focus: string | null, slots: Array<Record<string, unknown>> } }}
+ * Browser-session health replaces the earlier target-client counts. The hub
+ * snapshot no longer carries a target catalog; browser runtime state comes from
+ * the browser session runtime.
+ *
+ * @param {{ currentPresentationState: null | { seq: number, slideId: string, layoutId: string, audienceScene: string, focus: string | null, slots: Array<Record<string, unknown>> }, hubAddress: { host: string, port: number }, hubSnapshot: { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>> }, browserSessionStatus: { connected: boolean, chromePid: number | null, sources: Record<string, { ready: boolean, activeTab: string | null, tabs: string[] }> }, obsConnected: boolean, presenterEnabled: boolean }} input Runtime state.
+ * @returns {{ service: 'deckhand', presenterEnabled: boolean, obs: { connected: boolean }, hub: { host: string, port: number, driverConnected: boolean, observerCount: number }, browserSession: { connected: boolean, chromePid: number | null, sources: Record<string, { ready: boolean, activeTab: string | null, tabs: string[] }> }, current: null | { seq: number, slideId: string, layoutId: string, audienceScene: string, focus: string | null, slots: Array<Record<string, unknown>> } }}
  */
 export function buildRuntimeStatus(input) {
   return {
@@ -16,7 +20,20 @@ export function buildRuntimeStatus(input) {
       port: input.hubAddress.port,
       driverConnected: input.hubSnapshot.activeDriver !== null,
       observerCount: input.hubSnapshot.observers.length,
-      targetCount: input.hubSnapshot.targets.length,
+    },
+    browserSession: {
+      connected: input.browserSessionStatus.connected,
+      chromePid: input.browserSessionStatus.chromePid,
+      sources: Object.fromEntries(
+        Object.entries(input.browserSessionStatus.sources).map(([id, source]) => [
+          id,
+          {
+            ready: source.ready,
+            activeTab: source.activeTab,
+            tabs: [...source.tabs],
+          },
+        ]),
+      ),
     },
     current: input.currentPresentationState === null
       ? null

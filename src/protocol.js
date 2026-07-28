@@ -43,8 +43,8 @@ function normalizeSubscriptions(value) {
 }
 
 function assertRole(value) {
-  if (value !== 'driver' && value !== 'target' && value !== 'observer') {
-    throw new TypeError('role must be either "driver", "target", or "observer"');
+  if (value !== 'driver' && value !== 'observer') {
+    throw new TypeError('role must be either "driver" or "observer"');
   }
 
   return value;
@@ -79,20 +79,10 @@ export function assertDriverAdapterContract(adapter) {
 }
 
 /**
- * Assert that a target adapter descriptor matches the shared contract.
- *
- * @param {unknown} adapter The adapter descriptor to validate.
- * @returns {void}
- */
-export function assertTargetAdapterContract(adapter) {
-  assertAdapterContract(adapter, 'target');
-}
-
-/**
  * Build the protocol `registered` message sent by the hub.
  *
- * @param {{ role: 'driver' | 'target' | 'observer', sessionId: string, controllerId?: string, tabId?: string | null, subscriptions?: string[] }} details Message details.
- * @returns {{ type: 'registered', role: 'driver' | 'target' | 'observer', sessionId: string, controllerId?: string, tabId?: string, subscriptions?: string[] }}
+ * @param {{ role: 'driver' | 'observer', sessionId: string, subscriptions?: string[] }} details Message details.
+ * @returns {{ type: 'registered', role: 'driver' | 'observer', sessionId: string, subscriptions?: string[] }}
  */
 export function createRegisteredMessage(details) {
   const role = assertRole(details.role);
@@ -101,14 +91,6 @@ export function createRegisteredMessage(details) {
     role,
     sessionId: assertNonEmptyString(details.sessionId, 'sessionId'),
   };
-
-  if (typeof details.controllerId === 'string' && details.controllerId.trim() !== '') {
-    message.controllerId = details.controllerId.trim();
-  }
-
-  if (typeof details.tabId === 'string' && details.tabId.trim() !== '') {
-    message.tabId = details.tabId.trim();
-  }
 
   if (role === 'observer') {
     message.subscriptions = normalizeSubscriptions(details.subscriptions);
@@ -240,18 +222,7 @@ export function validateClientMessage(message) {
       };
     }
 
-    const normalized = {
-      type,
-      role,
-      controllerId: assertNonEmptyString(message.controllerId, 'controllerId'),
-      capabilities,
-    };
-
-    if (message.tabId !== undefined) {
-      normalized.tabId = assertNonEmptyString(message.tabId, 'tabId');
-    }
-
-    return normalized;
+    throw new TypeError('role must be either "driver" or "observer"');
   }
 
   if (type === 'positionChanged') {

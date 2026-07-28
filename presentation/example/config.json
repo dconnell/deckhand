@@ -14,10 +14,46 @@
     "prev": "F14"
   },
   "sources": {
-    "Slide": { "kind": "browser" },
+    "Slide": {
+      "kind": "browser",
+      "browser": {
+        "window": { "label": "slide" },
+        "tabs": {
+          "deck": {
+            "url": "http://127.0.0.1:3000/presentation/example/deck/index.html",
+            "initial": true
+          }
+        }
+      }
+    },
     "Terminal": { "kind": "terminal" },
-    "BrowserA": { "kind": "browser" },
-    "BrowserB": { "kind": "browser" }
+    "BrowserA": {
+      "kind": "browser",
+      "browser": {
+        "window": { "label": "browser-a" },
+        "tabs": {
+          "home": {
+            "url": "https://example.com/demo/home",
+            "initial": true
+          },
+          "checkout": {
+            "url": "https://example.com/demo/checkout"
+          }
+        }
+      }
+    },
+    "BrowserB": {
+      "kind": "browser",
+      "browser": {
+        "window": { "label": "browser-b" },
+        "tabs": {
+          "main": {
+            "url": "https://example.com/demo/secondary",
+            "initial": true
+          }
+        }
+      }
+    }
   },
   "layouts": {
     "full-slide": {
@@ -136,47 +172,31 @@
       "layout": "left-terminal-right-browser",
       "focus": "Terminal",
       "script": "Open the live demo.\nNarrate the setup before switching to the browser details.",
-      "navigate": [
-        {
-          "source": "BrowserA",
-          "url": "https://example.com/demo/start"
-        }
+      "browser": [
+        { "source": "BrowserA", "action": "activateTab", "tab": "home" }
       ]
     },
     "api-demo": {
       "layout": "left-browser-right-terminal",
       "focus": "Terminal",
       "script": "Call the API from the terminal while the audience sees the browser response.",
-      "navigate": [
-        {
-          "source": "BrowserA",
-          "url": "https://example.com/demo/api"
-        }
+      "browser": [
+        { "source": "BrowserA", "action": "navigate", "tab": "home", "url": "https://example.com/demo/api" }
       ]
     },
     "browser-fullscreen": {
       "layout": "full-browser",
       "script": "Full browser for the showcase page.",
-      "navigate": [
-        {
-          "source": "BrowserA",
-          "url": "https://example.com/demo/full"
-        }
+      "browser": [
+        { "source": "BrowserA", "action": "navigate", "tab": "home", "url": "https://example.com/demo/full" }
       ]
     },
     "dual-demo": {
       "layout": "dual-browser",
       "focus": "BrowserB",
-      "navigate": [
-        {
-          "source": "BrowserA",
-          "tab": "tabA",
-          "url": "https://example.com/demo/primary"
-        },
-        {
-          "source": "BrowserB",
-          "url": "https://example.com/demo/secondary"
-        }
+      "browser": [
+        { "source": "BrowserA", "action": "activateTab", "tab": "checkout" },
+        { "source": "BrowserB", "action": "activateTab", "tab": "main" }
       ]
     }
   },
@@ -190,7 +210,7 @@
     },
     "windows": {
       "Slide": {
-        "app": "Safari",
+        "app": "Google Chrome",
         "titleIncludes": "Deckhand Deck"
       },
       "Terminal": {

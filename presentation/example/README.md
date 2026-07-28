@@ -5,7 +5,7 @@ This example demonstrates the full Deckhand flow:
 - layout-driven OBS audience scenes
 - presenter script updates
 - per-slide focus hints
-- browser navigation targets
+- Deckhand-owned Chrome windows and tabs with preloaded, switchable tabs
 
 ## What's Here
 

@@ -16,10 +16,35 @@ model for OBS, presenter stage, and slide actions.
   "hub": { "port": 8765 },
   "hotkeys": { "next": "F13", "prev": "F14" },
   "sources": {
-    "Slide": { "kind": "browser" },
+    "Slide": {
+      "kind": "browser",
+      "browser": {
+        "window": { "label": "slide" },
+        "tabs": {
+          "deck": { "url": "http://127.0.0.1:3000/deck/index.html", "initial": true }
+        }
+      }
+    },
     "Terminal": { "kind": "terminal" },
-    "BrowserA": { "kind": "browser" },
-    "BrowserB": { "kind": "browser" }
+    "BrowserA": {
+      "kind": "browser",
+      "browser": {
+        "window": { "label": "browser-a" },
+        "tabs": {
+          "home": { "url": "https://example.com/demo/home", "initial": true },
+          "checkout": { "url": "https://example.com/demo/checkout" }
+        }
+      }
+    },
+    "BrowserB": {
+      "kind": "browser",
+      "browser": {
+        "window": { "label": "browser-b" },
+        "tabs": {
+          "main": { "url": "https://example.com/demo/secondary", "initial": true }
+        }
+      }
+    }
   },
   "layouts": {
     "full-slide": {
@@ -42,16 +67,22 @@ model for OBS, presenter stage, and slide actions.
       "layout": "dual-browser",
       "focus": "BrowserB",
       "script": "Walk through the demo.\nCall out BrowserB.",
-      "navigate": [
-        { "source": "BrowserA", "tab": "tabA", "url": "https://example.com/step2" }
+      "browser": [
+        { "source": "BrowserA", "action": "activateTab", "tab": "checkout" },
+        { "source": "BrowserB", "action": "navigate", "tab": "main", "url": "https://example.com/demo/v2" }
       ]
     }
+  },
+  "chrome": {
+    "executablePath": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "profileDir": "/tmp/deckhand-chrome",
+    "debugPort": 9222
   },
   "presenter": {
     "platform": "macos",
     "stage": { "x": 0, "y": 0, "width": 1800, "height": 1168 },
     "windows": {
-      "Slide": { "app": "Safari", "titleIncludes": "Deckhand Deck" },
+      "Slide": { "app": "Google Chrome", "titleIncludes": "Deckhand Deck" },
       "BrowserA": { "app": "Google Chrome", "titleIncludes": "Primary" },
       "BrowserB": { "app": "Google Chrome", "titleIncludes": "Secondary" }
     },
@@ -77,7 +108,7 @@ model for OBS, presenter stage, and slide actions.
 - `driver.type`: currently `revealjs`
 - `obs.url`: OBS WebSocket URL
 - `obs.password`: OBS WebSocket password
-- `hub.port`: localhost WebSocket port for driver, target, and observer clients
+- `hub.port`: localhost WebSocket port for driver and observer clients
 - `hotkeys.next` / `hotkeys.prev`: key names understood by `uiohook-napi`
 
 ## Sources
@@ -94,13 +125,57 @@ The canonical presentation sources are:
 
 Each entry declares a `kind`. Current kinds:
 
-- `browser`: browser-capable source; can be the target of `navigate` actions
+- `browser`: a source Deckhand owns end-to-end through its own Chrome session
 - `terminal`: terminal source
 
 Source IDs are position-agnostic and stay stable across layouts. They do not
 encode OBS scene names, transport identifiers, or window-match hints. If you
 need two live browser windows, declare two browser sources such as `BrowserA`
 and `BrowserB`.
+
+### Browser Sources
+
+A `browser` source must declare a `browser` catalog with a `tabs` map. Deckhand
+creates one Chrome window per browser source and preloads the declared tabs into
+that window at startup. Identity is a runtime handle owned by Deckhand, never
+URL or title lookup.
+
+```json
+"BrowserA": {
+  "kind": "browser",
+  "browser": {
+    "window": { "label": "browser-a" },
+    "tabs": {
+      "home": { "url": "https://example.com/demo/home", "initial": true },
+      "checkout": { "url": "https://example.com/demo/checkout" }
+    }
+  }
+}
+```
+
+- `window.label`: optional label carried in the runtime registry (future
+  window-capture binding detail)
+- `tabs`: non-empty map of source-local tab aliases to tab descriptors
+- each tab descriptor takes:
+  - `url`: absolute `http` or `https` URL
+  - `initial`: optional boolean; exactly one tab (or none, defaulting to the
+    first declared) is the active tab at startup
+  - `preload`: optional boolean (default `true`); when `false` the tab is not
+    created until a slide action references it
+
+## Chrome Session
+
+The optional top-level `chrome` section customizes the dedicated Chrome process
+Deckhand launches for browser sources:
+
+- `executablePath`: absolute path to a Chrome or Chromium binary
+- `profileDir`: absolute path to a dedicated user-data directory (defaults to a
+  presentation-scoped directory under the system temp dir)
+- `debugPort`: remote debugging port (a random port in 9222-9322 by default)
+- `extraArgs`: array of extra Chrome command-line arguments
+
+Deckhand only ever controls windows and tabs it created in this session; the
+operator's ordinary Chrome usage is left untouched.
 
 ## Layouts
 
@@ -131,14 +206,18 @@ Each slide entry supports:
 - `layout`: required layout ID
 - `focus`: optional logical source to focus after presenter layout is applied
 - `script`: optional teleprompter text; absent means clear the presenter script
-- `navigate`: optional browser navigation commands
+- `browser`: optional array of browser actions executed against Deckhand-owned
+  tabs
 
-Each `navigate` item contains:
+Each `browser` action contains:
 
 - `source`: browser-capable source ID declared in `sources`
-- `tab`: optional source-local tab alias when a browser source exposes multiple
-  named tabs
-- `url`: absolute `http` or `https` URL
+- `action`: `activateTab` or `navigate`
+- `tab`: source-local tab alias declared in the source's `browser.tabs`
+- `url`: required when `action` is `navigate`; absolute `http` or `https` URL
+
+`activateTab` switches to a preloaded tab by its runtime handle without
+reloading it. `navigate` loads a new URL in the named tab.
 
 ## Presenter
 
@@ -180,10 +259,13 @@ The config loader returns path-based errors for invalid input, including:
 - unknown `slides.<id>.layout`
 - layout slots that reference unknown sources
 - invalid slot positions
-- `navigate` sources that do not exist or are not browser-capable
+- `navigate`/`browser` actions that reference unknown sources, tabs, or
+  non-browser-capable sources
 - invalid `focus` source for the chosen layout
 - `presenter.windows` entries that reference unknown sources
-- malformed target selectors or URLs
+- malformed browser action selectors or URLs
+- browser sources that omit a tab catalog
+- browser catalogs with zero or multiple initial tabs
 - invalid presenter stage dimensions
 - malformed window selectors
 - relative STT paths

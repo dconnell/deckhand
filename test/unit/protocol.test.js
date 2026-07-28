@@ -3,7 +3,6 @@ import test from 'node:test';
 
 import {
   assertDriverAdapterContract,
-  assertTargetAdapterContract,
   createCommandMessage,
   createErrorMessage,
   createPresentationStateMessage,
@@ -11,15 +10,6 @@ import {
   createTranscriptMessage,
   validateClientMessage,
 } from '../../src/protocol.js';
-
-test('createRegisteredMessage omits null tab identifiers', () => {
-  assert.deepEqual(createRegisteredMessage({ role: 'target', sessionId: 'session-1', controllerId: 'demo1' }), {
-    type: 'registered',
-    role: 'target',
-    sessionId: 'session-1',
-    controllerId: 'demo1',
-  });
-});
 
 test('createRegisteredMessage includes observer subscriptions', () => {
   assert.deepEqual(createRegisteredMessage({
@@ -166,17 +156,13 @@ test('validateClientMessage rejects observer subscriptions with unknown message 
   );
 });
 
-test('validateClientMessage rejects target registrations without controllerId', () => {
+test('validateClientMessage rejects target registrations now that the role is removed', () => {
   assert.throws(
-    () => validateClientMessage({ type: 'register', role: 'target' }),
-    /controllerId/i,
+    () => validateClientMessage({ type: 'register', role: 'target', controllerId: 'demo1' }),
+    /role must be either "driver" or "observer"/i,
   );
 });
 
 test('assertDriverAdapterContract rejects malformed descriptors', () => {
   assert.throws(() => assertDriverAdapterContract({ name: 'broken', kind: 'driver' }), /capabilities/i);
-});
-
-test('assertTargetAdapterContract rejects malformed descriptors', () => {
-  assert.throws(() => assertTargetAdapterContract({ name: 'broken', kind: 'target' }), /capabilities/i);
 });

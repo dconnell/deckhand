@@ -36,7 +36,7 @@ test('runPresenterDoctor reports audience-only configs without failing', async (
       hub: { port: 8765 },
       hotkeys: { next: 'F13', prev: 'F14' },
       sources: {
-        Slide: { kind: 'browser' },
+        Slide: { kind: 'browser', browser: { tabs: { deck: { url: 'http://127.0.0.1:3000/deck/', initial: true } } } },
       },
       layouts: {
         'full-slide': {
@@ -74,7 +74,7 @@ test('runPresenterDoctor reports missing presenter dependencies clearly', async 
       hub: { port: 8765 },
       hotkeys: { next: 'F13', prev: 'F14' },
       sources: {
-        Slide: { kind: 'browser' },
+        Slide: { kind: 'browser', browser: { tabs: { deck: { url: 'http://127.0.0.1:3000/deck/', initial: true } } } },
       },
       layouts: {
         'full-slide': {

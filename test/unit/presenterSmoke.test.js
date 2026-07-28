@@ -80,7 +80,7 @@ test('runPresenterSmoke validates presenter HTTP surfaces and hub registration',
       hub: { host: '127.0.0.1', port: 8765 },
       hotkeys: { next: 'F13', prev: 'F14' },
       sources: {
-        Slide: { kind: 'browser' },
+        Slide: { kind: 'browser', browser: { tabs: { deck: { url: 'http://127.0.0.1:3000/deck/', initial: true } } } },
       },
       layouts: {
         'full-slide': {

@@ -12,6 +12,22 @@ import { loadPresentationConfig } from './presentations.js';
 import { parsePresentationCliArgs } from './presentations.js';
 import { resolvePresentationPaths } from './presentations.js';
 import { buildRuntimeStatus } from './runtimeStatus.js';
+import { createCdpClient } from './cdpClient.js';
+import { createBrowserSession, createBrowserCommandExecutor } from './browserSession.js';
+import { createWsTransport, discoverCdpEndpoint, launchChromeSession } from './chromeLauncher.js';
+import os from 'node:os';
+
+function hasBrowserSources(config) {
+  return Object.values(config.sources).some((source) => source?.kind === 'browser');
+}
+
+function resolveProfileDir(config, presentationName) {
+  if (config.chrome?.profileDir !== undefined) {
+    return config.chrome.profileDir;
+  }
+
+  return path.join(os.tmpdir(), 'deckhand-chrome-profiles', presentationName);
+}
 
 function sanitizeContext(value) {
   if (value === null || value === undefined) {
@@ -62,7 +78,7 @@ function isMainModule(metaUrl) {
 /**
  * Load config, compose adapters, and start the coordinator process.
  *
- * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createHotkeysFn?: typeof createHotkeyAdapter, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, installSignalHandlers?: boolean, presenterAssetsPath?: string }} [options] Startup options.
+ * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createHotkeysFn?: typeof createHotkeyAdapter, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, createBrowserSessionFn?: typeof createBrowserSession, createBrowserCommandExecutorFn?: typeof createBrowserCommandExecutor, createCdpClientFn?: typeof createCdpClient, launchChromeSessionFn?: typeof launchChromeSession, installSignalHandlers?: boolean, presenterAssetsPath?: string }} [options] Startup options.
  * @returns {Promise<number>}
  */
 export async function run(options = {}) {
@@ -104,15 +120,64 @@ export async function run(options = {}) {
   let presenterHttp = null;
   let hub;
   let obs;
+  let browserSession = null;
 
   try {
     hub = (options.createHubFn ?? createHub)({ ...config.hub, logger });
     obs = (options.createObsClientFn ?? createObsClient)({ ...config.obs, logger });
     const hotkeys = (options.createHotkeysFn ?? createHotkeyAdapter)({ ...config.hotkeys, logger });
+
+    let executor = null;
+
+    if (hasBrowserSources(config)) {
+      const createCdpClientFn = options.createCdpClientFn ?? createCdpClient;
+      const launchChromeSessionFn = options.launchChromeSessionFn ?? launchChromeSession;
+      const profileDir = resolveProfileDir(config, presentationName);
+      const chromeOptions = config.chrome ?? {};
+
+      let launchInfo = null;
+      const ensureLaunched = async () => {
+        if (launchInfo !== null) {
+          return;
+        }
+
+        launchInfo = await launchChromeSessionFn({
+          executablePath: chromeOptions.executablePath,
+          profileDir,
+          debugPort: chromeOptions.debugPort,
+          extraArgs: chromeOptions.extraArgs,
+          logger,
+        });
+        return launchInfo;
+      };
+
+      const cdpClient = createCdpClientFn({
+        discover: async () => {
+          const info = await ensureLaunched();
+          const discovered = await discoverCdpEndpoint({ debugPort: info.debugPort, logger });
+          return { webSocketDebuggerUrl: discovered.webSocketDebuggerUrl, chromePid: info.chromePid };
+        },
+        createTransport: (url) => createWsTransport({ url }),
+        logger,
+      });
+
+      browserSession = (options.createBrowserSessionFn ?? createBrowserSession)({
+        sources: config.sources,
+        createCdpClient: () => cdpClient,
+        logger,
+      });
+
+      executor = (options.createBrowserCommandExecutorFn ?? createBrowserCommandExecutor)({
+        browserSession,
+        logger,
+      });
+    }
+
     coordinator = (options.createCoordinatorFn ?? createCoordinator)({
       config,
       hub,
       hotkeys,
+      executor,
       logger,
       obs,
     });
@@ -125,6 +190,9 @@ export async function run(options = {}) {
             currentPresentationState: coordinator.getCurrentPresentationState(),
             hubAddress: hub.getAddress(),
             hubSnapshot: hub.getSnapshot(),
+            browserSessionStatus: browserSession === null
+              ? { connected: false, chromePid: null, sources: {} }
+              : browserSession.getStatus(),
             obsConnected: typeof obs.isConnected === 'function' ? obs.isConnected() : false,
             presenterEnabled: true,
           });

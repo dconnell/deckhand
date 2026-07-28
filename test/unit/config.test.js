@@ -6,9 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 
 import { ConfigError, loadConfig, normalizeConfig } from '../../src/config.js';
-import { assertDriverAdapterContract, assertTargetAdapterContract } from '../../src/protocol.js';
+import { assertDriverAdapterContract } from '../../src/protocol.js';
 import { revealjsDriver } from '../../src/drivers/revealjs.js';
-import { browserTarget } from '../../src/targets/browser.js';
 
 const exampleConfigPath = fileURLToPath(new URL('../../presentation/example/config.json', import.meta.url));
 
@@ -19,10 +18,35 @@ function createValidConfig() {
     hub: { port: 8765 },
     hotkeys: { next: 'F13', prev: 'F14' },
     sources: {
-      Slide: { kind: 'browser' },
+      Slide: {
+        kind: 'browser',
+        browser: {
+          window: { label: 'slide' },
+          tabs: {
+            deck: { url: 'http://127.0.0.1:3000/presentation/example/deck/index.html', initial: true },
+          },
+        },
+      },
       Terminal: { kind: 'terminal' },
-      BrowserA: { kind: 'browser' },
-      BrowserB: { kind: 'browser' },
+      BrowserA: {
+        kind: 'browser',
+        browser: {
+          window: { label: 'browser-a' },
+          tabs: {
+            home: { url: 'https://example.com/demo/home', initial: true },
+            checkout: { url: 'https://example.com/demo/checkout' },
+          },
+        },
+      },
+      BrowserB: {
+        kind: 'browser',
+        browser: {
+          window: { label: 'browser-b' },
+          tabs: {
+            main: { url: 'https://example.com/demo/secondary', initial: true },
+          },
+        },
+      },
     },
     layouts: {
       'full-slide': {
@@ -53,9 +77,16 @@ function createValidConfig() {
       },
       'dual-demo': {
         layout: 'dual-browser',
-        navigate: [
-          { source: 'BrowserA', tab: 'tabA', url: 'https://example.com/step2' },
-          { source: 'BrowserB', url: 'https://example.com/other-app' },
+        focus: 'BrowserB',
+        browser: [
+          { source: 'BrowserA', action: 'activateTab', tab: 'checkout' },
+          { source: 'BrowserB', action: 'activateTab', tab: 'main' },
+        ],
+      },
+      'api-demo': {
+        layout: 'dual-browser',
+        browser: [
+          { source: 'BrowserA', action: 'navigate', tab: 'home', url: 'https://example.com/demo/api' },
         ],
       },
     },
@@ -63,7 +94,7 @@ function createValidConfig() {
       platform: 'macos',
       stage: { x: 100, y: 50, width: 1800, height: 1168 },
       windows: {
-        Slide: { app: 'Safari', titleIncludes: 'Deckhand Deck' },
+        Slide: { app: 'Google Chrome', titleIncludes: 'Deckhand Deck' },
         Terminal: { app: 'iTerm2' },
         BrowserA: { app: 'Google Chrome', titleIncludes: 'Primary' },
         BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
@@ -90,9 +121,8 @@ function assertConfigError(callback, pathName, pattern) {
   });
 }
 
-test('built-in driver and target adapters satisfy the common metadata contract', () => {
+test('built-in driver adapter satisfies the common metadata contract', () => {
   assert.doesNotThrow(() => assertDriverAdapterContract(revealjsDriver));
-  assert.doesNotThrow(() => assertTargetAdapterContract(browserTarget));
 });
 
 test('normalizeConfig accepts the greenfield presenter-mode model', () => {
@@ -101,7 +131,19 @@ test('normalizeConfig accepts the greenfield presenter-mode model', () => {
   assert.deepEqual(config.driver, { type: 'revealjs' });
   assert.equal(config.layouts['full-slide'].audienceScene, 'Full Slide');
   assert.deepEqual(config.layouts['dual-browser'].sources, ['BrowserA', 'BrowserB']);
-  assert.deepEqual(config.sources.BrowserA, { id: 'BrowserA', kind: 'browser' });
+  assert.deepEqual(config.sources.BrowserA, {
+    id: 'BrowserA',
+    kind: 'browser',
+    browser: {
+      windowLabel: 'browser-a',
+      tabs: {
+        home: { url: 'https://example.com/demo/home', preload: true },
+        checkout: { url: 'https://example.com/demo/checkout', preload: true },
+      },
+      initialTab: 'home',
+    },
+  });
+  assert.deepEqual(config.sources.Terminal, { id: 'Terminal', kind: 'terminal' });
   assert.deepEqual(config.slides['code-walkthrough'], {
     layoutId: 'left-terminal-right-slide',
     focus: 'Terminal',
@@ -122,23 +164,26 @@ test('normalizeConfig accepts audience-only mode when presenter is omitted', () 
   assert.equal(normalized.slides.welcome.layoutId, 'full-slide');
 });
 
-test('normalizeConfig converts navigate entries into source-based command objects', () => {
+test('normalizeConfig converts slide browser actions into typed command objects', () => {
   const config = normalizeConfig(createValidConfig());
 
   assert.deepEqual(config.slides['dual-demo'].commands, [
-    {
-      type: 'navigate',
-      source: 'BrowserA',
-      tab: 'tabA',
-      url: 'https://example.com/step2',
-    },
-    {
-      type: 'navigate',
-      source: 'BrowserB',
-      tab: null,
-      url: 'https://example.com/other-app',
-    },
+    { type: 'activateTab', source: 'BrowserA', tab: 'checkout' },
+    { type: 'activateTab', source: 'BrowserB', tab: 'main' },
   ]);
+  assert.deepEqual(config.slides['api-demo'].commands, [
+    { type: 'navigate', source: 'BrowserA', tab: 'home', url: 'https://example.com/demo/api' },
+  ]);
+});
+
+test('normalizeConfig defaults preload to true and resolves the initial tab when none is marked', () => {
+  const config = createValidConfig();
+  delete config.sources.BrowserA.browser.tabs.home.initial;
+
+  const normalized = normalizeConfig(config);
+
+  assert.equal(normalized.sources.BrowserA.browser.initialTab, 'home');
+  assert.equal(normalized.sources.BrowserA.browser.tabs.home.preload, true);
 });
 
 test('normalizeConfig rejects missing sources catalog', () => {
@@ -162,25 +207,74 @@ test('normalizeConfig rejects unknown source kinds', () => {
   assertConfigError(() => normalizeConfig(config), 'sources.Slide.kind', /browser, terminal/i);
 });
 
+test('normalizeConfig rejects browser sources that omit the tab catalog', () => {
+  const config = createValidConfig();
+  delete config.sources.BrowserA.browser;
+
+  assertConfigError(() => normalizeConfig(config), 'sources.BrowserA.browser', /must be an object/i);
+});
+
+test('normalizeConfig rejects browser sources with an empty tab catalog', () => {
+  const config = createValidConfig();
+  config.sources.BrowserA.browser.tabs = {};
+
+  assertConfigError(() => normalizeConfig(config), 'sources.BrowserA.browser.tabs', /at least one tab/i);
+});
+
+test('normalizeConfig rejects browser tabs with invalid urls', () => {
+  const config = createValidConfig();
+  config.sources.BrowserA.browser.tabs.home.url = 'not-a-url';
+
+  assertConfigError(() => normalizeConfig(config), 'sources.BrowserA.browser.tabs.home.url', /absolute url/i);
+});
+
+test('normalizeConfig rejects browser catalogs with multiple initial tabs', () => {
+  const config = createValidConfig();
+  config.sources.BrowserA.browser.tabs.checkout.initial = true;
+
+  assertConfigError(() => normalizeConfig(config), 'sources.BrowserA.browser', /exactly one initial/i);
+});
+
+test('normalizeConfig rejects slide browser actions that reference unknown sources', () => {
+  const config = createValidConfig();
+  config.slides['dual-demo'].browser[0].source = 'Mystery';
+
+  assertConfigError(() => normalizeConfig(config), 'slides.dual-demo.browser[0].source', /known source/i);
+});
+
+test('normalizeConfig rejects slide browser actions against non-browser sources', () => {
+  const config = createValidConfig();
+  config.slides['dual-demo'].browser[0].source = 'Terminal';
+
+  assertConfigError(() => normalizeConfig(config), 'slides.dual-demo.browser[0].source', /browser-capable/i);
+});
+
+test('normalizeConfig rejects slide browser actions with unknown tab aliases', () => {
+  const config = createValidConfig();
+  config.slides['dual-demo'].browser[0].tab = 'missing';
+
+  assertConfigError(() => normalizeConfig(config), 'slides.dual-demo.browser[0].tab', /declared tab/i);
+});
+
+test('normalizeConfig rejects navigate actions without a url', () => {
+  const config = createValidConfig();
+  delete config.slides['api-demo'].browser[0].url;
+
+  assertConfigError(() => normalizeConfig(config), 'slides.api-demo.browser[0].url', /absolute url/i);
+});
+
+test('normalizeConfig rejects unknown browser action types', () => {
+  const config = createValidConfig();
+  config.slides['dual-demo'].browser[0].action = 'close';
+
+  assertConfigError(() => normalizeConfig(config), 'slides.dual-demo.browser[0].action', /activateTab, navigate/i);
+});
+
 test('normalizeConfig rejects layout slots that reference unknown sources', () => {
   const config = createValidConfig();
   config.layouts['full-slide'].slots[0].source = 'Mystery';
 
   assertConfigError(() => normalizeConfig(config), 'layouts.full-slide.slots[0].source', /known source/i);
-});
-
-test('normalizeConfig rejects navigate entries that reference unknown sources', () => {
-  const config = createValidConfig();
-  config.slides['dual-demo'].navigate[0].source = 'Mystery';
-
-  assertConfigError(() => normalizeConfig(config), 'slides.dual-demo.navigate[0].source', /known source/i);
-});
-
-test('normalizeConfig rejects navigate entries that target non-browser sources', () => {
-  const config = createValidConfig();
-  config.slides['dual-demo'].navigate[0].source = 'Terminal';
-
-  assertConfigError(() => normalizeConfig(config), 'slides.dual-demo.navigate[0].source', /browser-capable/i);
 });
 
 test('normalizeConfig rejects focus values that are not known sources', () => {
@@ -192,7 +286,7 @@ test('normalizeConfig rejects focus values that are not known sources', () => {
 
 test('normalizeConfig rejects presenter windows that reference unknown sources', () => {
   const config = createValidConfig();
-  config.presenter.windows.Mystery = { app: 'Safari' };
+  config.presenter.windows.Mystery = { app: 'Google Chrome' };
 
   assertConfigError(() => normalizeConfig(config), 'presenter.windows.Mystery', /known source/i);
 });
@@ -248,7 +342,7 @@ test('normalizeConfig rejects missing presenter windows when presenter mode is e
 
 test('normalizeConfig rejects malformed window selectors', () => {
   const config = createValidConfig();
-  config.presenter.windows.Slide = 'Safari';
+  config.presenter.windows.Slide = 'Google Chrome';
 
   assertConfigError(() => normalizeConfig(config), 'presenter.windows.Slide', /must be an object/i);
 });

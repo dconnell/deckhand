@@ -46,10 +46,6 @@ function isSocketOpen(socket) {
   return socket.readyState === WebSocket.OPEN;
 }
 
-function socketIdentityKey(controllerId, tabId) {
-  return `${controllerId}::${tabId ?? ''}`;
-}
-
 function serializeClient(client) {
   const payload = {
     capabilities: [...client.capabilities],
@@ -59,11 +55,6 @@ function serializeClient(client) {
 
   if (client.role === 'driver' && client.clientId !== undefined) {
     payload.clientId = client.clientId;
-  }
-
-  if (client.role === 'target') {
-    payload.controllerId = client.controllerId;
-    payload.tabId = client.tabId;
   }
 
   if (client.role === 'observer') {
@@ -92,16 +83,15 @@ function sendMessage(socket, payload) {
 }
 
 /**
- * Create the local WebSocket hub used by drivers, targets, and presenter observers.
+ * Create the local WebSocket hub used by drivers and presenter observers.
  *
  * @param {{ host: string, port: number, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Hub options.
- * @returns {{ on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<void>, stop(): Promise<void>, sendCommand(target: { role?: 'driver', controllerId?: string, tabId?: string | null }, command: Record<string, unknown>): Promise<Array<Record<string, unknown>>>, publishSticky(channel: 'presentationState', payload: Record<string, unknown>): Promise<Array<Record<string, unknown>>>, publish(channel: 'presentationState' | 'transcript', payload: Record<string, unknown>, options?: { excludeSessionId?: string }): Promise<Array<Record<string, unknown>>>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown>, targets: Array<Record<string, unknown>> }, getAddress(): { host: string, port: number } }}
+ * @returns {{ on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<void>, stop(): Promise<void>, sendCommand(target: { role: 'driver' }, command: Record<string, unknown>): Promise<Array<Record<string, unknown>>>, publishSticky(channel: 'presentationState', payload: Record<string, unknown>): Promise<Array<Record<string, unknown>>>, publish(channel: 'presentationState' | 'transcript', payload: Record<string, unknown>, options?: { excludeSessionId?: string }): Promise<Array<Record<string, unknown>>>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown> }, getAddress(): { host: string, port: number } }}
  */
 export function createHub(options) {
   const logger = options.logger ?? createNoopLogger();
   const events = createAsyncEmitter();
   const clientsBySocket = new Map();
-  const targetsByIdentity = new Map();
   const observersBySessionId = new Map();
   const stickyMessages = new Map();
   let activeDriver = null;
@@ -127,10 +117,7 @@ export function createHub(options) {
 
     if (client.role === 'observer') {
       observersBySessionId.delete(client.sessionId);
-      return;
     }
-
-    targetsByIdentity.delete(socketIdentityKey(client.controllerId, client.tabId));
   }
 
   async function handleDisconnect(socket) {
@@ -198,41 +185,6 @@ export function createHub(options) {
     await events.emit('observerRegistered', serializeClient(client));
   }
 
-  async function registerTarget(socket, message) {
-    const identityKey = socketIdentityKey(message.controllerId, message.tabId ?? null);
-    const existing = targetsByIdentity.get(identityKey);
-
-    if (existing !== undefined && existing.socket !== socket) {
-      logger.warn('Replacing target client with duplicate identity', {
-        controllerId: existing.controllerId,
-        tabId: existing.tabId,
-      });
-      clientsBySocket.delete(existing.socket);
-      targetsByIdentity.delete(identityKey);
-      await closeClientSocket(existing.socket, 4001, 'replaced-by-new-target');
-    }
-
-    const client = {
-      socket,
-      sessionId: randomUUID(),
-      role: 'target',
-      controllerId: message.controllerId,
-      tabId: message.tabId ?? null,
-      capabilities: new Set(message.capabilities ?? []),
-    };
-
-    clientsBySocket.set(socket, client);
-    targetsByIdentity.set(identityKey, client);
-
-    await sendMessage(socket, createRegisteredMessage({
-      role: 'target',
-      sessionId: client.sessionId,
-      controllerId: client.controllerId,
-      tabId: client.tabId,
-    }));
-    await events.emit('targetRegistered', serializeClient(client));
-  }
-
   async function registerClient(socket, message) {
     if (message.role === 'driver') {
       await registerDriver(socket, message);
@@ -244,7 +196,7 @@ export function createHub(options) {
       return;
     }
 
-    await registerTarget(socket, message);
+    await sendProtocolError(socket, 'invalid_message', 'role must be either "driver" or "observer"');
   }
 
   async function sendProtocolError(socket, code, message) {
@@ -372,22 +324,6 @@ export function createHub(options) {
     await sendProtocolError(socket, 'unsupported_type', `Unsupported message type: ${message.type}`);
   }
 
-  function getMatchingTargets(target) {
-    if (typeof target.controllerId !== 'string' || target.controllerId.trim() === '') {
-      throw new Error('Target selector must include controllerId');
-    }
-
-    const controllerId = target.controllerId.trim();
-    const tabId = typeof target.tabId === 'string' && target.tabId.trim() !== '' ? target.tabId.trim() : null;
-
-    if (tabId !== null) {
-      const match = targetsByIdentity.get(socketIdentityKey(controllerId, tabId));
-      return match === undefined ? [] : [match];
-    }
-
-    return [...targetsByIdentity.values()].filter((client) => client.controllerId === controllerId);
-  }
-
   return {
     on(eventName, handler) {
       events.on(eventName, handler);
@@ -464,7 +400,6 @@ export function createHub(options) {
       });
 
       clientsBySocket.clear();
-      targetsByIdentity.clear();
       observersBySessionId.clear();
       stickyMessages.clear();
       activeDriver = null;
@@ -473,55 +408,17 @@ export function createHub(options) {
     },
 
     async sendCommand(target, command) {
-      const protocolMessage = createCommandMessage(command);
-
-      if (target.role === 'driver') {
-        if (activeDriver === null) {
-          logger.warn('No active driver connected for command', { command });
-          return [];
-        }
-
-        await sendMessage(activeDriver.socket, protocolMessage);
-        return [serializeClient(activeDriver)];
+      if (target.role !== 'driver') {
+        throw new Error('sendCommand only supports the driver boundary');
       }
 
-      const recipients = getMatchingTargets(target);
-
-      if (recipients.length === 0) {
-        logger.warn('No target clients matched selector', { target });
+      if (activeDriver === null) {
+        logger.warn('No active driver connected for command', { command });
         return [];
       }
 
-      const delivered = [];
-      let firstError = null;
-
-      for (const recipient of recipients) {
-        if (recipient.capabilities.size > 0 && !recipient.capabilities.has(command.type)) {
-          logger.warn('Target does not advertise command capability', {
-            commandType: command.type,
-            controllerId: recipient.controllerId,
-            tabId: recipient.tabId,
-          });
-        }
-
-        try {
-          await sendMessage(recipient.socket, protocolMessage);
-          delivered.push(serializeClient(recipient));
-        } catch (error) {
-          firstError ??= error;
-          logger.error('Failed to route command to target client', {
-            controllerId: recipient.controllerId,
-            error: error instanceof Error ? error.message : String(error),
-            tabId: recipient.tabId,
-          });
-        }
-      }
-
-      if (firstError !== null) {
-        throw firstError;
-      }
-
-      return delivered;
+      await sendMessage(activeDriver.socket, createCommandMessage(command));
+      return [serializeClient(activeDriver)];
     },
 
     async publish(channel, payload, publishOptions = {}) {
@@ -539,7 +436,6 @@ export function createHub(options) {
         activeDriver: activeDriver === null ? null : serializeClient(activeDriver),
         observers: [...observersBySessionId.values()].map((client) => serializeClient(client)),
         sticky: Object.fromEntries(stickyMessages.entries()),
-        targets: [...targetsByIdentity.values()].map((client) => serializeClient(client)),
       };
     },
 

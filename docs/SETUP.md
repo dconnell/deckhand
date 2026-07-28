@@ -8,7 +8,7 @@ Deckhand is macOS-only. Each presentation lives under
 Advancing a local deck coordinates:
 
 1. switch OBS scenes for the audience
-2. send generic target commands such as browser navigation
+2. drive Deckhand-owned Chrome windows and tabs (activation and navigation)
 3. local presenter-stage window arrangement and focus
 4. teleprompter state and optional local STT
 
@@ -123,8 +123,8 @@ Either:
 - Or use the configured global hotkeys: **F13** = next, **F14** = previous
 
 When you advance, the coordinator switches the OBS scene, publishes presenter
-state (Hammerspoon resizes windows, teleprompter updates), and sends any
-configured target commands.
+state (Hammerspoon resizes windows, teleprompter updates), and dispatches any
+configured browser commands to Deckhand-owned tabs.
 
 ## Validate The Runtime
 
@@ -206,14 +206,43 @@ npm run presenter:stt -- --once my-talk
 
 On first use, macOS may prompt for microphone access for the terminal or Node.
 
-## Browser Navigation Targets
+## Browser Sources
 
-To use the sample `navigate` commands:
+Deckhand owns its own Chrome session and the windows/tabs it needs for a
+presentation. No userscript is required.
 
-1. Install the `violentmonkey/browser.user.js` userscript.
-2. Register browser target identities using the source IDs declared in
-   `sources`. For the sample config, register `BrowserA` (optionally with a
-   `tabId` such as `tabA`) and `BrowserB`.
+When the coordinator starts, it launches one dedicated Chrome process using a
+separate profile (so your personal Chrome usage stays untouched), then creates
+one window per browser source and preloads the declared tabs.
+
+Configure browser sources and their tab catalogs under `sources.<id>.browser`
+(see [CONFIG.md](CONFIG.md)). Slide actions address logical `source` IDs and
+source-local tab aliases, for example:
+
+```json
+"slides": {
+  "dual-demo": {
+    "layout": "dual-browser",
+    "browser": [
+      { "source": "BrowserA", "action": "activateTab", "tab": "checkout" },
+      { "source": "BrowserB", "action": "activateTab", "tab": "main" }
+    ]
+  }
+}
+```
+
+Optional `chrome` settings let you override the executable path, profile
+directory, and debugging port:
+
+```json
+"chrome": {
+  "executablePath": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "profileDir": "/tmp/deckhand-chrome",
+  "debugPort": 9222
+}
+```
+
+Browser-session health is reported at `/status.json` under `browserSession`.
 
 ## Hotkeys
 

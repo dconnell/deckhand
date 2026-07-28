@@ -31,9 +31,32 @@ function createConfig(port) {
     hub: { host: '127.0.0.1', port },
     hotkeys: { next: 'F13', prev: 'F14' },
     sources: {
-      Slide: { id: 'Slide', kind: 'browser' },
-      BrowserA: { id: 'BrowserA', kind: 'browser' },
-      BrowserB: { id: 'BrowserB', kind: 'browser' },
+      Slide: {
+        id: 'Slide',
+        kind: 'browser',
+        browser: { windowLabel: 'slide', tabs: { deck: { url: 'http://deck/', preload: true } }, initialTab: 'deck' },
+      },
+      BrowserA: {
+        id: 'BrowserA',
+        kind: 'browser',
+        browser: {
+          windowLabel: 'browser-a',
+          tabs: {
+            home: { url: 'https://example.com/home', preload: true },
+            checkout: { url: 'https://example.com/checkout', preload: true },
+          },
+          initialTab: 'home',
+        },
+      },
+      BrowserB: {
+        id: 'BrowserB',
+        kind: 'browser',
+        browser: {
+          windowLabel: 'browser-b',
+          tabs: { main: { url: 'https://example.com/other', preload: true } },
+          initialTab: 'main',
+        },
+      },
     },
     layouts: {
       'full-slide': {
@@ -58,18 +81,8 @@ function createConfig(port) {
         focus: 'BrowserB',
         script: 'BrowserA goes left. BrowserB goes right.',
         commands: [
-          {
-            type: 'navigate',
-            source: 'BrowserA',
-            tab: 'tabA',
-            url: 'https://example.com/step2',
-          },
-          {
-            type: 'navigate',
-            source: 'BrowserB',
-            tab: null,
-            url: 'https://example.com/other-app',
-          },
+          { type: 'activateTab', source: 'BrowserA', tab: 'checkout' },
+          { type: 'navigate', source: 'BrowserB', tab: 'main', url: 'https://example.com/other-app' },
         ],
       },
     },
@@ -77,7 +90,7 @@ function createConfig(port) {
       platform: 'macos',
       stage: { x: 0, y: 0, width: 1800, height: 1168 },
       windows: {
-        Slide: { app: 'Safari' },
+        Slide: { app: 'Google Chrome' },
         BrowserA: { app: 'Google Chrome', titleIncludes: 'Primary' },
         BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
       },
@@ -114,7 +127,7 @@ async function flushMessages() {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 
-test('coordinator integration publishes presentation state, routes targets, and hotkeys to the driver', async () => {
+test('coordinator integration publishes presentation state, dispatches browser commands, and relays hotkeys', async () => {
   const logger = createLogger();
   const obsCalls = [];
   const hub = createHub({ host: '127.0.0.1', port: 0, logger });
@@ -133,6 +146,15 @@ test('coordinator integration publishes presentation state, routes targets, and 
     },
   };
 
+  const executedCommands = [];
+  const executor = {
+    async start() {},
+    async stop() {},
+    async execute(command) {
+      executedCommands.push(command);
+    },
+  };
+
   const coordinator = createCoordinator({
     config: createConfig(port),
     obs: {
@@ -147,19 +169,16 @@ test('coordinator integration publishes presentation state, routes targets, and 
     },
     hub,
     hotkeys,
+    executor,
     logger,
   });
 
   const driver = await createClient(port);
-  const targetA = await createClient(port);
-  const targetB = await createClient(port);
   const observer = await createClient(port);
 
   try {
     await coordinator.start();
     await driver.send({ type: 'register', role: 'driver', capabilities: ['next', 'prev', 'goTo'] });
-    await targetA.send({ type: 'register', role: 'target', controllerId: 'BrowserA', tabId: 'tabA', capabilities: ['navigate'] });
-    await targetB.send({ type: 'register', role: 'target', controllerId: 'BrowserB', capabilities: ['navigate'] });
     await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
 
     await driver.send({
@@ -175,14 +194,10 @@ test('coordinator integration publishes presentation state, routes targets, and 
     await flushMessages();
 
     assert.deepEqual(obsCalls, ['Dual Browser']);
-    assert.deepEqual(
-      targetA.messages.filter((message) => message.type === 'command').map((message) => message.command),
-      [{ type: 'navigate', url: 'https://example.com/step2' }],
-    );
-    assert.deepEqual(
-      targetB.messages.filter((message) => message.type === 'command').map((message) => message.command),
-      [{ type: 'navigate', url: 'https://example.com/other-app' }],
-    );
+    assert.deepEqual(executedCommands, [
+      { type: 'activateTab', source: 'BrowserA', tab: 'checkout' },
+      { type: 'navigate', source: 'BrowserB', tab: 'main', url: 'https://example.com/other-app' },
+    ]);
     assert.deepEqual(
       driver.messages.filter((message) => message.type === 'command').map((message) => message.command),
       [{ type: 'next' }, { type: 'prev' }],
@@ -216,7 +231,7 @@ test('coordinator integration publishes presentation state, routes targets, and 
       },
     ]);
   } finally {
-    await Promise.all([driver.close(), targetA.close(), targetB.close(), observer.close()]);
+    await Promise.all([driver.close(), observer.close()]);
     await coordinator.stop();
     await hub.stop();
   }

@@ -27,9 +27,20 @@ function createConfig() {
     hub: { host: '127.0.0.1', port: 8765 },
     hotkeys: { next: 'F13', prev: 'F14' },
     sources: {
-      Slide: { id: 'Slide', kind: 'browser' },
-      BrowserA: { id: 'BrowserA', kind: 'browser' },
-      BrowserB: { id: 'BrowserB', kind: 'browser' },
+      Slide: { id: 'Slide', kind: 'browser', browser: { windowLabel: null, tabs: { deck: { url: 'http://deck/', preload: true } }, initialTab: 'deck' } },
+      BrowserA: {
+        id: 'BrowserA',
+        kind: 'browser',
+        browser: {
+          windowLabel: 'browser-a',
+          tabs: {
+            home: { url: 'https://example.com/home', preload: true },
+            checkout: { url: 'https://example.com/checkout', preload: true },
+          },
+          initialTab: 'home',
+        },
+      },
+      BrowserB: { id: 'BrowserB', kind: 'browser', browser: { windowLabel: 'browser-b', tabs: { main: { url: 'https://example.com/other', preload: true } }, initialTab: 'main' } },
     },
     layouts: {
       'full-slide': {
@@ -60,18 +71,8 @@ function createConfig() {
         focus: 'BrowserB',
         script: 'Demo script',
         commands: [
-          {
-            type: 'navigate',
-            source: 'BrowserA',
-            tab: 'tabA',
-            url: 'https://example.com/step2',
-          },
-          {
-            type: 'navigate',
-            source: 'BrowserB',
-            tab: null,
-            url: 'https://example.com/other-app',
-          },
+          { type: 'activateTab', source: 'BrowserA', tab: 'checkout' },
+          { type: 'navigate', source: 'BrowserB', tab: 'main', url: 'https://example.com/other-app' },
         ],
       },
     },
@@ -79,7 +80,7 @@ function createConfig() {
       platform: 'macos',
       stage: { x: 0, y: 0, width: 1800, height: 1168 },
       windows: {
-        Slide: { app: 'Safari' },
+        Slide: { app: 'Google Chrome' },
         BrowserA: { app: 'Google Chrome', titleIncludes: 'Primary' },
         BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
       },
@@ -93,7 +94,7 @@ function createConfig() {
 function createFakeHub() {
   const handlers = new Map();
   const state = {
-    sentCommands: [],
+    sentDriverCommands: [],
     stickyPublishes: [],
     started: false,
     stopped: false,
@@ -119,13 +120,36 @@ function createFakeHub() {
       state.stopped = true;
     },
     async sendCommand(target, command) {
-      state.sentCommands.push({ target, command });
+      state.sentDriverCommands.push({ target, command });
     },
     async publishSticky(channel, payload) {
       state.stickyPublishes.push({ channel, payload });
     },
     getSnapshot() {
-      return { activeDriver: null, observers: [], sticky: {}, targets: [] };
+      return { activeDriver: null, observers: [], sticky: {} };
+    },
+  };
+}
+
+function createFakeExecutor() {
+  const state = { started: false, stopped: false, executedCommands: [], nextError: null };
+
+  return {
+    state,
+    async start() {
+      state.started = true;
+    },
+    async stop() {
+      state.stopped = true;
+    },
+    async execute(command) {
+      state.executedCommands.push(command);
+
+      if (state.nextError !== null) {
+        const error = state.nextError;
+        state.nextError = null;
+        throw error;
+      }
     },
   };
 }
@@ -171,9 +195,18 @@ function createFakeObs() {
   };
 }
 
-test('coordinator starts obs then hub then hotkeys', async () => {
+test('coordinator starts obs then hub then executor then hotkeys', async () => {
   const calls = [];
   const logger = createLogger();
+  const executor = {
+    async start() {
+      calls.push('executor.start');
+    },
+    async stop() {
+      calls.push('executor.stop');
+    },
+    async execute() {},
+  };
   const obs = {
     async connect() {
       calls.push('obs.connect');
@@ -197,7 +230,7 @@ test('coordinator starts obs then hub then hotkeys', async () => {
     async sendCommand() {},
     async publishSticky() {},
     getSnapshot() {
-      return { activeDriver: null, observers: [], sticky: {}, targets: [] };
+      return { activeDriver: null, observers: [], sticky: {} };
     },
   };
   const hotkeys = {
@@ -210,16 +243,23 @@ test('coordinator starts obs then hub then hotkeys', async () => {
     },
   };
 
-  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, logger });
+  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, executor, logger });
 
   await coordinator.start();
 
-  assert.deepEqual(calls, ['obs.connect', 'hub.start', 'hotkeys.start']);
+  assert.deepEqual(calls, ['obs.connect', 'hub.start', 'executor.start', 'hotkeys.start']);
   assert.match(logger.infos[0].message, /starting/i);
 });
 
-test('coordinator stops hotkeys then hub then obs', async () => {
+test('coordinator stops hotkeys then executor then hub then obs', async () => {
   const calls = [];
+  const executor = {
+    async start() {},
+    async stop() {
+      calls.push('executor.stop');
+    },
+    async execute() {},
+  };
   const coordinator = createCoordinator({
     config: createConfig(),
     obs: {
@@ -241,7 +281,7 @@ test('coordinator stops hotkeys then hub then obs', async () => {
       async sendCommand() {},
       async publishSticky() {},
       getSnapshot() {
-        return { activeDriver: null, observers: [], sticky: {}, targets: [] };
+        return { activeDriver: null, observers: [], sticky: {} };
       },
     },
     hotkeys: {
@@ -251,13 +291,14 @@ test('coordinator stops hotkeys then hub then obs', async () => {
         calls.push('hotkeys.stop');
       },
     },
+    executor,
     logger: createLogger(),
   });
 
   await coordinator.start();
   await coordinator.stop();
 
-  assert.deepEqual(calls, ['hotkeys.stop', 'hub.stop', 'obs.disconnect']);
+  assert.deepEqual(calls, ['hotkeys.stop', 'executor.stop', 'hub.stop', 'obs.disconnect']);
 });
 
 test('coordinator publishes sticky presentation state for scene-only slides', async () => {
@@ -265,7 +306,8 @@ test('coordinator publishes sticky presentation state for scene-only slides', as
   const hub = createFakeHub();
   const hotkeys = createFakeHotkeys();
   const obs = createFakeObs();
-  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, logger });
+  const executor = createFakeExecutor();
+  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, executor, logger });
 
   await coordinator.start();
   await hub.emit('driverPositionChanged', { id: 'intro', index: { h: 0, v: 0 }, meta: {} });
@@ -288,38 +330,34 @@ test('coordinator publishes sticky presentation state for scene-only slides', as
         },
       ],
       windowBindings: {
-        Slide: { app: 'Safari' },
+        Slide: { app: 'Google Chrome' },
       },
       focus: null,
       script: null,
       commands: [],
     },
   });
-  assert.deepEqual(hub.state.sentCommands, []);
+  assert.deepEqual(executor.state.executedCommands, []);
 });
 
-test('coordinator publishes state and multiple target commands for a slide', async () => {
+test('coordinator dispatches typed slide commands through the injected executor', async () => {
   const logger = createLogger();
   const hub = createFakeHub();
   const hotkeys = createFakeHotkeys();
   const obs = createFakeObs();
-  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, logger });
+  const executor = createFakeExecutor();
+  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, executor, logger });
 
   await coordinator.start();
   await hub.emit('driverPositionChanged', { id: 'demo', index: { h: 1, v: 0 }, meta: {} });
 
   assert.deepEqual(obs.state.scenes, ['Dual Browser']);
   assert.equal(hub.state.stickyPublishes[0].payload.seq, 1);
-  assert.deepEqual(hub.state.sentCommands, [
-    {
-      target: { controllerId: 'BrowserA', tabId: 'tabA' },
-      command: { type: 'navigate', url: 'https://example.com/step2' },
-    },
-    {
-      target: { controllerId: 'BrowserB' },
-      command: { type: 'navigate', url: 'https://example.com/other-app' },
-    },
+  assert.deepEqual(executor.state.executedCommands, [
+    { type: 'activateTab', source: 'BrowserA', tab: 'checkout' },
+    { type: 'navigate', source: 'BrowserB', tab: 'main', url: 'https://example.com/other-app' },
   ]);
+  assert.deepEqual(hub.state.sentDriverCommands, []);
 });
 
 test('coordinator warns on unknown slide ids without crashing', async () => {
@@ -327,7 +365,8 @@ test('coordinator warns on unknown slide ids without crashing', async () => {
   const hub = createFakeHub();
   const hotkeys = createFakeHotkeys();
   const obs = createFakeObs();
-  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, logger });
+  const executor = createFakeExecutor();
+  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, executor, logger });
 
   await coordinator.start();
   await hub.emit('driverPositionChanged', { id: 'missing', index: { h: 9, v: 0 }, meta: {} });
@@ -341,7 +380,7 @@ test('coordinator continues after observer publish failure', async () => {
   const logger = createLogger();
   const hotkeys = createFakeHotkeys();
   const obs = createFakeObs();
-  const sent = [];
+  const executor = createFakeExecutor();
   const hub = {
     handlers: new Map(),
     on(eventName, handler) {
@@ -349,9 +388,7 @@ test('coordinator continues after observer publish failure', async () => {
     },
     async start() {},
     async stop() {},
-    async sendCommand(target, command) {
-      sent.push({ target, command });
-    },
+    async sendCommand() {},
     async publishSticky() {
       throw new Error('observer offline');
     },
@@ -359,53 +396,34 @@ test('coordinator continues after observer publish failure', async () => {
       return this.handlers.get('driverPositionChanged')?.(payload);
     },
     getSnapshot() {
-      return { activeDriver: null, observers: [], sticky: {}, targets: [] };
+      return { activeDriver: null, observers: [], sticky: {} };
     },
   };
-  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, logger });
+  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, executor, logger });
 
   await coordinator.start();
   await hub.emitPosition({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
 
   assert.deepEqual(obs.state.scenes, ['Dual Browser']);
-  assert.equal(sent.length, 2);
+  assert.equal(executor.state.executedCommands.length, 2);
   assert.match(logger.errors[0].message, /Observer state publish failed/i);
 });
 
-test('coordinator continues after partial command failures', async () => {
+test('coordinator continues after partial executor failures', async () => {
   const logger = createLogger();
   const hotkeys = createFakeHotkeys();
   const obs = createFakeObs();
-  const sent = [];
-  const hub = {
-    handlers: new Map(),
-    on(eventName, handler) {
-      this.handlers.set(eventName, handler);
-    },
-    async start() {},
-    async stop() {},
-    async sendCommand(target, command) {
-      sent.push({ target, command });
-      if (target.controllerId === 'BrowserA') {
-        throw new Error('tab offline');
-      }
-    },
-    async publishSticky() {},
-    async emitPosition(payload) {
-      return this.handlers.get('driverPositionChanged')?.(payload);
-    },
-    getSnapshot() {
-      return { activeDriver: null, observers: [], sticky: {}, targets: [] };
-    },
-  };
-  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, logger });
+  const executor = createFakeExecutor();
+  const hub = createFakeHub();
+  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, executor, logger });
 
   await coordinator.start();
-  await hub.emitPosition({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+  executor.state.nextError = new Error('browser session degraded');
+  await hub.emit('driverPositionChanged', { id: 'demo', index: { h: 1, v: 0 }, meta: {} });
 
   assert.deepEqual(obs.state.scenes, ['Dual Browser']);
-  assert.equal(sent.length, 2);
-  assert.match(logger.errors[0].message, /Target command failed/i);
+  assert.equal(executor.state.executedCommands.length, 2);
+  assert.match(logger.errors[0].message, /Browser command failed/i);
 });
 
 test('coordinator routes next and prev hotkeys to the active driver boundary', async () => {
@@ -413,16 +431,30 @@ test('coordinator routes next and prev hotkeys to the active driver boundary', a
   const hub = createFakeHub();
   const hotkeys = createFakeHotkeys();
   const obs = createFakeObs();
-  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, logger });
+  const executor = createFakeExecutor();
+  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, executor, logger });
 
   await coordinator.start();
   await hotkeys.emit('action', { type: 'next' });
   await hotkeys.emit('action', { type: 'prev' });
 
-  assert.deepEqual(hub.state.sentCommands, [
+  assert.deepEqual(hub.state.sentDriverCommands, [
     { target: { role: 'driver' }, command: { type: 'next' } },
     { target: { role: 'driver' }, command: { type: 'prev' } },
   ]);
+});
+
+test('coordinator runs without an executor for audience-only slides', async () => {
+  const logger = createLogger();
+  const hub = createFakeHub();
+  const hotkeys = createFakeHotkeys();
+  const obs = createFakeObs();
+  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, executor: null, logger });
+
+  await coordinator.start();
+  await hub.emit('driverPositionChanged', { id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+
+  assert.deepEqual(obs.state.scenes, ['Full Slide']);
 });
 
 test('coordinator cleans up partial startup if a dependency fails to start', async () => {
@@ -452,8 +484,17 @@ test('coordinator cleans up partial startup if a dependency fails to start', asy
       async sendCommand() {},
       async publishSticky() {},
       getSnapshot() {
-        return { activeDriver: null, observers: [], sticky: {}, targets: [] };
+        return { activeDriver: null, observers: [], sticky: {} };
       },
+    },
+    executor: {
+      async start() {
+        calls.push('executor.start');
+      },
+      async stop() {
+        calls.push('executor.stop');
+      },
+      async execute() {},
     },
     hotkeys: {
       on() {},
@@ -469,5 +510,13 @@ test('coordinator cleans up partial startup if a dependency fails to start', asy
   });
 
   await assert.rejects(() => coordinator.start(), /native start failed/i);
-  assert.deepEqual(calls, ['obs.connect', 'hub.start', 'hotkeys.start', 'hub.stop', 'obs.disconnect']);
+  assert.deepEqual(calls, [
+    'obs.connect',
+    'hub.start',
+    'executor.start',
+    'hotkeys.start',
+    'executor.stop',
+    'hub.stop',
+    'obs.disconnect',
+  ]);
 });

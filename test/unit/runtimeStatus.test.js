@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { buildRuntimeStatus } from '../../src/runtimeStatus.js';
 
-test('buildRuntimeStatus returns a compact operator-facing snapshot', () => {
+test('buildRuntimeStatus returns a compact operator-facing snapshot with browser-session health', () => {
   assert.deepEqual(buildRuntimeStatus({
     currentPresentationState: {
       type: 'presentationState',
@@ -24,7 +24,14 @@ test('buildRuntimeStatus returns a compact operator-facing snapshot', () => {
       activeDriver: { role: 'driver', sessionId: 'driver-1' },
       observers: [{ role: 'observer', sessionId: 'observer-1' }, { role: 'observer', sessionId: 'observer-2' }],
       sticky: {},
-      targets: [{ role: 'target', sessionId: 'target-1' }],
+    },
+    browserSessionStatus: {
+      connected: true,
+      chromePid: 47213,
+      sources: {
+        Slide: { ready: true, activeTab: 'deck', tabs: ['deck'] },
+        BrowserA: { ready: true, activeTab: 'checkout', tabs: ['home', 'checkout'] },
+      },
     },
     obsConnected: true,
     presenterEnabled: true,
@@ -37,7 +44,14 @@ test('buildRuntimeStatus returns a compact operator-facing snapshot', () => {
       port: 8765,
       driverConnected: true,
       observerCount: 2,
-      targetCount: 1,
+    },
+    browserSession: {
+      connected: true,
+      chromePid: 47213,
+      sources: {
+        Slide: { ready: true, activeTab: 'deck', tabs: ['deck'] },
+        BrowserA: { ready: true, activeTab: 'checkout', tabs: ['home', 'checkout'] },
+      },
     },
     current: {
       seq: 12,
@@ -52,7 +66,7 @@ test('buildRuntimeStatus returns a compact operator-facing snapshot', () => {
   });
 });
 
-test('buildRuntimeStatus returns null current state before the first slide', () => {
+test('buildRuntimeStatus reports degraded browser-session state before the session is ready', () => {
   assert.deepEqual(buildRuntimeStatus({
     currentPresentationState: null,
     hubAddress: { host: '127.0.0.1', port: 8765 },
@@ -60,7 +74,11 @@ test('buildRuntimeStatus returns null current state before the first slide', () 
       activeDriver: null,
       observers: [],
       sticky: {},
-      targets: [],
+    },
+    browserSessionStatus: {
+      connected: false,
+      chromePid: null,
+      sources: {},
     },
     obsConnected: false,
     presenterEnabled: false,
@@ -73,7 +91,41 @@ test('buildRuntimeStatus returns null current state before the first slide', () 
       port: 8765,
       driverConnected: false,
       observerCount: 0,
-      targetCount: 0,
+    },
+    browserSession: {
+      connected: false,
+      chromePid: null,
+      sources: {},
+    },
+    current: null,
+  });
+});
+
+test('buildRuntimeStatus surfaces not-ready sources without dropping them', () => {
+  assert.deepEqual(buildRuntimeStatus({
+    currentPresentationState: null,
+    hubAddress: { host: '127.0.0.1', port: 8765 },
+    hubSnapshot: { activeDriver: null, observers: [], sticky: {} },
+    browserSessionStatus: {
+      connected: false,
+      chromePid: 47213,
+      sources: {
+        BrowserA: { ready: false, activeTab: 'home', tabs: ['home', 'checkout'] },
+      },
+    },
+    obsConnected: true,
+    presenterEnabled: true,
+  }), {
+    service: 'deckhand',
+    presenterEnabled: true,
+    obs: { connected: true },
+    hub: { host: '127.0.0.1', port: 8765, driverConnected: false, observerCount: 0 },
+    browserSession: {
+      connected: false,
+      chromePid: 47213,
+      sources: {
+        BrowserA: { ready: false, activeTab: 'home', tabs: ['home', 'checkout'] },
+      },
     },
     current: null,
   });

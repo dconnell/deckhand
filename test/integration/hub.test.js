@@ -50,44 +50,21 @@ async function flushMessages() {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 
-test('hub registers clients and routes controller-wide and tab-specific commands', async () => {
+test('hub rejects target registrations now that the role is removed', async () => {
   const logger = createLogger();
   const hub = createHub({ host: '127.0.0.1', port: 0, logger });
 
   await hub.start();
   const { port } = hub.getAddress();
-  const targetA = await createClient(port);
-  const targetB = await createClient(port);
-  const other = await createClient(port);
+  const target = await createClient(port);
 
   try {
-    await targetA.send({ type: 'register', role: 'target', controllerId: 'demo1', tabId: 'tabA', capabilities: ['navigate'] });
-    await targetB.send({ type: 'register', role: 'target', controllerId: 'demo1', tabId: 'tabB', capabilities: ['navigate'] });
-    await other.send({ type: 'register', role: 'target', controllerId: 'demo2', capabilities: ['navigate'] });
+    await target.send({ type: 'register', role: 'target', controllerId: 'demo1', capabilities: ['navigate'] });
 
-    await hub.sendCommand({ controllerId: 'demo1', tabId: null }, { type: 'navigate', url: 'https://example.com/one' });
-    await hub.sendCommand({ controllerId: 'demo1', tabId: 'tabA' }, { type: 'navigate', url: 'https://example.com/two' });
-    await flushMessages();
-
-    assert.equal(targetA.messages.filter((message) => message.type === 'registered').length, 1);
-    assert.equal(targetB.messages.filter((message) => message.type === 'registered').length, 1);
-    assert.deepEqual(
-      targetA.messages.filter((message) => message.type === 'command').map((message) => message.command),
-      [
-        { type: 'navigate', url: 'https://example.com/one' },
-        { type: 'navigate', url: 'https://example.com/two' },
-      ],
-    );
-    assert.deepEqual(
-      targetB.messages.filter((message) => message.type === 'command').map((message) => message.command),
-      [{ type: 'navigate', url: 'https://example.com/one' }],
-    );
-    assert.deepEqual(
-      other.messages.filter((message) => message.type === 'command').map((message) => message.command),
-      [],
-    );
+    assert.equal(target.messages.at(-1).type, 'error');
+    assert.match(target.messages.at(-1).message, /role must be either "driver" or "observer"/i);
   } finally {
-    await Promise.all([targetA.close(), targetB.close(), other.close()]);
+    await target.close();
     await hub.stop();
   }
 });
@@ -100,7 +77,6 @@ test('hub replays the latest sticky presentation state to late-joining observers
   const { port } = hub.getAddress();
   const observer = await createClient(port);
   const driver = await createClient(port);
-  const target = await createClient(port);
 
   try {
     await hub.publishSticky('presentationState', {
@@ -116,7 +92,6 @@ test('hub replays the latest sticky presentation state to late-joining observers
 
     await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
     await driver.send({ type: 'register', role: 'driver', capabilities: ['next', 'prev'] });
-    await target.send({ type: 'register', role: 'target', controllerId: 'demo1', capabilities: ['navigate'] });
     await flushMessages();
 
     assert.deepEqual(
@@ -133,9 +108,8 @@ test('hub replays the latest sticky presentation state to late-joining observers
       }],
     );
     assert.deepEqual(driver.messages.filter((message) => message.type === 'presentationState'), []);
-    assert.deepEqual(target.messages.filter((message) => message.type === 'presentationState'), []);
   } finally {
-    await Promise.all([observer.close(), driver.close(), target.close()]);
+    await Promise.all([observer.close(), driver.close()]);
     await hub.stop();
   }
 });
@@ -219,12 +193,12 @@ test('hub rejects non-observer transcript senders and malformed messages without
 
   await hub.start();
   const { port } = hub.getAddress();
-  const target = await createClient(port);
+  const driver = await createClient(port);
   const malformed = await createClient(port);
 
   try {
-    await target.send({ type: 'register', role: 'target', controllerId: 'demo1', capabilities: ['navigate'] });
-    await target.send({
+    await driver.send({ type: 'register', role: 'driver', capabilities: ['next', 'prev'] });
+    await driver.send({
       type: 'transcript',
       source: 'whisper',
       text: 'should fail',
@@ -233,11 +207,11 @@ test('hub rejects non-observer transcript senders and malformed messages without
     malformed.socket.send('{not-json');
     await flushMessages();
 
-    assert.equal(target.messages.at(-1).type, 'error');
-    assert.match(target.messages.at(-1).message, /Only observer clients/i);
+    assert.equal(driver.messages.at(-1).type, 'error');
+    assert.match(driver.messages.at(-1).message, /Only observer clients/i);
     assert.equal(malformed.messages.at(-1).type, 'error');
   } finally {
-    await Promise.all([target.close(), malformed.close()]);
+    await Promise.all([driver.close(), malformed.close()]);
     await hub.stop();
   }
 });
@@ -263,6 +237,66 @@ test('hub routes observer driverCommand messages to the active driver', async ()
     );
   } finally {
     await Promise.all([driver.close(), observer.close()]);
+    await hub.stop();
+  }
+});
+
+test('hub sendCommand routes driver-bound commands to the active driver only', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const driver = await createClient(port);
+
+  try {
+    await driver.send({ type: 'register', role: 'driver', capabilities: ['next', 'prev'] });
+    await hub.sendCommand({ role: 'driver' }, { type: 'next' });
+    await flushMessages();
+
+    assert.deepEqual(
+      driver.messages.filter((message) => message.type === 'command').map((message) => message.command),
+      [{ type: 'next' }],
+    );
+  } finally {
+    await driver.close();
+    await hub.stop();
+  }
+});
+
+test('hub sendCommand rejects non-driver targets', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+
+  await hub.start();
+
+  try {
+    await assert.rejects(
+      hub.sendCommand({ role: 'observer' }, { type: 'next' }),
+      /only supports the driver boundary/i,
+    );
+  } finally {
+    await hub.stop();
+  }
+});
+
+test('hub snapshot no longer exposes a target catalog', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const observer = await createClient(port);
+
+  try {
+    await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+    const snapshot = hub.getSnapshot();
+
+    assert.deepEqual(Object.keys(snapshot).sort(), ['activeDriver', 'observers', 'sticky']);
+    assert.equal(snapshot.activeDriver, null);
+    assert.equal(snapshot.observers.length, 1);
+  } finally {
+    await observer.close();
     await hub.stop();
   }
 });

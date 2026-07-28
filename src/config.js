@@ -5,6 +5,7 @@ const BUILTIN_DRIVER_TYPES = ['revealjs'];
 const VALID_SLOT_POSITIONS = new Set(['full', 'left', 'right']);
 const BROWSER_SOURCE_KIND = 'browser';
 const VALID_SOURCE_KINDS = new Set([BROWSER_SOURCE_KIND, 'terminal']);
+const VALID_BROWSER_ACTIONS = new Set(['activateTab', 'navigate']);
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -93,7 +94,11 @@ function normalizeObsUrl(value, pathName) {
 }
 
 function normalizeNavigateUrl(value, pathName) {
-  const url = assertNonEmptyString(value, pathName);
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new ConfigError(pathName, 'must be a valid absolute URL');
+  }
+
+  const url = value.trim();
 
   try {
     const parsed = new URL(url);
@@ -119,12 +124,83 @@ function normalizeDriver(driver) {
   return { type };
 }
 
+function normalizeBrowserWindow(window, pathName) {
+  if (window === undefined) {
+    return { label: null };
+  }
+
+  const value = assertPlainObject(window, pathName);
+  const normalized = { label: null };
+
+  if (value.label !== undefined) {
+    normalized.label = assertNonEmptyString(value.label, `${pathName}.label`);
+  }
+
+  return normalized;
+}
+
+function normalizeBrowserTab(alias, entry, pathName) {
+  const value = assertPlainObject(entry, pathName);
+  const url = normalizeNavigateUrl(value.url, `${pathName}.url`);
+
+  const tab = { url };
+
+  if (value.preload !== undefined) {
+    tab.preload = assertBoolean(value.preload, `${pathName}.preload`);
+  } else {
+    tab.preload = true;
+  }
+
+  if (value.initial !== undefined) {
+    tab.initial = assertBoolean(value.initial, `${pathName}.initial`);
+  }
+
+  return tab;
+}
+
+function normalizeBrowserCatalog(browser, pathName) {
+  const value = assertPlainObject(browser, pathName);
+  const tabsValue = assertPlainObject(value.tabs, `${pathName}.tabs`);
+  const tabEntries = Object.entries(tabsValue);
+
+  if (tabEntries.length === 0) {
+    throw new ConfigError(`${pathName}.tabs`, 'must declare at least one tab');
+  }
+
+  const tabs = Object.fromEntries(
+    tabEntries.map(([alias, entry]) => {
+      const cleanAlias = assertNonEmptyString(alias, `${pathName}.tabs`);
+      return [cleanAlias, normalizeBrowserTab(cleanAlias, entry, `${pathName}.tabs.${alias}`)];
+    }),
+  );
+
+  const initialEntries = Object.entries(tabs).filter(([, tab]) => tab.initial === true);
+
+  if (initialEntries.length > 1) {
+    throw new ConfigError(pathName, 'must declare exactly one initial tab');
+  }
+
+  const initialTab = initialEntries.length === 1 ? initialEntries[0][0] : Object.keys(tabs)[0];
+
+  for (const tab of Object.values(tabs)) {
+    delete tab.initial;
+  }
+
+  const window = normalizeBrowserWindow(value.window, `${pathName}.window`);
+
+  return {
+    windowLabel: window.label,
+    tabs,
+    initialTab,
+  };
+}
+
 /**
  * Normalize the `sources` catalog entry.
  *
  * @param {string} sourceId The source ID key from the catalog.
  * @param {unknown} entry The raw source descriptor.
- * @returns {{ id: string, kind: string }}
+ * @returns {{ id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }}
  */
 function normalizeSourceEntry(sourceId, entry) {
   const pathName = `sources.${sourceId}`;
@@ -135,17 +211,23 @@ function normalizeSourceEntry(sourceId, entry) {
     throw new ConfigError(`${pathName}.kind`, `must be one of: ${[...VALID_SOURCE_KINDS].join(', ')}`);
   }
 
-  return {
+  const source = {
     id: sourceId,
     kind,
   };
+
+  if (kind === BROWSER_SOURCE_KIND) {
+    source.browser = normalizeBrowserCatalog(value.browser, `${pathName}.browser`);
+  }
+
+  return source;
 }
 
 /**
  * Normalize the authoritative `sources` catalog.
  *
  * @param {unknown} sources The raw sources object.
- * @returns {Record<string, { id: string, kind: string }>}
+ * @returns {Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }>}
  */
 function normalizeSources(sources) {
   const value = assertPlainObject(sources, 'sources');
@@ -253,7 +335,7 @@ function normalizeLayouts(layouts, sources) {
   return Object.fromEntries(entries.map(([layoutId, layout]) => [layoutId, normalizeLayout(layoutId, layout, sources)]));
 }
 
-function normalizeNavigateEntry(entry, pathName, sources) {
+function normalizeBrowserActionEntry(entry, pathName, sources) {
   const value = assertPlainObject(entry, pathName);
   const source = assertNonEmptyString(value.source, `${pathName}.source`);
 
@@ -265,17 +347,29 @@ function normalizeNavigateEntry(entry, pathName, sources) {
     throw new ConfigError(`${pathName}.source`, 'must reference a browser-capable source');
   }
 
-  let tab = null;
-  if (value.tab !== undefined) {
-    tab = assertNonEmptyString(value.tab, `${pathName}.tab`);
+  const action = assertNonEmptyString(value.action, `${pathName}.action`);
+
+  if (!VALID_BROWSER_ACTIONS.has(action)) {
+    throw new ConfigError(`${pathName}.action`, `must be one of: ${[...VALID_BROWSER_ACTIONS].join(', ')}`);
   }
 
-  return {
-    type: 'navigate',
+  const tabAlias = assertNonEmptyString(value.tab, `${pathName}.tab`);
+
+  if (!Object.prototype.hasOwnProperty.call(sources[source].browser.tabs, tabAlias)) {
+    throw new ConfigError(`${pathName}.tab`, 'must reference a declared tab for this source');
+  }
+
+  const command = {
+    type: action,
     source,
-    tab,
-    url: normalizeNavigateUrl(value.url, `${pathName}.url`),
+    tab: tabAlias,
   };
+
+  if (action === 'navigate') {
+    command.url = normalizeNavigateUrl(value.url, `${pathName}.url`);
+  }
+
+  return command;
 }
 
 function normalizeSlideEntry(slideId, entry, layouts, sources) {
@@ -287,10 +381,10 @@ function normalizeSlideEntry(slideId, entry, layouts, sources) {
     throw new ConfigError(`${pathName}.layout`, 'must reference a known layout');
   }
 
-  const navigate = value.navigate === undefined ? [] : value.navigate;
+  const browser = value.browser === undefined ? [] : value.browser;
 
-  if (!Array.isArray(navigate)) {
-    throw new ConfigError(`${pathName}.navigate`, 'must be an array');
+  if (!Array.isArray(browser)) {
+    throw new ConfigError(`${pathName}.browser`, 'must be an array');
   }
 
   let focus = null;
@@ -319,7 +413,7 @@ function normalizeSlideEntry(slideId, entry, layouts, sources) {
     layoutId,
     focus,
     script,
-    commands: navigate.map((item, index) => normalizeNavigateEntry(item, `${pathName}.navigate[${index}]`, sources)),
+    commands: browser.map((item, index) => normalizeBrowserActionEntry(item, `${pathName}.browser[${index}]`, sources)),
   };
 }
 
@@ -416,6 +510,36 @@ function normalizePresenterHttp(http) {
   };
 }
 
+function normalizeChrome(chrome) {
+  if (chrome === undefined) {
+    return null;
+  }
+
+  const value = assertPlainObject(chrome, 'chrome');
+  const normalized = {};
+
+  if (value.executablePath !== undefined) {
+    normalized.executablePath = normalizeAbsolutePath(value.executablePath, 'chrome.executablePath');
+  }
+
+  if (value.profileDir !== undefined) {
+    normalized.profileDir = normalizeAbsolutePath(value.profileDir, 'chrome.profileDir');
+  }
+
+  if (value.debugPort !== undefined) {
+    normalized.debugPort = normalizePort(value.debugPort, 'chrome.debugPort');
+  }
+
+  if (value.extraArgs !== undefined) {
+    if (!Array.isArray(value.extraArgs) || value.extraArgs.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
+      throw new ConfigError('chrome.extraArgs', 'must be an array of non-empty strings');
+    }
+    normalized.extraArgs = [...value.extraArgs];
+  }
+
+  return normalized;
+}
+
 function normalizePresenter(presenter, layouts, sources) {
   if (presenter === undefined) {
     return null;
@@ -473,7 +597,7 @@ export class ConfigError extends Error {
  * Normalize a raw config object into the coordinator's internal model.
  *
  * @param {unknown} rawConfig The parsed config JSON.
- * @returns {{ driver: { type: string }, obs: { url: string, password: string }, hub: { host: string, port: number }, hotkeys: { next: string, prev: string }, sources: Record<string, { id: string, kind: string }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'navigate', source: string, tab: string | null, url: string }> }>, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, chunkSeconds: number, language?: string }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
+ * @returns {{ driver: { type: string }, obs: { url: string, password: string }, hub: { host: string, port: number }, hotkeys: { next: string, prev: string }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, chunkSeconds: number, language?: string }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
  */
 export function normalizeConfig(rawConfig) {
   const root = assertPlainObject(rawConfig, 'config');
@@ -489,6 +613,7 @@ export function normalizeConfig(rawConfig) {
     sources,
     layouts,
     slides,
+    chrome: normalizeChrome(root.chrome),
     presenter: normalizePresenter(root.presenter, layouts, sources),
   };
 }

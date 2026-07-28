@@ -21,26 +21,19 @@ Expected runtime behavior:
 - receive generic `command` messages
 - implement `next`, `prev`, and optionally `goTo`
 
-## Target Contract
+## Browser Session (Deckhand-Owned)
 
-Targets are command sinks.
+Browser windows and tabs are owned directly by Deckhand through the Chrome
+DevTools Protocol. There is no remote target client role anymore.
 
-Shared descriptor shape used in the package:
+The coordinator resolves slide config into typed browser commands and dispatches
+them through an injected executor. The executor maps commands onto the browser
+session runtime:
 
-```js
-{
-  name: 'browser-tab',
-  kind: 'target',
-  capabilities: ['navigate']
-}
-```
+- `activateTab` activates a preloaded tab by its runtime handle
+- `navigate` loads a new URL in a named tab handle
 
-Expected runtime behavior:
-
-- register with the hub as `role: "target"`
-- provide `controllerId` and optional `tabId`
-- advertise capabilities such as `navigate`
-- receive generic `command` messages
+Command routing never relies on page title, URL lookup, or remote identity.
 
 ## Observer Contract
 
@@ -82,7 +75,7 @@ Example observer transcript publish:
 
 ## Protocol Extension Strategy
 
-- extend target behavior via new `command.type` values
+- extend browser behavior via new `command.type` values handled by the executor
 - extend observer behavior via new subscription channels
 - keep top-level message types generic
 - keep app-specific metadata inside adapter-local code or `meta`
@@ -90,12 +83,12 @@ Example observer transcript publish:
 ## Current Built-Ins
 
 - driver: `reveal.js`
-- target: browser tab userscript
+- browser session: Deckhand-owned Chrome via CDP
 - observers: presenter web app, Hammerspoon integration, whisper.cpp STT runner
 
 ## v1 Limits
 
 - no dynamic package discovery
 - no remote authentication beyond localhost assumptions
-- no built-in non-browser target types yet
+- no attach-to-existing user windows or tabs
 - presenter integrations are macOS-only for v1

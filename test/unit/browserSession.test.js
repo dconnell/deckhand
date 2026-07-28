@@ -1,0 +1,324 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { createBrowserSession } from '../../src/browserSession.js';
+
+function createFakeCdpClient() {
+  const calls = [];
+  let targetCounter = 0;
+  let windowCounter = 90;
+  let connected = false;
+  let chromePid = null;
+  const disconnectedHandlers = new Set();
+
+  return {
+    calls,
+    async connect() {
+      calls.push({ type: 'connect' });
+      connected = true;
+      chromePid = 47213;
+    },
+    async disconnect() {
+      calls.push({ type: 'disconnect' });
+      connected = false;
+    },
+    isConnected() {
+      return connected;
+    },
+    getChromePid() {
+      return chromePid;
+    },
+    on(event, handler) {
+      if (event === 'disconnected') {
+        disconnectedHandlers.add(handler);
+      }
+    },
+    simulateDisconnect() {
+      connected = false;
+      disconnectedHandlers.forEach((handler) => handler());
+    },
+    async createWindow({ url }) {
+      targetCounter += 1;
+      windowCounter += 1;
+      calls.push({ type: 'createWindow', url });
+      return { targetId: `TARGET_${targetCounter}`, windowId: windowCounter };
+    },
+    async createTab({ url }) {
+      targetCounter += 1;
+      calls.push({ type: 'createTab', url });
+      return { targetId: `TARGET_${targetCounter}` };
+    },
+    async activateTab({ targetId }) {
+      calls.push({ type: 'activateTab', targetId });
+    },
+    async navigateTab({ targetId, url }) {
+      calls.push({ type: 'navigateTab', targetId, url });
+    },
+  };
+}
+
+function createBrowserSource(id, tabs, options = {}) {
+  const tabEntries = Object.entries(tabs).map(([alias, tab]) => [
+    alias,
+    { url: tab.url, preload: tab.preload ?? true },
+  ]);
+
+  return {
+    id,
+    kind: 'browser',
+    browser: {
+      windowLabel: options.windowLabel ?? null,
+      tabs: Object.fromEntries(tabEntries),
+      initialTab: options.initialTab ?? Object.keys(tabs)[0],
+    },
+  };
+}
+
+function createSources(...sources) {
+  return Object.fromEntries(sources.map((source) => [source.id, source]));
+}
+
+test('start creates one window per browser source in config order and preloads declared tabs', async () => {
+  const cdpClient = createFakeCdpClient();
+  const sources = createSources(
+    createBrowserSource('Slide', { deck: { url: 'http://deck/' } }, { initialTab: 'deck' }),
+    createBrowserSource(
+      'BrowserA',
+      {
+        home: { url: 'https://example.com/home' },
+        checkout: { url: 'https://example.com/checkout' },
+      },
+      { initialTab: 'home' },
+    ),
+  );
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await session.start();
+
+  assert.deepEqual(
+    cdpClient.calls.map((call) => {
+      const entry = { type: call.type };
+      if (call.url !== undefined) {
+        entry.url = call.url;
+      }
+      return entry;
+    }),
+    [
+      { type: 'connect' },
+      { type: 'createWindow', url: 'http://deck/' },
+      { type: 'createWindow', url: 'https://example.com/home' },
+      { type: 'createTab', url: 'https://example.com/checkout' },
+    ],
+  );
+});
+
+test('start records the initial tab as the window main target and tracks activeTab per source', async () => {
+  const cdpClient = createFakeCdpClient();
+  const sources = createSources(
+    createBrowserSource(
+      'BrowserA',
+      {
+        home: { url: 'https://example.com/home' },
+        checkout: { url: 'https://example.com/checkout' },
+      },
+      { initialTab: 'home' },
+    ),
+  );
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await session.start();
+
+  const registry = session.getRegistry();
+  assert.equal(registry.sources.BrowserA.mainTargetId, 'TARGET_1');
+  assert.equal(registry.sources.BrowserA.cdpWindowId, 91);
+  assert.deepEqual(registry.sources.BrowserA.tabs, {
+    home: { targetId: 'TARGET_1', initialUrl: 'https://example.com/home' },
+    checkout: { targetId: 'TARGET_2', initialUrl: 'https://example.com/checkout' },
+  });
+  assert.equal(registry.sources.BrowserA.activeTab, 'home');
+});
+
+test('activateTab routes through the recorded target handle without URL lookup and updates activeTab', async () => {
+  const cdpClient = createFakeCdpClient();
+  const sources = createSources(
+    createBrowserSource(
+      'BrowserA',
+      {
+        home: { url: 'https://example.com/home' },
+        checkout: { url: 'https://example.com/checkout' },
+      },
+      { initialTab: 'home' },
+    ),
+  );
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await session.start();
+  await session.activateTab('BrowserA', 'checkout');
+
+  assert.deepEqual(
+    cdpClient.calls.filter((call) => call.type === 'activateTab'),
+    [{ type: 'activateTab', targetId: 'TARGET_2' }],
+  );
+  assert.equal(session.getRegistry().sources.BrowserA.activeTab, 'checkout');
+});
+
+test('navigateTab routes to the recorded target handle for the named tab', async () => {
+  const cdpClient = createFakeCdpClient();
+  const sources = createSources(
+    createBrowserSource(
+      'BrowserA',
+      {
+        home: { url: 'https://example.com/home' },
+        checkout: { url: 'https://example.com/checkout' },
+      },
+      { initialTab: 'home' },
+    ),
+  );
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await session.start();
+  await session.navigateTab('BrowserA', 'checkout', 'https://example.com/checkout/v2');
+
+  assert.deepEqual(
+    cdpClient.calls.filter((call) => call.type === 'navigateTab'),
+    [{ type: 'navigateTab', targetId: 'TARGET_2', url: 'https://example.com/checkout/v2' }],
+  );
+});
+
+test('activateTab rejects unknown source or tab aliases', async () => {
+  const cdpClient = createFakeCdpClient();
+  const sources = createSources(
+    createBrowserSource('BrowserA', { home: { url: 'https://example.com/home' } }),
+  );
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await session.start();
+
+  await assert.rejects(session.activateTab('Mystery', 'home'), /unknown source/i);
+  await assert.rejects(session.activateTab('BrowserA', 'missing'), /unknown tab/i);
+});
+
+test('navigateTab rejects unknown source or tab aliases', async () => {
+  const cdpClient = createFakeCdpClient();
+  const sources = createSources(
+    createBrowserSource('BrowserA', { home: { url: 'https://example.com/home' } }),
+  );
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await session.start();
+
+  await assert.rejects(session.navigateTab('BrowserA', 'missing', 'https://example.com/x'), /unknown tab/i);
+});
+
+test('start skips tabs explicitly marked preload:false', async () => {
+  const cdpClient = createFakeCdpClient();
+  const sources = createSources(
+    createBrowserSource(
+      'BrowserA',
+      {
+        home: { url: 'https://example.com/home' },
+        lazy: { url: 'https://example.com/lazy', preload: false },
+      },
+      { initialTab: 'home' },
+    ),
+  );
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await session.start();
+
+  assert.ok(
+    cdpClient.calls.every((call) => call.type !== 'createTab'),
+    'no tabs should be created via createTab when the only non-initial tab is preload:false',
+  );
+  assert.equal(session.getRegistry().sources.BrowserA.tabs.lazy, undefined);
+});
+
+test('stop disconnects the cdp client and clears the registry', async () => {
+  const cdpClient = createFakeCdpClient();
+  const sources = createSources(createBrowserSource('BrowserA', { home: { url: 'https://example.com/home' } }));
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await session.start();
+  await session.stop();
+
+  assert.deepEqual(
+    cdpClient.calls.map((call) => call.type).filter((type) => type === 'disconnect'),
+    ['disconnect'],
+  );
+  assert.deepEqual(session.getRegistry().sources, {});
+  assert.equal(session.getStatus().connected, false);
+});
+
+test('restart recreates a fresh source/tab registry with new runtime handles', async () => {
+  const cdpClient = createFakeCdpClient();
+  const sources = createSources(
+    createBrowserSource('BrowserA', { home: { url: 'https://example.com/home' } }),
+  );
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await session.start();
+  const firstHandle = session.getRegistry().sources.BrowserA.tabs.home.targetId;
+
+  await session.stop();
+  await session.start();
+  const secondHandle = session.getRegistry().sources.BrowserA.tabs.home.targetId;
+
+  assert.notEqual(firstHandle, secondHandle);
+  assert.equal(session.getRegistry().sources.BrowserA.activeTab, 'home');
+});
+
+test('getStatus reports ready per source after start', async () => {
+  const cdpClient = createFakeCdpClient();
+  const sources = createSources(
+    createBrowserSource(
+      'BrowserA',
+      {
+        home: { url: 'https://example.com/home' },
+        checkout: { url: 'https://example.com/checkout' },
+      },
+      { initialTab: 'home' },
+    ),
+  );
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await session.start();
+
+  assert.deepEqual(session.getStatus(), {
+    connected: true,
+    chromePid: 47213,
+    sources: {
+      BrowserA: { ready: true, activeTab: 'home', tabs: ['home', 'checkout'] },
+    },
+  });
+});
+
+test('getStatus reports degraded state before start and after an unexpected disconnect', async () => {
+  const cdpClient = createFakeCdpClient();
+  const sources = createSources(createBrowserSource('BrowserA', { home: { url: 'https://example.com/home' } }));
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  assert.deepEqual(session.getStatus(), {
+    connected: false,
+    chromePid: null,
+    sources: {},
+  });
+
+  await session.start();
+  cdpClient.simulateDisconnect();
+
+  const status = session.getStatus();
+  assert.equal(status.connected, false);
+  assert.equal(status.sources.BrowserA.ready, false);
+});
+
+test('start rejects when the cdp client fails to connect', async () => {
+  const cdpClient = createFakeCdpClient();
+  cdpClient.connect = async () => {
+    throw new Error('chrome unreachable');
+  };
+  const sources = createSources(createBrowserSource('BrowserA', { home: { url: 'https://example.com/home' } }));
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await assert.rejects(session.start(), /chrome unreachable/);
+  assert.equal(session.getStatus().connected, false);
+});

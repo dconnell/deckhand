@@ -5,7 +5,7 @@ Deckhand is a local presentation coordinator that keeps four outputs in sync:
 - slide position from a driver
 - OBS audience scenes
 - presenter-side state on macOS
-- generic target commands such as browser navigation
+- Deckhand-owned Chrome windows and tabs (activation and navigation)
 
 Deckhand is macOS-only. Presentations are self-contained under
 `presentation/<name>/` while shared runtime integrations live at the repo root.
@@ -100,12 +100,12 @@ configured target commands.
 
 ## Project Layout
 
-- `src/`: coordinator, config, protocol, hub, OBS setup, presenter HTTP, and STT
+- `src/`: coordinator, config, protocol, hub, OBS setup, presenter HTTP, STT,
+  CDP transport, and browser session runtime
 - `presentation/<name>/`: self-contained presentation config, deck, and docs
 - `presenter-web/`: first-class presenter app served at `/presenter/`
 - `hammerspoon/`: macOS window-layout integration
 - `reveal/`: `reveal.js` driver bridge
-- `violentmonkey/`: browser target userscript
 - `docs/`: setup, config, architecture, and adapter contracts
 - `test/`: unit and integration coverage
 
