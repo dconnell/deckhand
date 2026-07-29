@@ -25,7 +25,18 @@ local function assert_truthy(value, message)
   end
 end
 
-local function create_window(name, calls)
+local function create_app(name, pid)
+  return {
+    name = function(_)
+      return name
+    end,
+    pid = function(_)
+      return pid
+    end,
+  }
+end
+
+local function create_window(name, calls, id, app)
   return {
     raise = function(_)
       table.insert(calls, "raise:" .. name)
@@ -39,13 +50,21 @@ local function create_window(name, calls)
     focus = function(_)
       table.insert(calls, "focus:" .. name)
     end,
+    id = function(_)
+      return id
+    end,
+    application = function(_)
+      return app
+    end,
   }
 end
 
 local calls = {}
+local terminal_app = create_app("iTerm2", 2001)
+local slide_app = create_app("Safari", 2002)
 local windows = {
-  Terminal = create_window("Terminal", calls),
-  Slide = create_window("Slide", calls),
+  Terminal = create_window("Terminal", calls, 4001, terminal_app),
+  Slide = create_window("Slide", calls, 4002, slide_app),
 }
 
 local result = apply_state.apply(fixture, {
@@ -64,6 +83,10 @@ assert_equal(calls[2], "frame:Slide:900:0:900:1168", "expected slide frame secon
 assert_equal(calls[3], "raise:Terminal", "expected terminal raise after frame")
 assert_equal(calls[4], "raise:Slide", "expected slide raise after frame")
 assert_equal(calls[5], "focus:Terminal", "expected terminal focus after layout")
+assert_equal(result.resolvedBindings.Terminal.macWindowId, 4001, "expected exact terminal window id")
+assert_equal(result.resolvedBindings.Terminal.pid, 2001, "expected exact terminal pid")
+assert_equal(result.resolvedBindings.Slide.macWindowId, 4002, "expected exact slide window id")
+assert_equal(result.resolvedBindings.Slide.pid, 2002, "expected exact slide pid")
 
 while #calls > 0 do
   table.remove(calls)
@@ -107,6 +130,32 @@ local missing = apply_state.apply(fixture, {
 
 assert_equal(#missing.missing, 1, "expected one missing window")
 assert_equal(missing.missing[1], "Slide", "expected missing slide source")
+
+local strict_missing = apply_state.apply({
+  slots = {
+    {
+      source = "Slide",
+      position = "full",
+      rect = { x = 0, y = 0, w = 1800, h = 1168 },
+    },
+  },
+  windowBindings = {
+    Slide = {
+      app = "Safari",
+      macWindowId = 4002,
+      pid = 2002,
+      strict = true,
+    },
+  },
+  focus = nil,
+}, {
+  findWindow = function(_)
+    return nil
+  end,
+})
+
+assert_equal(#strict_missing.clearedBindings, 1, "expected stale strict binding to be cleared")
+assert_equal(strict_missing.clearedBindings[1], "Slide", "expected slide strict binding clear")
 
 local no_focus = apply_state.apply({
   slots = fixture.slots,

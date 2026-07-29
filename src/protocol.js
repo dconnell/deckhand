@@ -10,6 +10,22 @@ function assertNonEmptyString(value, fieldName) {
   return value.trim();
 }
 
+function normalizeBoolean(value, fieldName) {
+  if (typeof value !== 'boolean') {
+    throw new TypeError(`${fieldName} must be a boolean`);
+  }
+
+  return value;
+}
+
+function normalizePositiveInteger(value, fieldName) {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new TypeError(`${fieldName} must be a positive integer`);
+  }
+
+  return value;
+}
+
 function normalizeCapabilities(value) {
   if (value === undefined) {
     return [];
@@ -40,6 +56,63 @@ function normalizeSubscriptions(value) {
   }
 
   return unique;
+}
+
+function normalizeWindowBinding(binding, fieldName) {
+  if (!isPlainObject(binding)) {
+    throw new TypeError(`${fieldName} must be an object`);
+  }
+
+  const normalized = {
+    app: assertNonEmptyString(binding.app, `${fieldName}.app`),
+  };
+
+  if (binding.titleIncludes !== undefined) {
+    normalized.titleIncludes = assertNonEmptyString(binding.titleIncludes, `${fieldName}.titleIncludes`);
+  }
+
+  if (binding.pid !== undefined) {
+    normalized.pid = normalizePositiveInteger(binding.pid, `${fieldName}.pid`);
+  }
+
+  if (binding.macWindowId !== undefined) {
+    normalized.macWindowId = normalizePositiveInteger(binding.macWindowId, `${fieldName}.macWindowId`);
+  }
+
+  if (binding.strict !== undefined) {
+    normalized.strict = normalizeBoolean(binding.strict, `${fieldName}.strict`);
+  }
+
+  return normalized;
+}
+
+function normalizeWindowBindingsMessage(message) {
+  if (!isPlainObject(message.bindings)) {
+    throw new TypeError('bindings must be an object');
+  }
+
+  const bindings = Object.fromEntries(
+    Object.entries(message.bindings).map(([source, binding]) => [
+      assertNonEmptyString(source, 'bindings source'),
+      normalizeWindowBinding(binding, `bindings.${source}`),
+    ]),
+  );
+
+  let cleared = [];
+
+  if (message.cleared !== undefined) {
+    if (!Array.isArray(message.cleared)) {
+      throw new TypeError('cleared must be an array of non-empty strings');
+    }
+
+    cleared = [...new Set(message.cleared.map((source) => assertNonEmptyString(source, 'cleared source')))];
+  }
+
+  return {
+    type: 'windowBindings',
+    bindings,
+    cleared,
+  };
 }
 
 function assertRole(value) {
@@ -275,6 +348,10 @@ export function validateClientMessage(message) {
       type,
       command: message.command,
     };
+  }
+
+  if (type === 'windowBindings') {
+    return normalizeWindowBindingsMessage(message);
   }
 
   throw new TypeError(`Unsupported message type: ${type}`);

@@ -2,6 +2,24 @@ local window_match = require("window_match")
 
 local M = {}
 
+local function exact_binding_for(window, fallback_binding)
+  if window == nil or window.id == nil or window.application == nil then
+    return nil
+  end
+
+  local app = window:application()
+  if app == nil or app.pid == nil or app.name == nil then
+    return nil
+  end
+
+  return {
+    app = app:name() or fallback_binding.app,
+    pid = app:pid(),
+    macWindowId = window:id(),
+    strict = true,
+  }
+end
+
 function M.apply(state, dependencies)
   local deps = dependencies or {}
   local find_window = deps.findWindow or window_match.findWindow
@@ -11,6 +29,8 @@ function M.apply(state, dependencies)
   local resolved = {}
   local applied = {}
   local missing = {}
+  local resolved_bindings = {}
+  local cleared_bindings = {}
 
   for _, slot in ipairs(state.slots or {}) do
     local binding = state.windowBindings and state.windowBindings[slot.source]
@@ -20,8 +40,17 @@ function M.apply(state, dependencies)
         window:setFrame(make_rect(slot.rect))
         resolved[slot.source] = window
         table.insert(applied, slot.source)
+
+        local exact_binding = exact_binding_for(window, binding)
+        if exact_binding ~= nil then
+          resolved_bindings[slot.source] = exact_binding
+        end
       else
         table.insert(missing, slot.source)
+
+        if binding.strict == true and binding.macWindowId ~= nil then
+          table.insert(cleared_bindings, slot.source)
+        end
       end
     end
   end
@@ -49,8 +78,10 @@ function M.apply(state, dependencies)
 
   return {
     applied = applied,
+    clearedBindings = cleared_bindings,
     focused = focused,
     missing = missing,
+    resolvedBindings = resolved_bindings,
   }
 end
 

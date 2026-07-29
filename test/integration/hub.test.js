@@ -280,6 +280,58 @@ test('hub sendCommand rejects non-driver targets', async () => {
   }
 });
 
+test('hub emits observer window binding updates for registered observers', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+  const events = [];
+  hub.on('observerWindowBindings', (payload) => {
+    events.push(payload);
+  });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const observer = await createClient(port);
+
+  try {
+    await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+    await observer.send({
+      type: 'windowBindings',
+      bindings: {
+        BrowserA: {
+          app: 'Google Chrome',
+          pid: 47213,
+          macWindowId: 12345,
+          strict: true,
+        },
+      },
+      cleared: ['BrowserB'],
+    });
+    await flushMessages();
+
+    assert.deepEqual(events, [{
+      bindings: {
+        BrowserA: {
+          app: 'Google Chrome',
+          pid: 47213,
+          macWindowId: 12345,
+          strict: true,
+        },
+      },
+      cleared: ['BrowserB'],
+      sender: {
+        role: 'observer',
+        sessionId: events[0]?.sender.sessionId,
+        capabilities: [],
+        subscriptions: ['presentationState'],
+      },
+    }]);
+    assert.match(events[0].sender.sessionId, /^[0-9a-f-]+$/i);
+  } finally {
+    await observer.close();
+    await hub.stop();
+  }
+});
+
 test('hub snapshot no longer exposes a target catalog', async () => {
   const logger = createLogger();
   const hub = createHub({ host: '127.0.0.1', port: 0, logger });

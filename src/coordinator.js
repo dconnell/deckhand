@@ -29,13 +29,68 @@ export function createCoordinator(options) {
   let hotkeysStarted = false;
   let presentationSeq = 0;
   let currentPresentationState = null;
+  const runtimeWindowBindings = {};
 
-  async function publishPresentationState(position) {
+  function buildResolvedPresentationState(slideId, seq) {
+    return buildPresentationState(slideId, options.config, seq, {
+      windowBindings: runtimeWindowBindings,
+    });
+  }
+
+  async function publishPresentationState(slideId) {
     presentationSeq += 1;
-    const state = buildPresentationState(position.id, options.config, presentationSeq);
+    const state = buildResolvedPresentationState(slideId, presentationSeq);
     currentPresentationState = state;
     await options.hub.publishSticky('presentationState', state);
     return state;
+  }
+
+  async function republishCurrentPresentationState(reason) {
+    if (currentPresentationState === null) {
+      return;
+    }
+
+    let presentationState;
+
+    try {
+      presentationState = await publishPresentationState(currentPresentationState.slideId);
+      logger.info('Republished presentation state for runtime binding update', {
+        reason,
+        seq: presentationState.seq,
+        slideId: presentationState.slideId,
+      });
+    } catch (error) {
+      presentationState = buildResolvedPresentationState(currentPresentationState.slideId, presentationSeq);
+      currentPresentationState = presentationState;
+      logger.error('Observer state republish failed', {
+        error: error instanceof Error ? error.message : String(error),
+        reason,
+        slideId: presentationState.slideId,
+      });
+    }
+  }
+
+  function mergeRuntimeWindowBindings(payload) {
+    let changed = false;
+
+    for (const source of payload.cleared ?? []) {
+      if (Object.prototype.hasOwnProperty.call(runtimeWindowBindings, source)) {
+        delete runtimeWindowBindings[source];
+        changed = true;
+      }
+    }
+
+    for (const [source, binding] of Object.entries(payload.bindings ?? {})) {
+      const current = runtimeWindowBindings[source];
+      const next = { ...binding };
+
+      if (current === undefined || JSON.stringify(current) !== JSON.stringify(next)) {
+        runtimeWindowBindings[source] = next;
+        changed = true;
+      }
+    }
+
+    return changed;
   }
 
   async function dispatchBrowserCommands(slideConfig, slideId) {
@@ -75,14 +130,14 @@ export function createCoordinator(options) {
     let presentationState;
 
     try {
-      presentationState = await publishPresentationState(position);
+      presentationState = await publishPresentationState(position.id);
       logger.info('Published presentation state for slide', {
         layoutId: presentationState.layoutId,
         seq: presentationState.seq,
         slideId: position.id,
       });
     } catch (error) {
-      presentationState = buildPresentationState(position.id, options.config, presentationSeq);
+      presentationState = buildResolvedPresentationState(position.id, presentationSeq);
       currentPresentationState = presentationState;
       logger.error('Observer state publish failed', {
         error: error instanceof Error ? error.message : String(error),
@@ -105,6 +160,14 @@ export function createCoordinator(options) {
     }
 
     await dispatchBrowserCommands(slideConfig, position.id);
+  }
+
+  async function handleObserverWindowBindings(payload) {
+    if (!mergeRuntimeWindowBindings(payload)) {
+      return;
+    }
+
+    await republishCurrentPresentationState('windowBindingsChanged');
   }
 
   async function handleHotkeyAction(action) {
@@ -132,6 +195,7 @@ export function createCoordinator(options) {
   options.hub.on('driverPositionChanged', handleDriverPositionChanged);
   options.hub.on('driverRegistered', () => logSnapshot('Driver client registered'));
   options.hub.on('observerRegistered', () => logSnapshot('Observer client registered'));
+  options.hub.on('observerWindowBindings', handleObserverWindowBindings);
   options.hub.on('clientDisconnected', () => logSnapshot('Client disconnected'));
   options.hotkeys.on('action', handleHotkeyAction);
 

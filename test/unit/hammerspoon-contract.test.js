@@ -24,3 +24,9 @@ test('Lua Hammerspoon deckhand observer contract holds', { skip: process.platfor
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
 });
+
+test('Lua Hammerspoon window_match contract holds', { skip: process.platform !== 'darwin' }, () => {
+  const result = runLuaScript('window_match_contract.lua');
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});

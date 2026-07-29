@@ -409,6 +409,80 @@ test('coordinator continues after observer publish failure', async () => {
   assert.match(logger.errors[0].message, /Observer state publish failed/i);
 });
 
+test('coordinator republishes sticky presentation state when observer window bindings change', async () => {
+  const logger = createLogger();
+  const hub = createFakeHub();
+  const hotkeys = createFakeHotkeys();
+  const obs = createFakeObs();
+  const executor = createFakeExecutor();
+  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, executor, logger });
+
+  await coordinator.start();
+  await hub.emit('driverPositionChanged', { id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+  await hub.emit('observerWindowBindings', {
+    bindings: {
+      BrowserA: {
+        app: 'Google Chrome',
+        pid: 47213,
+        macWindowId: 12345,
+        strict: true,
+      },
+    },
+    cleared: [],
+    sender: { role: 'observer', sessionId: 'observer-1' },
+  });
+
+  assert.equal(hub.state.stickyPublishes.length, 2);
+  assert.equal(hub.state.stickyPublishes[1].payload.seq, 2);
+  assert.deepEqual(hub.state.stickyPublishes[1].payload.windowBindings, {
+    BrowserA: {
+      app: 'Google Chrome',
+      titleIncludes: 'Primary',
+      pid: 47213,
+      macWindowId: 12345,
+      strict: true,
+    },
+    BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
+  });
+  assert.deepEqual(obs.state.scenes, ['Dual Browser']);
+});
+
+test('coordinator clears runtime window binding overrides and republishes bootstrap selectors', async () => {
+  const logger = createLogger();
+  const hub = createFakeHub();
+  const hotkeys = createFakeHotkeys();
+  const obs = createFakeObs();
+  const executor = createFakeExecutor();
+  const coordinator = createCoordinator({ config: createConfig(), obs, hub, hotkeys, executor, logger });
+
+  await coordinator.start();
+  await hub.emit('driverPositionChanged', { id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+  await hub.emit('observerWindowBindings', {
+    bindings: {
+      BrowserA: {
+        app: 'Google Chrome',
+        pid: 47213,
+        macWindowId: 12345,
+        strict: true,
+      },
+    },
+    cleared: [],
+    sender: { role: 'observer', sessionId: 'observer-1' },
+  });
+  await hub.emit('observerWindowBindings', {
+    bindings: {},
+    cleared: ['BrowserA'],
+    sender: { role: 'observer', sessionId: 'observer-1' },
+  });
+
+  assert.equal(hub.state.stickyPublishes.length, 3);
+  assert.equal(hub.state.stickyPublishes[2].payload.seq, 3);
+  assert.deepEqual(hub.state.stickyPublishes[2].payload.windowBindings, {
+    BrowserA: { app: 'Google Chrome', titleIncludes: 'Primary' },
+    BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
+  });
+});
+
 test('coordinator continues after partial executor failures', async () => {
   const logger = createLogger();
   const hotkeys = createFakeHotkeys();

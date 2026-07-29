@@ -149,6 +149,35 @@ test('validateClientMessage accepts observer driverCommand messages', () => {
   );
 });
 
+test('validateClientMessage accepts observer window binding updates', () => {
+  assert.deepEqual(
+    validateClientMessage({
+      type: 'windowBindings',
+      bindings: {
+        BrowserA: {
+          app: 'Google Chrome',
+          pid: 47213,
+          macWindowId: 12345,
+          strict: true,
+        },
+      },
+      cleared: ['BrowserB'],
+    }),
+    {
+      type: 'windowBindings',
+      bindings: {
+        BrowserA: {
+          app: 'Google Chrome',
+          pid: 47213,
+          macWindowId: 12345,
+          strict: true,
+        },
+      },
+      cleared: ['BrowserB'],
+    },
+  );
+});
+
 test('validateClientMessage rejects observer subscriptions with unknown message types', () => {
   assert.throws(
     () => validateClientMessage({ type: 'register', role: 'observer', subscriptions: ['unknown'] }),

@@ -48,6 +48,18 @@ end
 local controller = deckhand.start({
   applyStateFn = function(state)
     table.insert(apply_calls, state.seq)
+    return {
+      missing = {},
+      resolvedBindings = {
+        Slide = {
+          app = "Safari",
+          pid = 2002,
+          macWindowId = 4002,
+          strict = true,
+        },
+      },
+      clearedBindings = {},
+    }
   end,
   decodeJson = function(message)
     return message
@@ -98,6 +110,26 @@ assert_equal(sockets[1].sent[3].command.type, "prev", "expected prev hotkey comm
 sockets[1].callback("received", fixture)
 sockets[1].callback("received", clone_state({
   type = "presentationState",
+  seq = 8,
+  slideId = fixture.slideId,
+  layoutId = fixture.layoutId,
+  audienceScene = fixture.audienceScene,
+  slots = fixture.slots,
+  windowBindings = {
+    Terminal = fixture.windowBindings.Terminal,
+    Slide = {
+      app = "Safari",
+      titleIncludes = fixture.windowBindings.Slide.titleIncludes,
+      pid = 2002,
+      macWindowId = 4002,
+      strict = true,
+    },
+  },
+  focus = fixture.focus,
+  script = fixture.script,
+}))
+sockets[1].callback("received", clone_state({
+  type = "presentationState",
   seq = 6,
   slideId = fixture.slideId,
   layoutId = fixture.layoutId,
@@ -108,7 +140,12 @@ sockets[1].callback("received", clone_state({
   script = fixture.script,
 }))
 
-assert_equal(#apply_calls, 1, "expected stale sequence in one session to be ignored")
+assert_equal(#apply_calls, 2, "expected newer exact-binding state to apply before stale state is ignored")
+assert_equal(sockets[1].sent[4].type, "windowBindings", "expected exact window bindings to be reported")
+assert_equal(sockets[1].sent[4].bindings.Slide.macWindowId, 4002, "expected slide macWindowId in report")
+assert_equal(sockets[1].sent[4].bindings.Slide.pid, 2002, "expected slide pid in report")
+assert_equal(sockets[1].sent[4].cleared[1], nil, "expected no cleared bindings in initial report")
+assert_equal(sockets[1].sent[5], nil, "expected no duplicate report when payload already has exact binding")
 
 sockets[1].callback("closed", "server restart")
 assert_equal(connect_count, 2, "expected reconnect after close")
@@ -118,8 +155,8 @@ local reconnect_state = clone_state(fixture)
 reconnect_state.seq = 1
 sockets[2].callback("received", reconnect_state)
 
-assert_equal(#apply_calls, 2, "expected lower seq after reconnect to be accepted")
-assert_equal(apply_calls[2], 1, "expected reconnect state seq to be applied")
+assert_equal(#apply_calls, 3, "expected lower seq after reconnect to be accepted")
+assert_equal(apply_calls[3], 1, "expected reconnect state seq to be applied")
 
 controller.stop()
 assert_equal(sockets[2].closed, true, "expected stop() to close the websocket")

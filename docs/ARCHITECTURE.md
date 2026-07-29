@@ -89,12 +89,22 @@ Presenter-state payload shape:
   ],
   windowBindings: {
     Terminal: { app: 'iTerm2' },
-    Slide: { app: 'Google Chrome', titleIncludes: 'Deckhand Deck' }
+    Slide: {
+      app: 'Google Chrome',
+      titleIncludes: 'Deckhand Deck',
+      pid: 47213,
+      macWindowId: 12345,
+      strict: true
+    }
   },
   focus: 'Terminal',
   script: 'Walk through the init flow.\nEmphasize line 42.'
 }
 ```
+
+`windowBindings` may begin as bootstrap app/title selectors and then be
+republished with exact runtime bindings once a presenter observer resolves the
+managed windows.
 
 ## Hub Protocol
 

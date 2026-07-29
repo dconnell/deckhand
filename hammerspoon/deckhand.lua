@@ -2,6 +2,17 @@ local apply_state = require("apply_state")
 
 local M = {}
 
+local function exact_binding_changed(current, resolved)
+  if current == nil then
+    return true
+  end
+
+  return current.app ~= resolved.app
+    or current.pid ~= resolved.pid
+    or current.macWindowId ~= resolved.macWindowId
+    or current.strict ~= resolved.strict
+end
+
 function M.start(options)
   local settings = options or {}
   local websocket_factory = settings.websocketFactory or function(url, callback)
@@ -86,6 +97,30 @@ function M.start(options)
         local result = apply_state_fn(payload)
         for _, source in ipairs(result and result.missing or {}) do
           log_fn(string.format("[deckhand:hammerspoon] Window not found for source %s", source))
+        end
+
+        local bindings = {}
+        for source, resolved in pairs(result and result.resolvedBindings or {}) do
+          local current = payload.windowBindings and payload.windowBindings[source] or nil
+          if exact_binding_changed(current, resolved) then
+            bindings[source] = resolved
+          end
+        end
+
+        local cleared = {}
+        for _, source in ipairs(result and result.clearedBindings or {}) do
+          local current = payload.windowBindings and payload.windowBindings[source] or nil
+          if current and current.strict == true and current.macWindowId ~= nil then
+            table.insert(cleared, source)
+          end
+        end
+
+        if next(bindings) ~= nil or #cleared > 0 then
+          socket:send(encode_json({
+            type = "windowBindings",
+            bindings = bindings,
+            cleared = cleared,
+          }), false)
         end
         return
       end

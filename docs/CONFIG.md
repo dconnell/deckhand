@@ -237,7 +237,12 @@ When present:
 Window selectors contain:
 
 - `app`: required app name
-- `titleIncludes`: optional substring to disambiguate multiple windows
+- `titleIncludes`: optional substring to disambiguate multiple windows during
+  bootstrap resolution
+
+At runtime, presenter observers may upgrade these bootstrap selectors to exact
+session bindings by reporting `pid`, `macWindowId`, and `strict: true` back to
+Deckhand. Those exact fields are runtime state, not part of committed config.
 
 ## Slide ID Scheme
 

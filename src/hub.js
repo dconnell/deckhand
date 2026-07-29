@@ -306,23 +306,37 @@ export function createHub(options) {
       return;
     }
 
-    if (message.type === 'driverCommand') {
-      if (client.role !== 'observer') {
-        await sendProtocolError(socket, 'invalid_message', 'Only observer clients can send driverCommand messages');
-        return;
-      }
+     if (message.type === 'driverCommand') {
+        if (client.role !== 'observer') {
+          await sendProtocolError(socket, 'invalid_message', 'Only observer clients can send driverCommand messages');
+          return;
+        }
 
       if (activeDriver === null) {
         await sendProtocolError(socket, 'driver_unavailable', 'No active driver connected');
         return;
       }
 
-      await sendMessage(activeDriver.socket, createCommandMessage(message.command));
-      return;
-    }
+        await sendMessage(activeDriver.socket, createCommandMessage(message.command));
+        return;
+      }
 
-    await sendProtocolError(socket, 'unsupported_type', `Unsupported message type: ${message.type}`);
-  }
+      if (message.type === 'windowBindings') {
+        if (client.role !== 'observer') {
+          await sendProtocolError(socket, 'invalid_message', 'Only observer clients can send windowBindings messages');
+          return;
+        }
+
+        await events.emit('observerWindowBindings', {
+          bindings: message.bindings,
+          cleared: message.cleared,
+          sender: serializeClient(client),
+        });
+        return;
+      }
+
+      await sendProtocolError(socket, 'unsupported_type', `Unsupported message type: ${message.type}`);
+    }
 
   return {
     on(eventName, handler) {

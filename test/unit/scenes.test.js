@@ -172,3 +172,31 @@ test('buildPresentationState omits presenter-only fields when presenter mode is 
     commands: [],
   });
 });
+
+test('buildPresentationState overlays runtime exact window bindings onto bootstrap selectors', () => {
+  assert.deepEqual(
+    buildPresentationState('dual-demo', createConfig(), 18, {
+      windowBindings: {
+        BrowserA: {
+          app: 'Google Chrome',
+          pid: 47213,
+          macWindowId: 12345,
+          strict: true,
+        },
+      },
+    }).windowBindings,
+    {
+      BrowserA: {
+        app: 'Google Chrome',
+        titleIncludes: 'Primary',
+        pid: 47213,
+        macWindowId: 12345,
+        strict: true,
+      },
+      BrowserB: {
+        app: 'Google Chrome',
+        titleIncludes: 'Secondary',
+      },
+    },
+  );
+});

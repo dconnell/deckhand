@@ -175,6 +175,11 @@ Hammerspoon subscribes to sticky `presentationState` and applies the resolved
 window rectangles plus optional focus. It reconnects after hub restarts and
 accepts lower `seq` values after reconnect so sticky state can recover cleanly.
 
+For managed windows, Hammerspoon also reports exact runtime bindings back to
+Deckhand after it resolves them once. Deckhand then republishes sticky
+`presentationState` with `pid`, `macWindowId`, and `strict: true` so later
+layout passes no longer depend on title or first-window matching.
+
 Deckhand's Hammerspoon integration also binds slide navigation hotkeys:
 
 - `Ctrl+Shift+Right`: next slide
@@ -265,7 +270,7 @@ use the Hammerspoon `Ctrl+Shift+Left/Right` global hotkeys instead.
 - windows do not move:
   - verify Hammerspoon Accessibility permission
   - verify the Lua files live under `~/.hammerspoon/deckhand/`
-  - verify `presenter.windows` app names and `titleIncludes` values
+  - verify `presenter.windows` app names and bootstrap `titleIncludes` values
 - STT publishes nothing:
   - verify `npm run presenter:doctor -- my-talk`
   - verify microphone permission
