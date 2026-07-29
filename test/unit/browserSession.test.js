@@ -46,7 +46,7 @@ function createFakeCdpClient() {
     async createTab({ url }) {
       targetCounter += 1;
       calls.push({ type: 'createTab', url });
-      return { targetId: `TARGET_${targetCounter}` };
+      return { targetId: `TARGET_${targetCounter}`, windowId: windowCounter };
     },
     async activateTab({ targetId }) {
       calls.push({ type: 'activateTab', targetId });
@@ -210,7 +210,7 @@ test('navigateTab rejects unknown source or tab aliases', async () => {
   await assert.rejects(session.navigateTab('BrowserA', 'missing', 'https://example.com/x'), /unknown tab/i);
 });
 
-test('start skips tabs explicitly marked preload:false', async () => {
+test('start rejects browser sources that disable tab preload', async () => {
   const cdpClient = createFakeCdpClient();
   const sources = createSources(
     createBrowserSource(
@@ -224,13 +224,30 @@ test('start skips tabs explicitly marked preload:false', async () => {
   );
   const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
 
-  await session.start();
+  await assert.rejects(session.start(), /preload/i);
+  assert.deepEqual(session.getRegistry().sources, {});
+});
 
-  assert.ok(
-    cdpClient.calls.every((call) => call.type !== 'createTab'),
-    'no tabs should be created via createTab when the only non-initial tab is preload:false',
+test('start rejects when a preloaded tab lands in a different window than its source', async () => {
+  const cdpClient = createFakeCdpClient();
+  cdpClient.createTab = async ({ url }) => {
+    cdpClient.calls.push({ type: 'createTab', url });
+    return { targetId: 'TARGET_2', windowId: 999 };
+  };
+  const sources = createSources(
+    createBrowserSource(
+      'BrowserA',
+      {
+        home: { url: 'https://example.com/home' },
+        checkout: { url: 'https://example.com/checkout' },
+      },
+      { initialTab: 'home' },
+    ),
   );
-  assert.equal(session.getRegistry().sources.BrowserA.tabs.lazy, undefined);
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await assert.rejects(session.start(), /same chrome window/i);
+  assert.deepEqual(session.getRegistry().sources, {});
 });
 
 test('stop disconnects the cdp client and clears the registry', async () => {
@@ -311,14 +328,31 @@ test('getStatus reports degraded state before start and after an unexpected disc
   assert.equal(status.sources.BrowserA.ready, false);
 });
 
-test('start rejects when the cdp client fails to connect', async () => {
-  const cdpClient = createFakeCdpClient();
-  cdpClient.connect = async () => {
-    throw new Error('chrome unreachable');
-  };
+test('start resets state after a cdp client connect failure so a later retry can succeed', async () => {
+  let attempts = 0;
   const sources = createSources(createBrowserSource('BrowserA', { home: { url: 'https://example.com/home' } }));
-  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+  const session = createBrowserSession({
+    sources,
+    createCdpClient: () => {
+      const cdpClient = createFakeCdpClient();
+      cdpClient.connect = async () => {
+        attempts += 1;
+
+        if (attempts === 1) {
+          throw new Error('chrome unreachable');
+        }
+
+        cdpClient.calls.push({ type: 'connect' });
+      };
+      cdpClient.isConnected = () => attempts > 1;
+      cdpClient.getChromePid = () => (attempts > 1 ? 47213 : null);
+      return cdpClient;
+    },
+  });
 
   await assert.rejects(session.start(), /chrome unreachable/);
   assert.equal(session.getStatus().connected, false);
+
+  await assert.doesNotReject(session.start());
+  assert.equal(session.getStatus().connected, true);
 });

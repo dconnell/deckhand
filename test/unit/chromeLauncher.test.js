@@ -133,3 +133,40 @@ test('createWsTransport forwards CDP frames and close events through the contrac
   assert.deepEqual(messages, ['{"id":1,"result":{}}']);
   assert.deepEqual(closes, ['closed']);
 });
+
+test('createWsTransport exposes readiness that resolves on socket open', async () => {
+  const fake = {
+    handlers: new Map(),
+    sent: [],
+    closed: false,
+    on(event, handler) {
+      const handlers = this.handlers.get(event) ?? new Set();
+      handlers.add(handler);
+      this.handlers.set(event, handlers);
+    },
+    send(raw) {
+      this.sent.push(raw);
+    },
+    close() {
+      this.closed = true;
+      this.handlers.get('close')?.forEach((handler) => handler());
+    },
+    emit(event, payload) {
+      this.handlers.get(event)?.forEach((handler) => handler(payload));
+    },
+  };
+
+  const transport = createWsTransport({
+    url: 'ws://127.0.0.1:9222/devtools/browser/abc',
+    WebSocketClass: class {
+      constructor() {
+        Object.assign(this, fake);
+      }
+    },
+  });
+
+  const ready = transport.waitUntilReady();
+  fake.emit('open');
+
+  await assert.doesNotReject(ready);
+});

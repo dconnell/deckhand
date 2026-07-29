@@ -78,7 +78,7 @@ function isMainModule(metaUrl) {
 /**
  * Load config, compose adapters, and start the coordinator process.
  *
- * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createHotkeysFn?: typeof createHotkeyAdapter, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, createBrowserSessionFn?: typeof createBrowserSession, createBrowserCommandExecutorFn?: typeof createBrowserCommandExecutor, createCdpClientFn?: typeof createCdpClient, launchChromeSessionFn?: typeof launchChromeSession, installSignalHandlers?: boolean, presenterAssetsPath?: string }} [options] Startup options.
+ * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createHotkeysFn?: typeof createHotkeyAdapter, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, createBrowserSessionFn?: typeof createBrowserSession, createBrowserCommandExecutorFn?: typeof createBrowserCommandExecutor, createCdpClientFn?: typeof createCdpClient, launchChromeSessionFn?: typeof launchChromeSession, discoverCdpEndpointFn?: typeof discoverCdpEndpoint, installSignalHandlers?: boolean, presenterAssetsPath?: string }} [options] Startup options.
  * @returns {Promise<number>}
  */
 export async function run(options = {}) {
@@ -121,6 +121,17 @@ export async function run(options = {}) {
   let hub;
   let obs;
   let browserSession = null;
+  let chromeLaunch = null;
+
+  async function stopLaunchedChrome() {
+    if (chromeLaunch === null) {
+      return;
+    }
+
+    const currentLaunch = chromeLaunch;
+    chromeLaunch = null;
+    await currentLaunch.stop().catch(() => {});
+  }
 
   try {
     hub = (options.createHubFn ?? createHub)({ ...config.hub, logger });
@@ -132,29 +143,29 @@ export async function run(options = {}) {
     if (hasBrowserSources(config)) {
       const createCdpClientFn = options.createCdpClientFn ?? createCdpClient;
       const launchChromeSessionFn = options.launchChromeSessionFn ?? launchChromeSession;
+      const discoverCdpEndpointFn = options.discoverCdpEndpointFn ?? discoverCdpEndpoint;
       const profileDir = resolveProfileDir(config, presentationName);
       const chromeOptions = config.chrome ?? {};
 
-      let launchInfo = null;
       const ensureLaunched = async () => {
-        if (launchInfo !== null) {
-          return;
+        if (chromeLaunch !== null) {
+          return chromeLaunch;
         }
 
-        launchInfo = await launchChromeSessionFn({
+        chromeLaunch = await launchChromeSessionFn({
           executablePath: chromeOptions.executablePath,
           profileDir,
           debugPort: chromeOptions.debugPort,
           extraArgs: chromeOptions.extraArgs,
           logger,
         });
-        return launchInfo;
+        return chromeLaunch;
       };
 
       const cdpClient = createCdpClientFn({
         discover: async () => {
           const info = await ensureLaunched();
-          const discovered = await discoverCdpEndpoint({ debugPort: info.debugPort, logger });
+          const discovered = await discoverCdpEndpointFn({ debugPort: info.debugPort, logger });
           return { webSocketDebuggerUrl: discovered.webSocketDebuggerUrl, chromePid: info.chromePid };
         },
         createTransport: (url) => createWsTransport({ url }),
@@ -221,6 +232,7 @@ export async function run(options = {}) {
     consoleLike.error(`Coordinator failed to start: ${error instanceof Error ? error.message : String(error)}`);
     await presenterHttp?.stop().catch(() => {});
     await coordinator.stop().catch(() => {});
+    await stopLaunchedChrome();
     return 1;
   }
 
@@ -237,6 +249,7 @@ export async function run(options = {}) {
       try {
         await presenterHttp?.stop();
         await coordinator.stop();
+        await stopLaunchedChrome();
       } catch (error) {
         logger.error('Coordinator shutdown failed', {
           error: error instanceof Error ? error.message : String(error),

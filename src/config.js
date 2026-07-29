@@ -146,7 +146,13 @@ function normalizeBrowserTab(alias, entry, pathName) {
   const tab = { url };
 
   if (value.preload !== undefined) {
-    tab.preload = assertBoolean(value.preload, `${pathName}.preload`);
+    const preload = assertBoolean(value.preload, `${pathName}.preload`);
+
+    if (!preload) {
+      throw new ConfigError(`${pathName}.preload`, 'must preload all declared tabs at startup');
+    }
+
+    tab.preload = true;
   } else {
     tab.preload = true;
   }

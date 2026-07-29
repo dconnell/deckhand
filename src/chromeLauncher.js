@@ -159,7 +159,7 @@ export async function discoverCdpEndpoint(options) {
  * Create a CDP transport backed by a real WebSocket connection.
  *
  * @param {{ url: string, WebSocketClass?: typeof WebSocket }} options Transport options.
- * @returns {{ send(raw: string): void, close(): void, on(event: 'message' | 'close' | 'error', handler: (payload?: string) => void): void }}
+ * @returns {{ send(raw: string): void, close(): void, on(event: 'message' | 'close' | 'error', handler: (payload?: string) => void): void, waitUntilReady(): Promise<void> }}
  */
 export function createWsTransport(options) {
   const WebSocketClass = options.WebSocketClass ?? WebSocket;
@@ -169,18 +169,40 @@ export function createWsTransport(options) {
     close: new Set(),
     error: new Set(),
   };
+  let readySettled = false;
+  const ready = new Promise((resolve, reject) => {
+    socket.on('open', () => {
+      if (readySettled) {
+        return;
+      }
+
+      readySettled = true;
+      resolve();
+    });
+
+    socket.on('error', (error) => {
+      if (!readySettled) {
+        readySettled = true;
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+
+      listeners.error.forEach((handler) => handler(error));
+    });
+
+    socket.on('close', () => {
+      if (!readySettled) {
+        readySettled = true;
+        reject(new Error('CDP transport closed before becoming ready'));
+      }
+
+      listeners.close.forEach((handler) => handler());
+    });
+  });
+  ready.catch(() => {});
 
   socket.on('message', (raw) => {
     const payload = typeof raw === 'string' ? raw : String(raw);
     listeners.message.forEach((handler) => handler(payload));
-  });
-
-  socket.on('close', () => {
-    listeners.close.forEach((handler) => handler());
-  });
-
-  socket.on('error', (error) => {
-    listeners.error.forEach((handler) => handler(error));
   });
 
   return {
@@ -192,6 +214,9 @@ export function createWsTransport(options) {
     },
     on(event, handler) {
       listeners[event]?.add(handler);
+    },
+    waitUntilReady() {
+      return ready;
     },
   };
 }

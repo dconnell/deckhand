@@ -160,8 +160,8 @@ URL or title lookup.
   - `url`: absolute `http` or `https` URL
   - `initial`: optional boolean; exactly one tab (or none, defaulting to the
     first declared) is the active tab at startup
-  - `preload`: optional boolean (default `true`); when `false` the tab is not
-    created until a slide action references it
+  - `preload`: optional boolean that currently must remain `true`; Deckhand
+    preloads every declared tab at startup
 
 ## Chrome Session
 

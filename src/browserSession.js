@@ -21,13 +21,14 @@ function createEmptyRegistry() {
  * command routing can be tested without a real Chrome process. Identity is
  * always a runtime handle created by Deckhand, never URL or title lookup.
  *
- * @param {{ sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }>, createCdpClient(): { connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string }): Promise<void> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Session dependencies.
+ * @param {{ sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }>, createCdpClient(): { connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string }): Promise<void> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Session dependencies.
  * @returns {{ start(): Promise<void>, stop(): Promise<void>, activateTab(sourceId: string, tabAlias: string): Promise<void>, navigateTab(sourceId: string, tabAlias: string, url: string): Promise<void>, getStatus(): { connected: boolean, chromePid: number | null, sources: Record<string, { ready: boolean, activeTab: string | null, tabs: string[] }> }, getRegistry(): { sources: Record<string, { cdpWindowId: number | null, mainTargetId: string | null, tabs: Record<string, { targetId: string, initialUrl: string }>, activeTab: string | null }> } }}
  */
 export function createBrowserSession(options) {
   const logger = options.logger ?? createNoopLogger();
   let cdpClient = null;
   let registry = createEmptyRegistry();
+  let stopping = false;
 
   function requireSource(sourceId) {
     const source = registry.sources[sourceId];
@@ -58,6 +59,12 @@ export function createBrowserSession(options) {
       throw new Error(`initial tab "${initialAlias}" is not declared on source ${source.id}`);
     }
 
+    for (const [alias, tab] of Object.entries(browser.tabs)) {
+      if (tab.preload === false) {
+        throw new Error(`source ${source.id} tab ${alias} disables preload, but Deckhand currently preloads all declared tabs`);
+      }
+    }
+
     const windowResult = await cdpClient.createWindow({ url: initialTab.url });
 
     const sourceRegistry = {
@@ -77,11 +84,12 @@ export function createBrowserSession(options) {
         continue;
       }
 
-      if (tab.preload === false) {
-        continue;
+      const tabResult = await cdpClient.createTab({ url: tab.url });
+
+      if (tabResult.windowId !== sourceRegistry.cdpWindowId) {
+        throw new Error(`source ${source.id} tab ${alias} did not open in the same Chrome window as its source`);
       }
 
-      const tabResult = await cdpClient.createTab({ url: tab.url });
       sourceRegistry.tabs[alias] = {
         targetId: tabResult.targetId,
         initialUrl: tab.url,
@@ -98,8 +106,19 @@ export function createBrowserSession(options) {
       }
 
       cdpClient = options.createCdpClient();
-      await cdpClient.connect();
+
+      try {
+        await cdpClient.connect();
+      } catch (error) {
+        cdpClient = null;
+        throw error;
+      }
+
       cdpClient.on('disconnected', () => {
+        if (stopping) {
+          return;
+        }
+
         logger.warn('Browser session disconnected unexpectedly');
       });
 
@@ -110,7 +129,9 @@ export function createBrowserSession(options) {
           await buildSource(source);
         }
       } catch (error) {
+        stopping = true;
         await cdpClient.disconnect().catch(() => {});
+        stopping = false;
         cdpClient = null;
         registry = createEmptyRegistry();
         throw error;
@@ -127,7 +148,9 @@ export function createBrowserSession(options) {
         return;
       }
 
+      stopping = true;
       await cdpClient.disconnect().catch(() => {});
+      stopping = false;
       cdpClient = null;
       registry = createEmptyRegistry();
       logger.info('Browser session stopped');

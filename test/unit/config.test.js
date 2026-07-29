@@ -186,6 +186,13 @@ test('normalizeConfig defaults preload to true and resolves the initial tab when
   assert.equal(normalized.sources.BrowserA.browser.tabs.home.preload, true);
 });
 
+test('normalizeConfig rejects browser tabs that disable preload', () => {
+  const config = createValidConfig();
+  config.sources.BrowserA.browser.tabs.checkout.preload = false;
+
+  assertConfigError(() => normalizeConfig(config), 'sources.BrowserA.browser.tabs.checkout.preload', /preload all declared tabs/i);
+});
+
 test('normalizeConfig rejects missing sources catalog', () => {
   const config = createValidConfig();
   delete config.sources;

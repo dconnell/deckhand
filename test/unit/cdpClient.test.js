@@ -3,25 +3,47 @@ import test from 'node:test';
 
 import { createCdpClient } from '../../src/cdpClient.js';
 
-function createFakeTransport() {
+function createFakeTransport(options = {}) {
   const listeners = { message: new Set(), close: new Set(), error: new Set() };
   const sent = [];
   let closed = false;
+  let ready = options.autoReady !== false;
+  let resolveReady = null;
+  let rejectReady = null;
+
+  const readyPromise = ready
+    ? Promise.resolve()
+    : new Promise((resolve, reject) => {
+      resolveReady = resolve;
+      rejectReady = reject;
+    });
 
   return {
     sent,
     get closed() {
       return closed;
     },
+    waitUntilReady() {
+      return readyPromise;
+    },
     send(raw) {
       sent.push(JSON.parse(raw));
     },
     close() {
       closed = true;
+      rejectReady?.(new Error('transport closed before ready'));
       listeners.close.forEach((handler) => handler());
     },
     emit(payload) {
       listeners.message.forEach((handler) => handler(JSON.stringify(payload)));
+    },
+    emitReady() {
+      if (ready) {
+        return;
+      }
+
+      ready = true;
+      resolveReady?.();
     },
     emitClose() {
       listeners.close.forEach((handler) => handler());
@@ -58,6 +80,26 @@ test('connect discovers the browser endpoint, opens the transport, and records t
   assert.equal(client.isConnected(), true);
   assert.equal(client.getChromePid(), 47213);
   assert.equal(transport.closed, false);
+});
+
+test('connect waits for the transport to become ready before reporting connected', async () => {
+  const transport = createFakeTransport({ autoReady: false });
+  const client = createCdpClient({
+    discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://127.0.0.1:9232/devtools/browser/abc', chromePid: 47213 }),
+    createTransport() {
+      return transport;
+    },
+  });
+
+  const pending = client.connect();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(client.isConnected(), false);
+
+  transport.emitReady();
+  await pending;
+
+  assert.equal(client.isConnected(), true);
 });
 
 test('disconnect closes the transport and reports disconnected', async () => {
@@ -110,7 +152,7 @@ test('createWindow creates a new-window target and resolves its targetId and win
   assert.deepEqual(await pending, { targetId: 'TARGET_TAB_HOME', windowId: 91 });
 });
 
-test('createTab creates a same-window target and resolves its targetId', async () => {
+test('createTab creates a background target and resolves its targetId and owning windowId', async () => {
   const transport = createFakeTransport();
   const client = createCdpClient({
     discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://browser', chromePid: 1 }),
@@ -134,12 +176,21 @@ test('createTab creates a same-window target and resolves its targetId', async (
   assert.deepEqual(transport.sent[2], {
     id: 3,
     method: 'Target.createTarget',
-    params: { url: 'https://example.com/checkout' },
+    params: { url: 'https://example.com/checkout', background: true },
   });
 
   respondTo(transport, 3, { targetId: 'TARGET_TAB_CHECKOUT' });
+  await new Promise((resolve) => setImmediate(resolve));
 
-  assert.deepEqual(await pending, { targetId: 'TARGET_TAB_CHECKOUT' });
+  assert.deepEqual(transport.sent[3], {
+    id: 4,
+    method: 'Browser.getWindowForTarget',
+    params: { targetId: 'TARGET_TAB_CHECKOUT' },
+  });
+
+  respondTo(transport, 4, { windowId: 91 });
+
+  assert.deepEqual(await pending, { targetId: 'TARGET_TAB_CHECKOUT', windowId: 91 });
 });
 
 test('activateTab sends Target.activateTarget for the named handle', async () => {
@@ -276,6 +327,25 @@ test('transport close marks the client disconnected and emits the disconnected l
 
   assert.equal(client.isConnected(), false);
   assert.deepEqual(events, ['disconnected']);
+});
+
+test('transport close rejects pending requests instead of leaving them unresolved', async () => {
+  const transport = createFakeTransport();
+  const client = createCdpClient({
+    discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://browser', chromePid: 1 }),
+    createTransport() {
+      return transport;
+    },
+  });
+
+  await client.connect();
+
+  const pending = client.activateTab({ targetId: 'TARGET_TAB_CHECKOUT' });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  transport.emitClose();
+
+  await assert.rejects(pending, /closed/i);
 });
 
 test('connect rejects when discovery fails', async () => {

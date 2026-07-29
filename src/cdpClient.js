@@ -16,8 +16,8 @@ function isPlainObject(value) {
  * The discovery and transport factories are injectable so unit tests can drive
  * mocked WebSocket traffic without a real Chrome process.
  *
- * @param {{ discover(): Promise<{ webSocketDebuggerUrl: string, chromePid?: number | null }>, createTransport(url: string): { send(raw: string): void, close(): void, on(event: 'message' | 'close' | 'error', handler: (payload?: string) => void): void }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Client dependencies.
- * @returns {{ connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string }): Promise<void>, getTargets(): Promise<Array<Record<string, unknown>>> }}
+ * @param {{ discover(): Promise<{ webSocketDebuggerUrl: string, chromePid?: number | null }>, createTransport(url: string): { send(raw: string): void, close(): void, on(event: 'message' | 'close' | 'error', handler: (payload?: string) => void): void, waitUntilReady?(): Promise<void> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Client dependencies.
+ * @returns {{ connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string }): Promise<void>, getTargets(): Promise<Array<Record<string, unknown>>> }}
  */
 export function createCdpClient(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -28,6 +28,30 @@ export function createCdpClient(options) {
   let connected = false;
   let chromePid = null;
   let nextId = 1;
+
+  function rejectPendingRequests(message) {
+    const error = new Error(message);
+
+    for (const waiter of pending.values()) {
+      waiter.reject(error);
+    }
+
+    pending.clear();
+    sessions.clear();
+  }
+
+  function handleTransportClosed() {
+    const shouldNotify = connected;
+
+    connected = false;
+    transport = null;
+    rejectPendingRequests('CDP transport closed');
+    logger.warn('CDP transport closed');
+
+    if (shouldNotify) {
+      lifecycleHandlers.forEach((handler) => handler());
+    }
+  }
 
   function handleMessage(raw) {
     let parsed;
@@ -60,7 +84,7 @@ export function createCdpClient(options) {
 
   function send(method, params = {}, sessionId) {
     return new Promise((resolve, reject) => {
-      if (transport === null) {
+      if (transport === null || !connected) {
         reject(new Error('CDP client is not connected'));
         return;
       }
@@ -75,12 +99,22 @@ export function createCdpClient(options) {
       }
 
       pending.set(id, { resolve, reject });
-      transport.send(JSON.stringify(message));
+
+      try {
+        transport.send(JSON.stringify(message));
+      } catch (error) {
+        pending.delete(id);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
   return {
     async connect() {
+      if (connected) {
+        return;
+      }
+
       const info = await options.discover();
 
       if (!isPlainObject(info) || typeof info.webSocketDebuggerUrl !== 'string' || info.webSocketDebuggerUrl.trim() === '') {
@@ -88,22 +122,54 @@ export function createCdpClient(options) {
       }
 
       chromePid = typeof info.chromePid === 'number' ? info.chromePid : null;
-      transport = options.createTransport(info.webSocketDebuggerUrl);
-      transport.on('message', handleMessage);
-      transport.on('close', () => {
-        connected = false;
-        logger.warn('CDP transport closed');
-        lifecycleHandlers.forEach((handler) => handler());
+      const nextTransport = options.createTransport(info.webSocketDebuggerUrl);
+
+      nextTransport.on('message', handleMessage);
+      nextTransport.on('close', () => {
+        if (transport !== nextTransport) {
+          return;
+        }
+
+        handleTransportClosed();
       });
+      nextTransport.on('error', (error) => {
+        logger.error('CDP transport error', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+
+      transport = nextTransport;
+
+      try {
+        await nextTransport.waitUntilReady?.();
+      } catch (error) {
+        if (transport === nextTransport) {
+          transport = null;
+          rejectPendingRequests('CDP transport failed before becoming ready');
+        }
+
+        try {
+          nextTransport.close();
+        } catch {
+          // ignore cleanup failures from a transport that never became ready
+        }
+
+        throw error;
+      }
+
       connected = true;
       logger.info('Connected to CDP browser endpoint', { chromePid });
     },
 
     async disconnect() {
-      connected = false;
+      const currentTransport = transport;
 
-      if (transport !== null) {
-        transport.close();
+      connected = false;
+      transport = null;
+      rejectPendingRequests('CDP client disconnected');
+
+      if (currentTransport !== null) {
+        currentTransport.close();
       }
     },
 
@@ -135,9 +201,14 @@ export function createCdpClient(options) {
     },
 
     async createTab({ url }) {
-      const result = await send('Target.createTarget', { url });
+      const createResult = await send('Target.createTarget', { url, background: true });
+      const targetId = createResult.targetId;
+      const windowResult = await send('Browser.getWindowForTarget', { targetId });
 
-      return { targetId: result.targetId };
+      return {
+        targetId,
+        windowId: windowResult.windowId,
+      };
     },
 
     async activateTab({ targetId }) {
