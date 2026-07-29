@@ -27,6 +27,7 @@ test('presenter HTTP server serves presenter assets and status without exposing 
     getStatus() {
       return {
         service: 'deckhand',
+        phase: 'ready',
         presenterEnabled: true,
         obs: { connected: true },
         hub: { host: '127.0.0.1', port: 8765, driverConnected: true, observerCount: 1 },
@@ -63,6 +64,7 @@ test('presenter HTTP server serves presenter assets and status without exposing 
     assert.equal(status.headers.get('cache-control'), 'no-store');
     assert.deepEqual(await status.json(), {
       service: 'deckhand',
+      phase: 'ready',
       presenterEnabled: true,
       obs: { connected: true },
       hub: { host: '127.0.0.1', port: 8765, driverConnected: true, observerCount: 1 },

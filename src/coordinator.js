@@ -17,7 +17,7 @@ function createNoopLogger() {
  * Deckhand browser session runtime.
  *
  * @param {{ config: { driver: { type: string }, layouts: Record<string, unknown>, slides: Record<string, { layoutId: string, commands: Array<{ type: string, source: string, tab?: string, url?: string, [key: string]: unknown }> }> }, obs: { connect(): Promise<unknown>, disconnect(): Promise<unknown>, setScene(sceneName: string): Promise<unknown>, isConnected?(): boolean }, hub: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown>, sendCommand(target: { role?: 'driver' }, command: Record<string, unknown>): Promise<unknown>, publishSticky(channel: string, payload: Record<string, unknown>): Promise<unknown>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown> } }, hotkeys: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown> }, executor?: { start(): Promise<void>, stop(): Promise<void>, execute(command: Record<string, unknown>): Promise<void> } | null, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Coordinator dependencies.
- * @returns {{ start(): Promise<void>, stop(): Promise<void>, handleDriverPositionChanged(position: { id: string, index?: Record<string, unknown>, meta?: Record<string, unknown> }): Promise<void>, handleHotkeyAction(action: { type: 'next' | 'prev' | 'goTo', id?: string }), getCurrentPresentationState(): Record<string, unknown> | null }}
+ * @returns {{ start(options?: { enableHotkeys?: boolean }): Promise<void>, enableHotkeys(): Promise<void>, stop(): Promise<void>, handleDriverPositionChanged(position: { id: string, index?: Record<string, unknown>, meta?: Record<string, unknown> }): Promise<void>, handleHotkeyAction(action: { type: 'next' | 'prev' | 'goTo', id?: string }), getCurrentPresentationState(): Record<string, unknown> | null }}
  */
 export function createCoordinator(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -192,6 +192,15 @@ export function createCoordinator(options) {
     logger.info(message, options.hub.getSnapshot());
   }
 
+  async function startHotkeys() {
+    if (hotkeysStarted) {
+      return;
+    }
+
+    await options.hotkeys.start();
+    hotkeysStarted = true;
+  }
+
   options.hub.on('driverPositionChanged', handleDriverPositionChanged);
   options.hub.on('driverRegistered', () => logSnapshot('Driver client registered'));
   options.hub.on('observerRegistered', () => logSnapshot('Observer client registered'));
@@ -200,7 +209,7 @@ export function createCoordinator(options) {
   options.hotkeys.on('action', handleHotkeyAction);
 
   return {
-    async start() {
+    async start(startOptions = {}) {
       if (started) {
         return;
       }
@@ -218,8 +227,10 @@ export function createCoordinator(options) {
           executorStarted = true;
         }
 
-        await options.hotkeys.start();
-        hotkeysStarted = true;
+        if (startOptions.enableHotkeys !== false) {
+          await startHotkeys();
+        }
+
         started = true;
         logger.info('Coordinator started', { driver: options.config.driver.type });
       } catch (error) {
@@ -245,6 +256,14 @@ export function createCoordinator(options) {
 
         throw error;
       }
+    },
+
+    async enableHotkeys() {
+      if (!started) {
+        throw new Error('coordinator is not started');
+      }
+
+      await startHotkeys();
     },
 
     async stop() {

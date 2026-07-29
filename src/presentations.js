@@ -1,8 +1,41 @@
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 
-import { loadConfig } from './config.js';
+import { ConfigError, normalizeConfig } from './config.js';
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function mergeConfigOverlay(base, overlay) {
+  if (!isPlainObject(base) || !isPlainObject(overlay)) {
+    return overlay;
+  }
+
+  const merged = { ...base };
+
+  for (const [key, value] of Object.entries(overlay)) {
+    if (isPlainObject(value) && isPlainObject(base[key])) {
+      merged[key] = mergeConfigOverlay(base[key], value);
+      continue;
+    }
+
+    merged[key] = value;
+  }
+
+  return merged;
+}
+
+async function readJsonFile(filePath) {
+  const text = await readFile(filePath, 'utf8');
+
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new ConfigError('config', `must be valid JSON: ${error.message}`);
+  }
+}
 
 function validatePresentationName(presentationName) {
   if (typeof presentationName !== 'string' || presentationName.trim() === '') {
@@ -66,23 +99,30 @@ export function resolvePresentationPaths(options) {
 }
 
 /**
- * Load a presentation config, preferring a local untracked override when present.
+ * Load a presentation config and deep-merge any local untracked override.
  *
  * @param {{ cwd: string, presentationName: string }} options Load inputs.
  * @returns {Promise<{ config: Awaited<ReturnType<typeof loadConfig>>, filePath: string, paths: ReturnType<typeof resolvePresentationPaths> }>}
  */
 export async function loadPresentationConfig(options) {
   const paths = resolvePresentationPaths(options);
-  let filePath = paths.localConfigPath;
+  const baseConfig = await readJsonFile(paths.configPath);
+  let filePath = paths.configPath;
+  let mergedConfig = baseConfig;
 
   try {
-    await access(filePath);
-  } catch {
-    filePath = paths.configPath;
+    await access(paths.localConfigPath);
+    const localConfig = await readJsonFile(paths.localConfigPath);
+    mergedConfig = mergeConfigOverlay(baseConfig, localConfig);
+    filePath = paths.localConfigPath;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw error;
+    }
   }
 
   return {
-    config: await loadConfig({ filePath }),
+    config: normalizeConfig(mergedConfig),
     filePath,
     paths,
   };

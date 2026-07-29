@@ -31,10 +31,12 @@ cp -R presentation/example presentation/my-talk
 ```bash
 # presentation/my-talk/config.local.json  (git-ignored)
 {
-  "obs": { "url": "ws://127.0.0.1:4455", "password": "<your OBS password>" },
-  ...all other fields from config.json with your local overrides...
+  "obs": { "password": "<your OBS password>" }
 }
 ```
+
+`config.local.json` is a deep merge overlay on top of `config.json`, so it only
+needs the fields you want to override locally.
 
 4. Build the OBS scenes from the presentation's `layouts` catalog:
 
@@ -56,28 +58,23 @@ windows when slides change.
 
 ### Running A Presentation
 
-You need **two terminal windows** running simultaneously.
+You need **one terminal window**.
 
-**Terminal 1 -- deck server** (serves the reveal.js deck HTML):
-
-```bash
-npm run presentation:serve -- my-talk
-```
-
-Open the deck at `http://127.0.0.1:3000/presentation/my-talk/deck/index.html`.
-
-**Terminal 2 -- coordinator** (connects to OBS, runs the hub, serves presenter
-HTTP):
+**Terminal 1 -- managed runtime session**:
 
 ```bash
 npm start my-talk
 ```
 
 This starts:
+- Presentation deck at `http://127.0.0.1:3000/presentation/my-talk/deck/index.html`
 - OBS connection
 - WebSocket hub at `ws://127.0.0.1:8765`
 - Presenter app at `http://127.0.0.1:3001/presenter/`
 - Status page at `http://127.0.0.1:3001/status.json`
+
+Startup waits for the real deck driver position before enabling hotkeys or
+reporting readiness.
 
 If you are using Hammerspoon, it also owns the macOS global slide hotkeys.
 
@@ -121,8 +118,8 @@ configured target commands.
 - Automated unit and integration tests pass with `npm test`.
 - `npm run setup:obs -- <presentation-name>` connects to OBS and applies
   layout-derived scenes from that presentation config.
-- `npm start <presentation-name>` starts the coordinator and the presenter HTTP
-  surface for that presentation.
+- `npm start <presentation-name>` starts the managed runtime session, including
+  the deck HTTP server and presenter HTTP surface.
 - `npm run presenter:doctor -- <presentation-name>` validates the local
   presentation config and reports missing STT dependencies clearly.
 - Real OBS, Hammerspoon Accessibility, microphone permission, and whisper.cpp

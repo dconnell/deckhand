@@ -56,7 +56,7 @@ test('parsePresentationCliArgs requires exactly one presentation name', () => {
   );
 });
 
-test('loadPresentationConfig prefers config.local.json when present', async () => {
+test('loadPresentationConfig deep-merges config.local.json over config.json when present', async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-presentation-config-'));
   const presentationDir = path.join(tempDir, 'presentation', 'demo');
 
@@ -88,27 +88,10 @@ test('loadPresentationConfig prefers config.local.json when present', async () =
       },
     }, null, 2), 'utf8');
     await writeFile(path.join(presentationDir, 'config.local.json'), JSON.stringify({
-      driver: { type: 'revealjs' },
-      obs: { url: 'ws://127.0.0.1:4455', password: 'secret' },
-      hub: { port: 8765 },
-      hotkeys: { next: 'F13', prev: 'F14' },
-      sources: {
-        Slide: { kind: 'browser', browser: { tabs: { deck: { url: 'http://127.0.0.1:3000/deck/', initial: true } } } },
-      },
-      layouts: {
-        'full-slide': {
-          audienceScene: 'Full Slide',
-          slots: [{ source: 'Slide', position: 'full' }],
-        },
-      },
-      slides: {
-        intro: { layout: 'full-slide' },
-      },
+      obs: { password: 'secret' },
       presenter: {
-        platform: 'macos',
-        stage: { x: 0, y: 0, width: 1800, height: 1168 },
-        windows: {
-          Slide: { app: 'Safari' },
+        http: {
+          port: 3999,
         },
       },
     }, null, 2), 'utf8');
@@ -119,7 +102,10 @@ test('loadPresentationConfig prefers config.local.json when present', async () =
     });
 
     assert.equal(filePath, path.join(presentationDir, 'config.local.json'));
+    assert.equal(config.obs.url, 'ws://127.0.0.1:4455');
     assert.equal(config.obs.password, 'secret');
+    assert.equal(config.presenter.http.port, 3999);
+    assert.equal(config.presenter.windows.Slide.app, 'Safari');
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

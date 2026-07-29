@@ -7,6 +7,7 @@ import { createCoordinator } from './coordinator.js';
 import { createHotkeyAdapter } from './hotkeys.js';
 import { createHub } from './hub.js';
 import { createObsClient } from './obsClient.js';
+import { createPresentationServer } from './presentationServer.js';
 import { createPresenterHttpServer } from './presenterHttp.js';
 import { loadPresentationConfig } from './presentations.js';
 import { parsePresentationCliArgs } from './presentations.js';
@@ -16,6 +17,11 @@ import { createCdpClient } from './cdpClient.js';
 import { createBrowserSession, createBrowserCommandExecutor } from './browserSession.js';
 import { createWsTransport, discoverCdpEndpoint, launchChromeSession } from './chromeLauncher.js';
 import os from 'node:os';
+
+const PRESENTATION_SERVER_HOST = '127.0.0.1';
+const PRESENTATION_SERVER_PORT = Number(process.env.PORT ?? 3000);
+const DRIVER_READY_TIMEOUT_MS = 10000;
+const PRESENTER_OBSERVER_TIMEOUT_MS = 5000;
 
 function hasBrowserSources(config) {
   return Object.values(config.sources).some((source) => source?.kind === 'browser');
@@ -27,6 +33,66 @@ function resolveProfileDir(config, presentationName) {
   }
 
   return path.join(os.tmpdir(), 'deckhand-chrome-profiles', presentationName);
+}
+
+function hasPresentationObserver(hubSnapshot) {
+  return hubSnapshot.observers.some((observer) => Array.isArray(observer.subscriptions) && observer.subscriptions.includes('presentationState'));
+}
+
+function waitForEvent(timeoutMs, timeoutMessage, register) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+
+    register((payload) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timer);
+      resolve(payload);
+    });
+  });
+}
+
+async function waitForFirstDriverPosition({ coordinator, hub, timeoutMs = DRIVER_READY_TIMEOUT_MS, presentationName }) {
+  if (coordinator.getCurrentPresentationState() !== null) {
+    return;
+  }
+
+  await waitForEvent(
+    timeoutMs,
+    `Timed out waiting for the first driver position for presentation ${presentationName}. Open the deck and confirm the driver connects.`,
+    (resolve) => {
+      hub.on('driverPositionChanged', resolve);
+    },
+  );
+}
+
+async function waitForPresentationObserver({ hub, timeoutMs = PRESENTER_OBSERVER_TIMEOUT_MS }) {
+  if (hasPresentationObserver(hub.getSnapshot())) {
+    return;
+  }
+
+  await waitForEvent(
+    timeoutMs,
+    'Timed out waiting for a presenter observer. Check Hammerspoon, reload its config, and confirm Accessibility permission.',
+    (resolve) => {
+      hub.on('observerRegistered', (observer) => {
+        if (Array.isArray(observer.subscriptions) && observer.subscriptions.includes('presentationState')) {
+          resolve(observer);
+        }
+      });
+    },
+  );
 }
 
 function sanitizeContext(value) {
@@ -78,7 +144,7 @@ function isMainModule(metaUrl) {
 /**
  * Load config, compose adapters, and start the coordinator process.
  *
- * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createHotkeysFn?: typeof createHotkeyAdapter, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, createBrowserSessionFn?: typeof createBrowserSession, createBrowserCommandExecutorFn?: typeof createBrowserCommandExecutor, createCdpClientFn?: typeof createCdpClient, launchChromeSessionFn?: typeof launchChromeSession, discoverCdpEndpointFn?: typeof discoverCdpEndpoint, installSignalHandlers?: boolean, presenterAssetsPath?: string }} [options] Startup options.
+ * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createHotkeysFn?: typeof createHotkeyAdapter, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, createPresentationServerFn?: typeof createPresentationServer, createBrowserSessionFn?: typeof createBrowserSession, createBrowserCommandExecutorFn?: typeof createBrowserCommandExecutor, createCdpClientFn?: typeof createCdpClient, launchChromeSessionFn?: typeof launchChromeSession, discoverCdpEndpointFn?: typeof discoverCdpEndpoint, waitForDriverPositionFn?: typeof waitForFirstDriverPosition, waitForPresentationObserverFn?: typeof waitForPresentationObserver, installSignalHandlers?: boolean, presenterAssetsPath?: string }} [options] Startup options.
  * @returns {Promise<number>}
  */
 export async function run(options = {}) {
@@ -122,6 +188,8 @@ export async function run(options = {}) {
   let obs;
   let browserSession = null;
   let chromeLaunch = null;
+  let presentationServer = null;
+  let phase = 'starting';
 
   async function stopLaunchedChrome() {
     if (chromeLaunch === null) {
@@ -137,6 +205,13 @@ export async function run(options = {}) {
     hub = (options.createHubFn ?? createHub)({ ...config.hub, logger });
     obs = (options.createObsClientFn ?? createObsClient)({ ...config.obs, logger });
     const hotkeys = (options.createHotkeysFn ?? createHotkeyAdapter)({ ...config.hotkeys, logger });
+    presentationServer = (options.createPresentationServerFn ?? createPresentationServer)({
+      cwd,
+      host: PRESENTATION_SERVER_HOST,
+      logger,
+      port: PRESENTATION_SERVER_PORT,
+      presentationName,
+    });
 
     let executor = null;
 
@@ -198,6 +273,7 @@ export async function run(options = {}) {
         assetsRoot: presenterAssetsPath,
         getStatus() {
           return buildRuntimeStatus({
+            phase,
             currentPresentationState: coordinator.getCurrentPresentationState(),
             hubAddress: hub.getAddress(),
             hubSnapshot: hub.getSnapshot(),
@@ -223,16 +299,35 @@ export async function run(options = {}) {
   }
 
   try {
-    await coordinator.start();
+    await presentationServer.start();
+    await coordinator.start({ enableHotkeys: false });
 
     if (presenterHttp !== null) {
       await presenterHttp.start();
     }
+
+    await (options.waitForDriverPositionFn ?? waitForFirstDriverPosition)({
+      coordinator,
+      hub,
+      presentationName,
+    });
+
+    if (config.presenter !== null) {
+      await (options.waitForPresentationObserverFn ?? waitForPresentationObserver)({ hub });
+    }
+
+    if (typeof coordinator.enableHotkeys === 'function') {
+      await coordinator.enableHotkeys();
+    }
+
+    phase = 'ready';
   } catch (error) {
+    phase = 'failed';
     consoleLike.error(`Coordinator failed to start: ${error instanceof Error ? error.message : String(error)}`);
     await presenterHttp?.stop().catch(() => {});
     await coordinator.stop().catch(() => {});
     await stopLaunchedChrome();
+    await presentationServer?.stop().catch(() => {});
     return 1;
   }
 
@@ -244,12 +339,14 @@ export async function run(options = {}) {
       }
 
       shuttingDown = true;
+      phase = 'shuttingDown';
       logger.info('Received shutdown signal', { signal });
 
       try {
         await presenterHttp?.stop();
         await coordinator.stop();
         await stopLaunchedChrome();
+        await presentationServer?.stop();
       } catch (error) {
         logger.error('Coordinator shutdown failed', {
           error: error instanceof Error ? error.message : String(error),

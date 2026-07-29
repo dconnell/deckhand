@@ -102,8 +102,12 @@ test('run starts the presenter HTTP server when presenter mode is enabled', asyn
       },
       createCoordinatorFn() {
         return {
-          async start() {
+          async start(options = {}) {
             lifecycle.push('coordinator.start');
+            assert.equal(options.enableHotkeys, false);
+          },
+          async enableHotkeys() {
+            lifecycle.push('coordinator.enableHotkeys');
           },
           async stop() {
             lifecycle.push('coordinator.stop');
@@ -117,12 +121,21 @@ test('run starts the presenter HTTP server when presenter mode is enabled', asyn
         return {};
       },
       createHubFn() {
+        const handlers = new Map();
         return {
+          on(eventName, handler) {
+            handlers.set(eventName, handler);
+          },
+          async start() {},
+          async stop() {},
           getAddress() {
             return { host: '127.0.0.1', port: 8765 };
           },
           getSnapshot() {
-            return { activeDriver: null, observers: [], sticky: {}, targets: [] };
+            return { activeDriver: null, observers: [{ role: 'observer', subscriptions: ['presentationState'] }], sticky: {}, targets: [] };
+          },
+          emit(eventName, payload) {
+            return handlers.get(eventName)?.(payload);
           },
         };
       },
@@ -145,11 +158,38 @@ test('run starts the presenter HTTP server when presenter mode is enabled', asyn
           },
         };
       },
+      createPresentationServerFn() {
+        return {
+          async start() {
+            lifecycle.push('presentationServer.start');
+          },
+          async stop() {
+            lifecycle.push('presentationServer.stop');
+          },
+          getAddress() {
+            return { host: '127.0.0.1', port: 3000 };
+          },
+        };
+      },
+      waitForDriverPositionFn: async ({ hub }) => {
+        lifecycle.push('waitForDriverPosition');
+        await hub.emit('driverPositionChanged', { id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+      },
+      waitForPresentationObserverFn: async () => {
+        lifecycle.push('waitForPresentationObserver');
+      },
     });
 
     assert.equal(exitCode, 0);
     assert.deepEqual(errors, []);
-    assert.deepEqual(lifecycle, ['coordinator.start', 'presenterHttp.start']);
+    assert.deepEqual(lifecycle, [
+      'presentationServer.start',
+      'coordinator.start',
+      'presenterHttp.start',
+      'waitForDriverPosition',
+      'waitForPresentationObserver',
+      'coordinator.enableHotkeys',
+    ]);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -193,6 +233,7 @@ test('run does not create the presenter HTTP server for audience-only configs', 
       createCoordinatorFn() {
         return {
           async start() {},
+          async enableHotkeys() {},
           async stop() {},
           getCurrentPresentationState() {
             return null;
@@ -203,12 +244,21 @@ test('run does not create the presenter HTTP server for audience-only configs', 
         return {};
       },
       createHubFn() {
+        const handlers = new Map();
         return {
+          on(eventName, handler) {
+            handlers.set(eventName, handler);
+          },
+          async start() {},
+          async stop() {},
           getAddress() {
             return { host: '127.0.0.1', port: 8765 };
           },
           getSnapshot() {
             return { activeDriver: null, observers: [], sticky: {}, targets: [] };
+          },
+          emit(eventName, payload) {
+            return handlers.get(eventName)?.(payload);
           },
         };
       },
@@ -227,6 +277,18 @@ test('run does not create the presenter HTTP server for audience-only configs', 
           async start() {},
           async stop() {},
         };
+      },
+      createPresentationServerFn() {
+        return {
+          async start() {},
+          async stop() {},
+          getAddress() {
+            return { host: '127.0.0.1', port: 3000 };
+          },
+        };
+      },
+      waitForDriverPositionFn: async ({ hub }) => {
+        await hub.emit('driverPositionChanged', { id: 'intro', index: { h: 0, v: 0 }, meta: {} });
       },
     });
 
@@ -262,8 +324,11 @@ test('run stops the launched Chrome session when startup fails after browser lau
         return {};
       },
       createHubFn() {
+        const handlers = new Map();
         return {
-          on() {},
+          on(eventName, handler) {
+            handlers.set(eventName, handler);
+          },
           async start() {},
           async stop() {},
           getAddress() {
@@ -275,6 +340,9 @@ test('run stops the launched Chrome session when startup fails after browser lau
           async publishSticky() {},
           async sendCommand() {
             return [];
+          },
+          emit(eventName, payload) {
+            return handlers.get(eventName)?.(payload);
           },
         };
       },
@@ -351,6 +419,9 @@ test('run stops the launched Chrome session when startup fails after browser lau
             await executor.start();
             throw new Error('startup exploded');
           },
+          async enableHotkeys() {
+            lifecycle.push('coordinator.enableHotkeys');
+          },
           async stop() {
             lifecycle.push('coordinator.stop');
             await executor.stop();
@@ -360,11 +431,25 @@ test('run stops the launched Chrome session when startup fails after browser lau
           },
         };
       },
+      createPresentationServerFn() {
+        return {
+          async start() {
+            lifecycle.push('presentationServer.start');
+          },
+          async stop() {
+            lifecycle.push('presentationServer.stop');
+          },
+          getAddress() {
+            return { host: '127.0.0.1', port: 3000 };
+          },
+        };
+      },
     });
 
     assert.equal(exitCode, 1);
     assert.match(errors[0], /Coordinator failed to start: startup exploded/);
     assert.deepEqual(lifecycle, [
+      'presentationServer.start',
       'coordinator.start',
       'browserSession.start',
       'cdp.connect',
@@ -372,6 +457,228 @@ test('run stops the launched Chrome session when startup fails after browser lau
       'browserSession.stop',
       'cdp.disconnect',
       'chrome.stop',
+      'presentationServer.stop',
+    ]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('run fails startup when the first driver position never arrives', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-driver-timeout-'));
+  const errors = [];
+  const lifecycle = [];
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      installSignalHandlers: false,
+      consoleLike: {
+        error(message) {
+          errors.push(message);
+        },
+        info() {},
+        log() {},
+        warn() {},
+      },
+      createHotkeysFn() {
+        return {};
+      },
+      createHubFn() {
+        return {
+          on() {},
+          async start() {},
+          async stop() {},
+          getAddress() {
+            return { host: '127.0.0.1', port: 8765 };
+          },
+          getSnapshot() {
+            return { activeDriver: null, observers: [], sticky: {} };
+          },
+        };
+      },
+      createObsClientFn() {
+        return {
+          async connect() {},
+          async disconnect() {},
+          async setScene() {},
+          isConnected() {
+            return false;
+          },
+        };
+      },
+      createCoordinatorFn() {
+        return {
+          async start() {
+            lifecycle.push('coordinator.start');
+          },
+          async enableHotkeys() {
+            lifecycle.push('coordinator.enableHotkeys');
+          },
+          async stop() {
+            lifecycle.push('coordinator.stop');
+          },
+          getCurrentPresentationState() {
+            return null;
+          },
+        };
+      },
+      createPresenterHttpFn() {
+        return {
+          async start() {
+            lifecycle.push('presenterHttp.start');
+          },
+          async stop() {
+            lifecycle.push('presenterHttp.stop');
+          },
+        };
+      },
+      createPresentationServerFn() {
+        return {
+          async start() {
+            lifecycle.push('presentationServer.start');
+          },
+          async stop() {
+            lifecycle.push('presentationServer.stop');
+          },
+          getAddress() {
+            return { host: '127.0.0.1', port: 3000 };
+          },
+        };
+      },
+      waitForDriverPositionFn: async () => {
+        throw new Error('Timed out waiting for the first driver position');
+      },
+    });
+
+    assert.equal(exitCode, 1);
+    assert.match(errors[0], /Timed out waiting for the first driver position/);
+    assert.deepEqual(lifecycle, [
+      'presentationServer.start',
+      'coordinator.start',
+      'presenterHttp.start',
+      'presenterHttp.stop',
+      'coordinator.stop',
+      'presentationServer.stop',
+    ]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('run fails startup in presenter mode when no presentation observer connects', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-presenter-timeout-'));
+  const errors = [];
+  const lifecycle = [];
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      installSignalHandlers: false,
+      consoleLike: {
+        error(message) {
+          errors.push(message);
+        },
+        info() {},
+        log() {},
+        warn() {},
+      },
+      createHotkeysFn() {
+        return {};
+      },
+      createHubFn() {
+        const handlers = new Map();
+        return {
+          on(eventName, handler) {
+            handlers.set(eventName, handler);
+          },
+          async start() {},
+          async stop() {},
+          getAddress() {
+            return { host: '127.0.0.1', port: 8765 };
+          },
+          getSnapshot() {
+            return { activeDriver: null, observers: [], sticky: {} };
+          },
+          emit(eventName, payload) {
+            return handlers.get(eventName)?.(payload);
+          },
+        };
+      },
+      createObsClientFn() {
+        return {
+          async connect() {},
+          async disconnect() {},
+          async setScene() {},
+          isConnected() {
+            return false;
+          },
+        };
+      },
+      createCoordinatorFn() {
+        return {
+          async start() {
+            lifecycle.push('coordinator.start');
+          },
+          async enableHotkeys() {
+            lifecycle.push('coordinator.enableHotkeys');
+          },
+          async stop() {
+            lifecycle.push('coordinator.stop');
+          },
+          getCurrentPresentationState() {
+            return null;
+          },
+        };
+      },
+      createPresenterHttpFn() {
+        return {
+          async start() {
+            lifecycle.push('presenterHttp.start');
+          },
+          async stop() {
+            lifecycle.push('presenterHttp.stop');
+          },
+        };
+      },
+      createPresentationServerFn() {
+        return {
+          async start() {
+            lifecycle.push('presentationServer.start');
+          },
+          async stop() {
+            lifecycle.push('presentationServer.stop');
+          },
+          getAddress() {
+            return { host: '127.0.0.1', port: 3000 };
+          },
+        };
+      },
+      waitForDriverPositionFn: async ({ hub }) => {
+        await hub.emit('driverPositionChanged', { id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+      },
+      waitForPresentationObserverFn: async () => {
+        throw new Error('Timed out waiting for a presenter observer');
+      },
+    });
+
+    assert.equal(exitCode, 1);
+    assert.match(errors[0], /Timed out waiting for a presenter observer/);
+    assert.deepEqual(lifecycle, [
+      'presentationServer.start',
+      'coordinator.start',
+      'presenterHttp.start',
+      'presenterHttp.stop',
+      'coordinator.stop',
+      'presentationServer.stop',
     ]);
   } finally {
     await rm(tempDir, { recursive: true, force: true });

@@ -5,6 +5,7 @@ import { buildRuntimeStatus } from '../../src/runtimeStatus.js';
 
 test('buildRuntimeStatus returns a compact operator-facing snapshot with browser-session health', () => {
   assert.deepEqual(buildRuntimeStatus({
+    phase: 'ready',
     currentPresentationState: {
       type: 'presentationState',
       seq: 12,
@@ -37,6 +38,7 @@ test('buildRuntimeStatus returns a compact operator-facing snapshot with browser
     presenterEnabled: true,
   }), {
     service: 'deckhand',
+    phase: 'ready',
     presenterEnabled: true,
     obs: { connected: true },
     hub: {
@@ -68,6 +70,7 @@ test('buildRuntimeStatus returns a compact operator-facing snapshot with browser
 
 test('buildRuntimeStatus reports degraded browser-session state before the session is ready', () => {
   assert.deepEqual(buildRuntimeStatus({
+    phase: 'starting',
     currentPresentationState: null,
     hubAddress: { host: '127.0.0.1', port: 8765 },
     hubSnapshot: {
@@ -84,6 +87,7 @@ test('buildRuntimeStatus reports degraded browser-session state before the sessi
     presenterEnabled: false,
   }), {
     service: 'deckhand',
+    phase: 'starting',
     presenterEnabled: false,
     obs: { connected: false },
     hub: {
@@ -103,6 +107,7 @@ test('buildRuntimeStatus reports degraded browser-session state before the sessi
 
 test('buildRuntimeStatus surfaces not-ready sources without dropping them', () => {
   assert.deepEqual(buildRuntimeStatus({
+    phase: 'starting',
     currentPresentationState: null,
     hubAddress: { host: '127.0.0.1', port: 8765 },
     hubSnapshot: { activeDriver: null, observers: [], sticky: {} },
@@ -117,6 +122,7 @@ test('buildRuntimeStatus surfaces not-ready sources without dropping them', () =
     presenterEnabled: true,
   }), {
     service: 'deckhand',
+    phase: 'starting',
     presenterEnabled: true,
     obs: { connected: true },
     hub: { host: '127.0.0.1', port: 8765, driverConnected: false, observerCount: 0 },
