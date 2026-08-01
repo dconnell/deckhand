@@ -39,6 +39,9 @@ test('createPresentationStateMessage wraps a resolved state payload', () => {
     layoutId: 'full-slide',
     audienceScene: 'Full Slide',
     slots: [],
+    managedWindowBindings: {
+      Slide: { app: 'Google Chrome', titleIncludes: 'Deckhand Example Deck' },
+    },
     focus: null,
     script: null,
     commands: [],
@@ -49,6 +52,9 @@ test('createPresentationStateMessage wraps a resolved state payload', () => {
     layoutId: 'full-slide',
     audienceScene: 'Full Slide',
     slots: [],
+    managedWindowBindings: {
+      Slide: { app: 'Google Chrome', titleIncludes: 'Deckhand Example Deck' },
+    },
     focus: null,
     script: null,
   });

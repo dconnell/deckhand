@@ -1,4 +1,5 @@
 import { buildPresentationState } from './scenes.js';
+import { buildMacWindowCaptureSettings } from './setupObs.js';
 
 function createNoopLogger() {
   return {
@@ -6,6 +7,10 @@ function createNoopLogger() {
     info() {},
     warn() {},
   };
+}
+
+function isBrowserSource(config, sourceId) {
+  return config.sources[sourceId]?.kind === 'browser';
 }
 
 /**
@@ -16,8 +21,8 @@ function createNoopLogger() {
  * directly; the executor seam keeps slide-event orchestration decoupled from the
  * Deckhand browser session runtime.
  *
- * @param {{ config: { driver: { type: string }, layouts: Record<string, unknown>, slides: Record<string, { layoutId: string, commands: Array<{ type: string, source: string, tab?: string, url?: string, [key: string]: unknown }> }> }, obs: { connect(): Promise<unknown>, disconnect(): Promise<unknown>, setScene(sceneName: string): Promise<unknown>, isConnected?(): boolean }, hub: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown>, sendCommand(target: { role?: 'driver' }, command: Record<string, unknown>): Promise<unknown>, publishSticky(channel: string, payload: Record<string, unknown>): Promise<unknown>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown> } }, hotkeys: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown> }, executor?: { start(): Promise<void>, stop(): Promise<void>, execute(command: Record<string, unknown>): Promise<void> } | null, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Coordinator dependencies.
- * @returns {{ start(options?: { enableHotkeys?: boolean }): Promise<void>, enableHotkeys(): Promise<void>, stop(): Promise<void>, handleDriverPositionChanged(position: { id: string, index?: Record<string, unknown>, meta?: Record<string, unknown> }): Promise<void>, handleHotkeyAction(action: { type: 'next' | 'prev' | 'goTo', id?: string }), getCurrentPresentationState(): Record<string, unknown> | null }}
+ * @param {{ config: { driver: { type: string }, layouts: Record<string, unknown>, slides: Record<string, { layoutId: string, commands: Array<{ type: string, source: string, tab?: string, url?: string, [key: string]: unknown }> }> }, obs: { connect(): Promise<unknown>, disconnect(): Promise<unknown>, setScene(sceneName: string): Promise<unknown>, isConnected?(): boolean }, hub: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown>, sendCommand(target: { role?: 'driver' }, command: Record<string, unknown>): Promise<unknown>, publishSticky(channel: string, payload: Record<string, unknown>): Promise<unknown>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown> } }, executor?: { start(): Promise<void>, stop(): Promise<void>, execute(command: Record<string, unknown>): Promise<void> } | null, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Coordinator dependencies.
+ * @returns {{ start(): Promise<void>, stop(): Promise<void>, handleDriverPositionChanged(position: { id: string, index?: Record<string, unknown>, meta?: Record<string, unknown> }): Promise<void>, getCurrentPresentationState(): Record<string, unknown> | null }}
  */
 export function createCoordinator(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -26,14 +31,18 @@ export function createCoordinator(options) {
   let obsStarted = false;
   let hubStarted = false;
   let executorStarted = false;
-  let hotkeysStarted = false;
   let presentationSeq = 0;
   let currentPresentationState = null;
   const runtimeWindowBindings = {};
 
   function buildResolvedPresentationState(slideId, seq) {
+    const bootstrapWindowBindings = options.getManagedBrowserBindings?.() ?? {};
+
     return buildPresentationState(slideId, options.config, seq, {
-      windowBindings: runtimeWindowBindings,
+      windowBindings: {
+        ...bootstrapWindowBindings,
+        ...runtimeWindowBindings,
+      },
     });
   }
 
@@ -119,6 +128,30 @@ export function createCoordinator(options) {
     }
   }
 
+  async function applyObsWindowBindings(presentationState) {
+    if (typeof options.obs.applyInputSettings !== 'function' || options.config.presenter === null) {
+      return;
+    }
+
+    for (const slot of presentationState.slots) {
+      const binding = presentationState.windowBindings?.[slot.source];
+
+      if (binding === undefined) {
+        continue;
+      }
+
+      const managedBinding = { ...binding };
+      if (managedBinding.pid === undefined && isBrowserSource(options.config, slot.source)) {
+        const chromePid = options.getManagedBrowserPid?.();
+        if (typeof chromePid === 'number') {
+          managedBinding.pid = chromePid;
+        }
+      }
+
+      await options.obs.applyInputSettings(slot.source, buildMacWindowCaptureSettings(managedBinding));
+    }
+  }
+
   async function handleDriverPositionChanged(position) {
     const slideConfig = options.config.slides[position.id];
 
@@ -146,6 +179,7 @@ export function createCoordinator(options) {
     }
 
     try {
+      await applyObsWindowBindings(presentationState);
       await options.obs.setScene(presentationState.audienceScene);
       logger.info('Applied OBS scene for slide', {
         scene: presentationState.audienceScene,
@@ -168,23 +202,15 @@ export function createCoordinator(options) {
     }
 
     await republishCurrentPresentationState('windowBindingsChanged');
-  }
 
-  async function handleHotkeyAction(action) {
-    const snapshot = options.hub.getSnapshot();
-
-    if (snapshot.activeDriver === null) {
-      logger.warn('Hotkey pressed with no active driver connected', { action: action.type });
-    }
-
-    try {
-      await options.hub.sendCommand({ role: 'driver' }, action);
-      logger.info('Dispatched hotkey action to driver', { action: action.type });
-    } catch (error) {
-      logger.error('Driver command failed', {
-        action: action.type,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    if (currentPresentationState !== null) {
+      try {
+        await applyObsWindowBindings(currentPresentationState);
+      } catch (error) {
+        logger.error('OBS input binding update failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
 
@@ -192,24 +218,14 @@ export function createCoordinator(options) {
     logger.info(message, options.hub.getSnapshot());
   }
 
-  async function startHotkeys() {
-    if (hotkeysStarted) {
-      return;
-    }
-
-    await options.hotkeys.start();
-    hotkeysStarted = true;
-  }
-
   options.hub.on('driverPositionChanged', handleDriverPositionChanged);
   options.hub.on('driverRegistered', () => logSnapshot('Driver client registered'));
   options.hub.on('observerRegistered', () => logSnapshot('Observer client registered'));
   options.hub.on('observerWindowBindings', handleObserverWindowBindings);
   options.hub.on('clientDisconnected', () => logSnapshot('Client disconnected'));
-  options.hotkeys.on('action', handleHotkeyAction);
 
   return {
-    async start(startOptions = {}) {
+    async start() {
       if (started) {
         return;
       }
@@ -219,34 +235,26 @@ export function createCoordinator(options) {
       try {
         await options.obs.connect();
         obsStarted = true;
-        await options.hub.start();
-        hubStarted = true;
 
         if (executor !== null) {
           await executor.start();
           executorStarted = true;
         }
 
-        if (startOptions.enableHotkeys !== false) {
-          await startHotkeys();
-        }
+        await options.hub.start();
+        hubStarted = true;
 
         started = true;
         logger.info('Coordinator started', { driver: options.config.driver.type });
       } catch (error) {
-        if (hotkeysStarted) {
-          await options.hotkeys.stop().catch(() => {});
-          hotkeysStarted = false;
+        if (hubStarted) {
+          await options.hub.stop().catch(() => {});
+          hubStarted = false;
         }
 
         if (executorStarted) {
           await executor?.stop().catch(() => {});
           executorStarted = false;
-        }
-
-        if (hubStarted) {
-          await options.hub.stop().catch(() => {});
-          hubStarted = false;
         }
 
         if (obsStarted) {
@@ -258,14 +266,6 @@ export function createCoordinator(options) {
       }
     },
 
-    async enableHotkeys() {
-      if (!started) {
-        throw new Error('coordinator is not started');
-      }
-
-      await startHotkeys();
-    },
-
     async stop() {
       if (!started) {
         return;
@@ -274,31 +274,24 @@ export function createCoordinator(options) {
       logger.info('Stopping coordinator');
 
       try {
-        if (hotkeysStarted) {
-          await options.hotkeys.stop();
-          hotkeysStarted = false;
+        if (executorStarted) {
+          await executor?.stop();
+          executorStarted = false;
         }
       } finally {
         try {
-          if (executorStarted) {
-            await executor?.stop();
-            executorStarted = false;
+          if (hubStarted) {
+            await options.hub.stop();
+            hubStarted = false;
           }
         } finally {
-          try {
-            if (hubStarted) {
-              await options.hub.stop();
-              hubStarted = false;
-            }
-          } finally {
-            if (obsStarted) {
-              await options.obs.disconnect();
-              obsStarted = false;
-            }
-
-            started = false;
-            logger.info('Coordinator stopped');
+          if (obsStarted) {
+            await options.obs.disconnect();
+            obsStarted = false;
           }
+
+          started = false;
+          logger.info('Coordinator stopped');
         }
       }
     },
@@ -307,7 +300,10 @@ export function createCoordinator(options) {
       return currentPresentationState;
     },
 
+    getRuntimeWindowBindings() {
+      return { ...runtimeWindowBindings };
+    },
+
     handleDriverPositionChanged,
-    handleHotkeyAction,
   };
 }

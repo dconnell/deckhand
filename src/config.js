@@ -264,15 +264,6 @@ function normalizeHub(hub) {
   };
 }
 
-function normalizeHotkeys(hotkeys) {
-  const value = assertPlainObject(hotkeys, 'hotkeys');
-
-  return {
-    next: assertNonEmptyString(value.next, 'hotkeys.next'),
-    prev: assertNonEmptyString(value.prev, 'hotkeys.prev'),
-  };
-}
-
 function normalizeLayoutSlot(layoutId, slot, index, sources) {
   const pathName = `layouts.${layoutId}.slots[${index}]`;
   const value = assertPlainObject(slot, pathName);
@@ -532,6 +523,10 @@ function normalizeChrome(chrome) {
     normalized.profileDir = normalizeAbsolutePath(value.profileDir, 'chrome.profileDir');
   }
 
+  if (value.profileName !== undefined) {
+    normalized.profileName = assertNonEmptyString(value.profileName, 'chrome.profileName');
+  }
+
   if (value.debugPort !== undefined) {
     normalized.debugPort = normalizePort(value.debugPort, 'chrome.debugPort');
   }
@@ -603,7 +598,7 @@ export class ConfigError extends Error {
  * Normalize a raw config object into the coordinator's internal model.
  *
  * @param {unknown} rawConfig The parsed config JSON.
- * @returns {{ driver: { type: string }, obs: { url: string, password: string }, hub: { host: string, port: number }, hotkeys: { next: string, prev: string }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, chunkSeconds: number, language?: string }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
+ * @returns {{ driver: { type: string }, obs: { url: string, password: string }, hub: { host: string, port: number }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, profileName?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, chunkSeconds: number, language?: string }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
  */
 export function normalizeConfig(rawConfig) {
   const root = assertPlainObject(rawConfig, 'config');
@@ -615,7 +610,6 @@ export function normalizeConfig(rawConfig) {
     driver: normalizeDriver(root.driver),
     obs: normalizeObs(root.obs),
     hub: normalizeHub(root.hub),
-    hotkeys: normalizeHotkeys(root.hotkeys),
     sources,
     layouts,
     slides,

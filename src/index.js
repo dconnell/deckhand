@@ -1,14 +1,15 @@
 import { access } from 'node:fs/promises';
+import { execSync } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { loadConfig, ConfigError } from './config.js';
 import { createCoordinator } from './coordinator.js';
-import { createHotkeyAdapter } from './hotkeys.js';
 import { createHub } from './hub.js';
 import { createObsClient } from './obsClient.js';
 import { createPresentationServer } from './presentationServer.js';
 import { createPresenterHttpServer } from './presenterHttp.js';
+import { reconcileObsPresentation } from './setupObs.js';
 import { loadPresentationConfig } from './presentations.js';
 import { parsePresentationCliArgs } from './presentations.js';
 import { resolvePresentationPaths } from './presentations.js';
@@ -16,12 +17,15 @@ import { buildRuntimeStatus } from './runtimeStatus.js';
 import { createCdpClient } from './cdpClient.js';
 import { createBrowserSession, createBrowserCommandExecutor } from './browserSession.js';
 import { createWsTransport, discoverCdpEndpoint, launchChromeSession } from './chromeLauncher.js';
+import { enumerateWindowsByPid } from './macWindows.js';
 import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 
 const PRESENTATION_SERVER_HOST = '127.0.0.1';
 const PRESENTATION_SERVER_PORT = Number(process.env.PORT ?? 3000);
 const DRIVER_READY_TIMEOUT_MS = 10000;
 const PRESENTER_OBSERVER_TIMEOUT_MS = 5000;
+const WINDOW_BINDINGS_TIMEOUT_MS = 15000;
 
 function hasBrowserSources(config) {
   return Object.values(config.sources).some((source) => source?.kind === 'browser');
@@ -32,7 +36,134 @@ function resolveProfileDir(config, presentationName) {
     return config.chrome.profileDir;
   }
 
-  return path.join(os.tmpdir(), 'deckhand-chrome-profiles', presentationName);
+  return path.join(os.tmpdir(), 'deckhand-chrome-profiles', presentationName, randomUUID());
+}
+
+function listBrowserSourceIds(config) {
+  return Object.entries(config.sources)
+    .filter(([, source]) => source?.kind === 'browser')
+    .map(([id]) => id);
+}
+
+async function defaultResolveMacWindowBindings({ browserSession, browserSourceIds, config, logger }) {
+  logger.info('Resolving macOS window IDs for browser sources');
+
+  const sourceTitles = Object.fromEntries(
+    Object.entries(browserSession.getRegistry().sources)
+      .filter(([id]) => browserSourceIds.includes(id))
+      .map(([id, source]) => [id, { title: source.title }]),
+  );
+
+  const chromePid = browserSession.getStatus().chromePid;
+
+  let resolvedBindings = {};
+  const maxAttempts = 10;
+  const retryDelayMs = 500;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    resolvedBindings = {};
+
+    const macWindows = enumerateWindowsByPid(chromePid);
+    const matchedWindowIds = new Set();
+    const unmatchedSources = [];
+    const unmatchedWindows = [];
+
+    for (const sourceId of browserSourceIds) {
+      const expectedTitle = sourceTitles[sourceId]?.title;
+      const match = macWindows.find((w) => !matchedWindowIds.has(w.windowId) && w.title.includes(expectedTitle));
+
+      if (match) {
+        matchedWindowIds.add(match.windowId);
+        resolvedBindings[sourceId] = { macWindowId: match.windowId, pid: chromePid };
+      } else {
+        unmatchedSources.push(sourceId);
+      }
+    }
+
+    for (const w of macWindows) {
+      if (matchedWindowIds.has(w.windowId)) {
+        continue;
+      }
+
+      if (w.title.includes('Presenter') || w.title === 'New Tab - Google Chrome' || w.title === '') {
+        continue;
+      }
+
+      unmatchedWindows.push(w);
+    }
+
+    unmatchedWindows.sort((a, b) => a.windowId - b.windowId);
+    unmatchedSources.sort((a, b) => browserSourceIds.indexOf(a) - browserSourceIds.indexOf(b));
+
+    for (let i = 0; i < unmatchedSources.length && i < unmatchedWindows.length; i += 1) {
+      const sourceId = unmatchedSources[i];
+      const macWindow = unmatchedWindows[i];
+      resolvedBindings[sourceId] = { macWindowId: macWindow.windowId, pid: chromePid };
+    }
+
+    const allResolved = browserSourceIds.every((id) => resolvedBindings[id] !== undefined);
+    if (allResolved) {
+      break;
+    }
+
+    if (attempt < maxAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+  }
+
+  return resolvedBindings;
+}
+
+async function waitForWindowBindings({ hub, expectedSources, timeoutMs = WINDOW_BINDINGS_TIMEOUT_MS, logger }) {
+  if (expectedSources.length === 0) {
+    return;
+  }
+
+  const resolved = new Set();
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      const missing = expectedSources.filter((source) => !resolved.has(source));
+      reject(new Error(
+        `Timed out waiting for Hammerspoon to resolve window bindings for: ${missing.join(', ')}. `
+        + 'Check Hammerspoon is running, has Accessibility permission, and can see the Deckhand Chrome windows.',
+      ));
+    }, timeoutMs);
+
+    function checkResolve() {
+      if (resolved.size === expectedSources.length) {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      }
+    }
+
+    hub.on('observerWindowBindings', (payload) => {
+      for (const source of Object.keys(payload.bindings ?? {})) {
+        const binding = payload.bindings[source];
+        if (binding?.macWindowId !== undefined && expectedSources.includes(source)) {
+          resolved.add(source);
+          logger.info('Resolved exact window binding', {
+            macWindowId: binding.macWindowId,
+            pid: binding.pid,
+            source,
+          });
+        }
+      }
+
+      checkResolve();
+    });
+  });
 }
 
 function hasPresentationObserver(hubSnapshot) {
@@ -144,7 +275,7 @@ function isMainModule(metaUrl) {
 /**
  * Load config, compose adapters, and start the coordinator process.
  *
- * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createHotkeysFn?: typeof createHotkeyAdapter, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, createPresentationServerFn?: typeof createPresentationServer, createBrowserSessionFn?: typeof createBrowserSession, createBrowserCommandExecutorFn?: typeof createBrowserCommandExecutor, createCdpClientFn?: typeof createCdpClient, launchChromeSessionFn?: typeof launchChromeSession, discoverCdpEndpointFn?: typeof discoverCdpEndpoint, waitForDriverPositionFn?: typeof waitForFirstDriverPosition, waitForPresentationObserverFn?: typeof waitForPresentationObserver, installSignalHandlers?: boolean, presenterAssetsPath?: string }} [options] Startup options.
+ * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, createPresentationServerFn?: typeof createPresentationServer, createBrowserSessionFn?: typeof createBrowserSession, createBrowserCommandExecutorFn?: typeof createBrowserCommandExecutor, createCdpClientFn?: typeof createCdpClient, launchChromeSessionFn?: typeof launchChromeSession, discoverCdpEndpointFn?: typeof discoverCdpEndpoint, reconcileObsFn?: typeof reconcileObsPresentation, waitForDriverPositionFn?: typeof waitForFirstDriverPosition, waitForPresentationObserverFn?: typeof waitForPresentationObserver, installSignalHandlers?: boolean, presenterAssetsPath?: string }} [options] Startup options.
  * @returns {Promise<number>}
  */
 export async function run(options = {}) {
@@ -201,10 +332,51 @@ export async function run(options = {}) {
     await currentLaunch.stop().catch(() => {});
   }
 
+  async function stopBrowserRuntime() {
+    await coordinator?.stop().catch(() => {});
+  }
+
+  function installShutdownHandlers() {
+    if (!installSignalHandlers) {
+      return;
+    }
+
+    const shutdown = (signal) => {
+      phase = 'shuttingDown';
+      logger.info('Received shutdown signal', { signal });
+
+      const chromePid = chromeLaunch?.chromePid;
+
+      if (typeof chromePid === 'number' && chromePid > 0) {
+        try {
+          process.kill(-chromePid, 'SIGKILL');
+        } catch {
+          // process group may have already exited
+        }
+      }
+
+      try {
+        execSync('pkill -9 -f "deckhand-chrome-profiles"', { stdio: 'ignore' });
+      } catch {
+        // no matching processes
+      }
+
+      try {
+        execSync('pkill -9 -f "deckhand-profile-"', { stdio: 'ignore' });
+      } catch {
+        // no matching processes
+      }
+
+      process.exit(0);
+    };
+
+    process.once('SIGINT', () => shutdown('SIGINT'));
+    process.once('SIGTERM', () => shutdown('SIGTERM'));
+  }
+
   try {
     hub = (options.createHubFn ?? createHub)({ ...config.hub, logger });
     obs = (options.createObsClientFn ?? createObsClient)({ ...config.obs, logger });
-    const hotkeys = (options.createHotkeysFn ?? createHotkeyAdapter)({ ...config.hotkeys, logger });
     presentationServer = (options.createPresentationServerFn ?? createPresentationServer)({
       cwd,
       host: PRESENTATION_SERVER_HOST,
@@ -230,6 +402,7 @@ export async function run(options = {}) {
         chromeLaunch = await launchChromeSessionFn({
           executablePath: chromeOptions.executablePath,
           profileDir,
+          profileName: chromeOptions.profileName,
           debugPort: chromeOptions.debugPort,
           extraArgs: chromeOptions.extraArgs,
           logger,
@@ -240,7 +413,7 @@ export async function run(options = {}) {
       const cdpClient = createCdpClientFn({
         discover: async () => {
           const info = await ensureLaunched();
-          const discovered = await discoverCdpEndpointFn({ debugPort: info.debugPort, logger });
+          const discovered = await discoverCdpEndpointFn({ debugPort: info.debugPort, profileDir: info.profileDir, logger });
           return { webSocketDebuggerUrl: discovered.webSocketDebuggerUrl, chromePid: info.chromePid };
         },
         createTransport: (url) => createWsTransport({ url }),
@@ -261,8 +434,29 @@ export async function run(options = {}) {
 
     coordinator = (options.createCoordinatorFn ?? createCoordinator)({
       config,
+      getManagedBrowserBindings() {
+        if (browserSession === null || config.presenter === null) {
+          return {};
+        }
+
+        const chromePid = browserSession.getStatus().chromePid;
+        const registry = browserSession.getRegistry().sources;
+
+        return Object.fromEntries(
+          Object.entries(registry).map(([sourceId, source]) => [
+            sourceId,
+            {
+              app: config.presenter.windows[sourceId]?.app,
+              pid: chromePid,
+              titleIncludes: source.title,
+            },
+          ]),
+        );
+      },
+      getManagedBrowserPid() {
+        return browserSession?.getStatus().chromePid ?? null;
+      },
       hub,
-      hotkeys,
       executor,
       logger,
       obs,
@@ -298,13 +492,39 @@ export async function run(options = {}) {
     return 1;
   }
 
+  installShutdownHandlers();
+
   try {
     await presentationServer.start();
-    await coordinator.start({ enableHotkeys: false });
+    await coordinator.start();
 
     if (presenterHttp !== null) {
       await presenterHttp.start();
+
+      if (browserSession !== null) {
+        const presenterUrl = `http://${config.presenter.http.host}:${config.presenter.http.port}/presenter/`;
+        await browserSession.openWindow(presenterUrl).catch((error) => {
+          logger.warn('Failed to open presenter window', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
     }
+
+    const bootstrapWindowBindings = browserSession === null
+      ? {}
+      : Object.fromEntries(
+          Object.entries(config.sources)
+            .filter(([, source]) => source.kind === 'browser')
+            .map(([sourceId]) => [sourceId, { pid: browserSession.getStatus().chromePid }]),
+        );
+
+    await (options.reconcileObsFn ?? reconcileObsPresentation)({
+      config,
+      logger,
+      obs: typeof obs.getClient === 'function' ? obs.getClient() : obs,
+      windowBindings: bootstrapWindowBindings,
+    });
 
     await (options.waitForDriverPositionFn ?? waitForFirstDriverPosition)({
       coordinator,
@@ -316,8 +536,45 @@ export async function run(options = {}) {
       await (options.waitForPresentationObserverFn ?? waitForPresentationObserver)({ hub });
     }
 
-    if (typeof coordinator.enableHotkeys === 'function') {
-      await coordinator.enableHotkeys();
+    const browserSourceIds = listBrowserSourceIds(config);
+    if (browserSourceIds.length > 0 && config.presenter !== null) {
+      const windowResolutionFn = options.resolveMacWindowBindingsFn ?? defaultResolveMacWindowBindings;
+
+      const result = await windowResolutionFn({
+        browserSession,
+        browserSourceIds,
+        config,
+        logger,
+      });
+
+      const allResolved = browserSourceIds.every((id) => result[id] !== undefined);
+      if (allResolved) {
+        logger.info('Resolved browser window bindings', {
+          sources: Object.keys(result),
+        });
+      } else {
+        logger.warn('Not all browser sources resolved; OBS may show blank captures for missing sources', {
+          resolved: Object.keys(result),
+          missing: browserSourceIds.filter((id) => !result[id]),
+        });
+      }
+
+      const obsWindowBindings = {};
+      for (const [sourceId, binding] of Object.entries(result)) {
+        obsWindowBindings[sourceId] = {
+          app: config.presenter.windows[sourceId]?.app ?? 'Google Chrome',
+          pid: binding.pid,
+          macWindowId: binding.macWindowId,
+          strict: true,
+        };
+      }
+
+      await (options.reconcileObsFn ?? reconcileObsPresentation)({
+        config,
+        logger,
+        obs: typeof obs.getClient === 'function' ? obs.getClient() : obs,
+        windowBindings: obsWindowBindings,
+      });
     }
 
     phase = 'ready';
@@ -325,42 +582,10 @@ export async function run(options = {}) {
     phase = 'failed';
     consoleLike.error(`Coordinator failed to start: ${error instanceof Error ? error.message : String(error)}`);
     await presenterHttp?.stop().catch(() => {});
-    await coordinator.stop().catch(() => {});
+    await stopBrowserRuntime();
     await stopLaunchedChrome();
     await presentationServer?.stop().catch(() => {});
     return 1;
-  }
-
-  if (installSignalHandlers) {
-    let shuttingDown = false;
-    const shutdown = async (signal) => {
-      if (shuttingDown) {
-        return;
-      }
-
-      shuttingDown = true;
-      phase = 'shuttingDown';
-      logger.info('Received shutdown signal', { signal });
-
-      try {
-        await presenterHttp?.stop();
-        await coordinator.stop();
-        await stopLaunchedChrome();
-        await presentationServer?.stop();
-      } catch (error) {
-        logger.error('Coordinator shutdown failed', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        process.exitCode = 1;
-      }
-    };
-
-    process.once('SIGINT', () => {
-      void shutdown('SIGINT');
-    });
-    process.once('SIGTERM', () => {
-      void shutdown('SIGTERM');
-    });
   }
 
   return 0;

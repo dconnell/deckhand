@@ -145,6 +145,12 @@ test('buildPresentationState resolves a slide into the full sticky presenter sta
       Terminal: { app: 'iTerm2' },
       Slide: { app: 'Safari', titleIncludes: 'Deckhand Deck' },
     },
+    managedWindowBindings: {
+      Slide: { app: 'Safari', titleIncludes: 'Deckhand Deck' },
+      Terminal: { app: 'iTerm2' },
+      BrowserA: { app: 'Google Chrome', titleIncludes: 'Primary' },
+      BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
+    },
     focus: 'Terminal',
     script: 'Walk through the init flow.\nEmphasize line 42.',
     commands: [],

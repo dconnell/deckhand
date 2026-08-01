@@ -12,7 +12,7 @@ function createNoopLogger() {
  * Create a thin OBS v5 wrapper used by the coordinator.
  *
  * @param {{ url: string, password: string, OBSWebSocketClass?: new () => { connect(url: string, password?: string): Promise<unknown>, disconnect(): Promise<unknown>, call(method: string, payload?: Record<string, unknown>): Promise<unknown> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Adapter options.
- * @returns {{ connect(): Promise<unknown>, disconnect(): Promise<void>, setScene(sceneName: string): Promise<void>, isConnected(): boolean, getClient(): unknown }}
+ * @returns {{ connect(): Promise<unknown>, disconnect(): Promise<void>, setScene(sceneName: string): Promise<void>, applyInputSettings(inputName: string, inputSettings: Record<string, unknown>): Promise<void>, isConnected(): boolean, getClient(): unknown }}
  */
 export function createObsClient(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -59,6 +59,27 @@ export function createObsClient(options) {
         logger.error('Failed to switch OBS scene', {
           error: error instanceof Error ? error.message : String(error),
           sceneName,
+        });
+        throw error;
+      }
+    },
+
+    async applyInputSettings(inputName, inputSettings) {
+      if (!connected) {
+        throw new Error('OBS client is not connected');
+      }
+
+      try {
+        await client.call('SetInputSettings', {
+          inputName,
+          inputSettings,
+          overlay: true,
+        });
+        logger.info('Applied OBS input settings', { inputName });
+      } catch (error) {
+        logger.error('Failed to apply OBS input settings', {
+          error: error instanceof Error ? error.message : String(error),
+          inputName,
         });
         throw error;
       }

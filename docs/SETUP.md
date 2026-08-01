@@ -86,29 +86,27 @@ npm run setup:obs -- --set-canvas my-talk
 
 `--set-canvas` mutates a global OBS setting. Default behavior is warn-only.
 
+`setup:obs` provisions the scenes and stable input names only. During runtime,
+Deckhand pushes macOS `window_capture` settings into those inputs and upgrades
+them from bootstrap title matching to exact managed window bindings when
+Hammerspoon reports them.
+
 If OBS requires authentication and your local override does not have the right
 password yet, `npm start my-talk` and presenter smoke checks will fail until
 you update `obs.password`.
 
 ## Serve The Deck And Start The Coordinator
 
-You need **two terminal windows** running simultaneously.
+You need **one terminal window**.
 
-**Terminal 1 -- deck server:**
-
-```bash
-npm run presentation:serve -- my-talk
-```
-
-Serves the reveal.js deck at `http://127.0.0.1:3000/presentation/my-talk/deck/index.html`.
-
-**Terminal 2 -- coordinator:**
+**Terminal 1 -- managed runtime session:**
 
 ```bash
 npm start my-talk
 ```
 
-Connects to OBS, starts the WebSocket hub, and serves the presenter app.
+Connects to OBS, starts the deck and presenter HTTP surfaces, and starts the
+WebSocket hub.
 
 Then open:
 
@@ -120,11 +118,15 @@ Then open:
 
 Either:
 - Use the deck's own keyboard shortcuts (arrow keys, space) in the browser
-- Or use the configured global hotkeys: **F13** = next, **F14** = previous
+- Or use the Hammerspoon global hotkeys: **Ctrl+Shift+Right** = next,
+  **Ctrl+Shift+Left** = previous
 
 When you advance, the coordinator switches the OBS scene, publishes presenter
 state (Hammerspoon resizes windows, teleprompter updates), and dispatches any
 configured browser commands to Deckhand-owned tabs.
+
+When the runtime shuts down, Deckhand closes only the browser windows and tabs
+it created for the session.
 
 ## Validate The Runtime
 
@@ -171,6 +173,10 @@ require("deckhand").start({
 6. Reload Hammerspoon.
 7. Confirm the coordinator log shows another observer registration after Hammerspoon connects.
 
+Whenever you update Deckhand, copy those Lua files again and reload Hammerspoon.
+The exact-window-id handshake depends on the current versions of all three
+files.
+
 Hammerspoon subscribes to sticky `presentationState` and applies the resolved
 window rectangles plus optional focus. It reconnects after hub restarts and
 accepts lower `seq` values after reconnect so sticky state can recover cleanly.
@@ -180,13 +186,17 @@ Deckhand after it resolves them once. Deckhand then republishes sticky
 `presentationState` with `pid`, `macWindowId`, and `strict: true` so later
 layout passes no longer depend on title or first-window matching.
 
+Startup now waits briefly for those exact bindings before it does the final OBS
+binding pass for browser sources. If Hammerspoon is not updated or not running,
+Deckhand warns and OBS browser captures may stay blank.
+
 Deckhand's Hammerspoon integration also binds slide navigation hotkeys:
 
 - `Ctrl+Shift+Right`: next slide
 - `Ctrl+Shift+Left`: previous slide
 
 These hotkeys send `driverCommand` messages through the local hub to the active
-driver, so slide advancement still flows through the normal coordinator path.
+driver.
 
 ## STT Runner
 
@@ -241,24 +251,18 @@ directory, and debugging port:
 
 ```json
 "chrome": {
+  "profileName": "Personal",
   "executablePath": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "profileDir": "/tmp/deckhand-chrome",
   "debugPort": 9222
 }
 ```
 
+If `profileName` is set, Deckhand seeds a Deckhand-owned working copy from that
+named Chrome profile so cookies and sessions are preserved for the presentation
+without attaching to your ordinary Chrome instance.
+
 Browser-session health is reported at `/status.json` under `browserSession`.
-
-## Hotkeys
-
-The sample presentation uses:
-
-```json
-"hotkeys": { "next": "F13", "prev": "F14" }
-```
-
-Those Node-side hotkeys still exist, but on macOS the recommended path is to
-use the Hammerspoon `Ctrl+Shift+Left/Right` global hotkeys instead.
 
 ## Troubleshooting
 

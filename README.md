@@ -38,23 +38,46 @@ cp -R presentation/example presentation/my-talk
 `config.local.json` is a deep merge overlay on top of `config.json`, so it only
 needs the fields you want to override locally.
 
+If you want Deckhand to start from an existing signed-in Chrome profile, set
+`chrome.profileName` in config. Deckhand will launch a Deckhand-owned working
+copy seeded from that profile so cookies and sessions are available without
+attaching to your normal Chrome process.
+
 4. Build the OBS scenes from the presentation's `layouts` catalog:
 
 ```bash
 npm run setup:obs -- my-talk
 ```
 
+`setup:obs` provisions the scenes and named inputs. During runtime, Deckhand
+pushes macOS `window_capture` settings into those inputs and upgrades them from
+bootstrap app/title selectors to exact managed window bindings when available.
+
 5. Install Hammerspoon for window management:
 
 ```bash
 mkdir -p ~/.hammerspoon/deckhand
 cp hammerspoon/deckhand.lua hammerspoon/apply_state.lua hammerspoon/window_match.lua ~/.hammerspoon/deckhand/
-cp hammerspoon/init.lua ~/.hammerspoon/init.lua
+```
+
+Then add the following lines to your `~/.hammerspoon/init.lua` (create the file
+if it doesn't exist; don't overwrite an existing one):
+
+```lua
+package.path = package.path .. ";" .. hs.configdir .. "/deckhand/?.lua"
+
+dofile(hs.configdir .. "/deckhand/deckhand.lua").start({
+  hubUrl = "ws://127.0.0.1:8765",
+})
 ```
 
 Open Hammerspoon, grant Accessibility permission when prompted, then reload
 its config. Hammerspoon connects to the hub and automatically resizes/focuses
 windows when slides change.
+
+When you update Deckhand, copy the Lua files again and reload Hammerspoon.
+The exact-window-id flow depends on the current `hammerspoon/deckhand.lua`,
+`hammerspoon/apply_state.lua`, and `hammerspoon/window_match.lua` files.
 
 ### Running A Presentation
 
@@ -73,8 +96,14 @@ This starts:
 - Presenter app at `http://127.0.0.1:3001/presenter/`
 - Status page at `http://127.0.0.1:3001/status.json`
 
-Startup waits for the real deck driver position before enabling hotkeys or
-reporting readiness.
+Startup waits for the real deck driver position before reporting readiness.
+
+In presenter mode it also waits for Hammerspoon to report exact window ids for
+the managed browser windows before doing the final OBS binding pass. This can
+add a short startup delay and is intentional.
+
+On shutdown, Deckhand closes only the browser windows and tabs it created for
+the session before disconnecting from Chrome.
 
 If you are using Hammerspoon, it also owns the macOS global slide hotkeys.
 

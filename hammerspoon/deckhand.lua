@@ -28,7 +28,7 @@ function M.start(options)
     return nil
   end
   local apply_state_fn = settings.applyStateFn or function(state)
-    return apply_state.apply(state)
+    return apply_state.apply(state, { logFn = log_fn })
   end
   local timer_after = settings.timerAfterFn or hs.timer.doAfter
   local log_fn = settings.logFn or function(message)
@@ -95,13 +95,14 @@ function M.start(options)
 
         last_seq = seq
         local result = apply_state_fn(payload)
+        local current_bindings = payload.managedWindowBindings or payload.windowBindings or {}
         for _, source in ipairs(result and result.missing or {}) do
           log_fn(string.format("[deckhand:hammerspoon] Window not found for source %s", source))
         end
 
         local bindings = {}
         for source, resolved in pairs(result and result.resolvedBindings or {}) do
-          local current = payload.windowBindings and payload.windowBindings[source] or nil
+          local current = current_bindings[source] or nil
           if exact_binding_changed(current, resolved) then
             bindings[source] = resolved
           end
@@ -109,7 +110,7 @@ function M.start(options)
 
         local cleared = {}
         for _, source in ipairs(result and result.clearedBindings or {}) do
-          local current = payload.windowBindings and payload.windowBindings[source] or nil
+          local current = current_bindings[source] or nil
           if current and current.strict == true and current.macWindowId ~= nil then
             table.insert(cleared, source)
           end

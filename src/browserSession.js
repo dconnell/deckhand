@@ -14,6 +14,14 @@ function createEmptyRegistry() {
   return { sources: {} };
 }
 
+function defaultWindowTitle(sourceId) {
+  if (sourceId === 'Slide') {
+    return 'Deckhand Example Deck';
+  }
+
+  return `Deckhand ${sourceId}`;
+}
+
 /**
  * Own the Deckhand browser session and the authoritative source/tab registry.
  *
@@ -21,8 +29,8 @@ function createEmptyRegistry() {
  * command routing can be tested without a real Chrome process. Identity is
  * always a runtime handle created by Deckhand, never URL or title lookup.
  *
- * @param {{ sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }>, createCdpClient(): { connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string }): Promise<void> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Session dependencies.
- * @returns {{ start(): Promise<void>, stop(): Promise<void>, activateTab(sourceId: string, tabAlias: string): Promise<void>, navigateTab(sourceId: string, tabAlias: string, url: string): Promise<void>, getStatus(): { connected: boolean, chromePid: number | null, sources: Record<string, { ready: boolean, activeTab: string | null, tabs: string[] }> }, getRegistry(): { sources: Record<string, { cdpWindowId: number | null, mainTargetId: string | null, tabs: Record<string, { targetId: string, initialUrl: string }>, activeTab: string | null }> } }}
+ * @param {{ sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }>, createCdpClient(): { connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string }): Promise<void>, setWindowTitle(details: { targetId: string, title: string }): Promise<void>, closeTarget(details: { targetId: string }): Promise<void> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Session dependencies.
+ * @returns {{ start(): Promise<void>, stop(): Promise<void>, openWindow(url: string): Promise<void>, activateTab(sourceId: string, tabAlias: string): Promise<void>, navigateTab(sourceId: string, tabAlias: string, url: string): Promise<void>, getStatus(): { connected: boolean, chromePid: number | null, sources: Record<string, { ready: boolean, activeTab: string | null, tabs: string[] }> }, getRegistry(): { sources: Record<string, { cdpWindowId: number | null, mainTargetId: string | null, title: string, tabs: Record<string, { targetId: string, initialUrl: string }>, activeTab: string | null }> } }}
  */
 export function createBrowserSession(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -50,6 +58,18 @@ export function createBrowserSession(options) {
     return tab;
   }
 
+  function listTrackedTargetIds() {
+    const targetIds = new Set();
+
+    for (const source of Object.values(registry.sources)) {
+      for (const tab of Object.values(source.tabs)) {
+        targetIds.add(tab.targetId);
+      }
+    }
+
+    return [...targetIds];
+  }
+
   async function buildSource(source) {
     const browser = source.browser;
     const initialAlias = browser.initialTab;
@@ -70,6 +90,7 @@ export function createBrowserSession(options) {
     const sourceRegistry = {
       cdpWindowId: windowResult.windowId,
       mainTargetId: windowResult.targetId,
+      title: defaultWindowTitle(source.id),
       tabs: {
         [initialAlias]: {
           targetId: windowResult.targetId,
@@ -95,6 +116,29 @@ export function createBrowserSession(options) {
         initialUrl: tab.url,
       };
     }
+
+    await cdpClient.setWindowTitle({
+      targetId: sourceRegistry.mainTargetId,
+      title: sourceRegistry.title,
+    }).catch((error) => {
+      logger.warn('Failed to set window title', {
+        error: error instanceof Error ? error.message : String(error),
+        source: source.id,
+      });
+    });
+
+    for (const [alias, tab] of Object.entries(sourceRegistry.tabs)) {
+      if (alias === initialAlias) {
+        continue;
+      }
+
+      await cdpClient.setWindowTitle({
+        targetId: tab.targetId,
+        title: sourceRegistry.title,
+      }).catch(() => {});
+    }
+
+    await cdpClient.activateTab({ targetId: sourceRegistry.mainTargetId }).catch(() => {});
 
     registry.sources[source.id] = sourceRegistry;
   }
@@ -149,11 +193,21 @@ export function createBrowserSession(options) {
       }
 
       stopping = true;
+
       await cdpClient.disconnect().catch(() => {});
       stopping = false;
       cdpClient = null;
       registry = createEmptyRegistry();
       logger.info('Browser session stopped');
+    },
+
+    async openWindow(url) {
+      if (cdpClient === null) {
+        throw new Error('browser session is not started');
+      }
+
+      await cdpClient.createWindow({ url });
+      logger.info('Opened unmanaged window', { url });
     },
 
     async activateTab(sourceId, tabAlias) {

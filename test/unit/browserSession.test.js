@@ -54,6 +54,12 @@ function createFakeCdpClient() {
     async navigateTab({ targetId, url }) {
       calls.push({ type: 'navigateTab', targetId, url });
     },
+    async setWindowTitle({ targetId, title }) {
+      calls.push({ type: 'setWindowTitle', targetId, title });
+    },
+    async closeTarget({ targetId }) {
+      calls.push({ type: 'closeTarget', targetId });
+    },
   };
 }
 
@@ -101,13 +107,24 @@ test('start creates one window per browser source in config order and preloads d
       if (call.url !== undefined) {
         entry.url = call.url;
       }
+      if (call.title !== undefined) {
+        entry.title = call.title;
+      }
+      if (call.targetId !== undefined) {
+        entry.targetId = call.targetId;
+      }
       return entry;
     }),
     [
       { type: 'connect' },
       { type: 'createWindow', url: 'http://deck/' },
+      { type: 'setWindowTitle', title: 'Deckhand Example Deck', targetId: 'TARGET_1' },
+      { type: 'activateTab', targetId: 'TARGET_1' },
       { type: 'createWindow', url: 'https://example.com/home' },
       { type: 'createTab', url: 'https://example.com/checkout' },
+      { type: 'setWindowTitle', title: 'Deckhand BrowserA', targetId: 'TARGET_2' },
+      { type: 'setWindowTitle', title: 'Deckhand BrowserA', targetId: 'TARGET_3' },
+      { type: 'activateTab', targetId: 'TARGET_2' },
     ],
   );
 });
@@ -131,6 +148,7 @@ test('start records the initial tab as the window main target and tracks activeT
   const registry = session.getRegistry();
   assert.equal(registry.sources.BrowserA.mainTargetId, 'TARGET_1');
   assert.equal(registry.sources.BrowserA.cdpWindowId, 91);
+  assert.equal(registry.sources.BrowserA.title, 'Deckhand BrowserA');
   assert.deepEqual(registry.sources.BrowserA.tabs, {
     home: { targetId: 'TARGET_1', initialUrl: 'https://example.com/home' },
     checkout: { targetId: 'TARGET_2', initialUrl: 'https://example.com/checkout' },
@@ -156,7 +174,7 @@ test('activateTab routes through the recorded target handle without URL lookup a
   await session.activateTab('BrowserA', 'checkout');
 
   assert.deepEqual(
-    cdpClient.calls.filter((call) => call.type === 'activateTab'),
+    cdpClient.calls.filter((call) => call.type === 'activateTab' && call.targetId === 'TARGET_2'),
     [{ type: 'activateTab', targetId: 'TARGET_2' }],
   );
   assert.equal(session.getRegistry().sources.BrowserA.activeTab, 'checkout');
@@ -264,6 +282,33 @@ test('stop disconnects the cdp client and clears the registry', async () => {
   );
   assert.deepEqual(session.getRegistry().sources, {});
   assert.equal(session.getStatus().connected, false);
+});
+
+test('stop disconnects without closing individual targets to avoid hanging on degraded transports', async () => {
+  const cdpClient = createFakeCdpClient();
+  const sources = createSources(
+    createBrowserSource(
+      'BrowserA',
+      {
+        home: { url: 'https://example.com/home' },
+        checkout: { url: 'https://example.com/checkout' },
+      },
+      { initialTab: 'home' },
+    ),
+  );
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await session.start();
+  await session.stop();
+
+  assert.equal(
+    cdpClient.calls.some((call) => call.type === 'closeTarget'),
+    false,
+  );
+  assert.deepEqual(
+    cdpClient.calls.map((call) => call.type).filter((type) => type === 'disconnect'),
+    ['disconnect'],
+  );
 });
 
 test('restart recreates a fresh source/tab registry with new runtime handles', async () => {

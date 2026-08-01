@@ -20,6 +20,12 @@ return {
     Terminal = { app = "iTerm2" },
     Slide = { app = "Safari", titleIncludes = "Deckhand Deck" },
   },
+  managedWindowBindings = {
+    Terminal = { app = "iTerm2" },
+    Slide = { app = "Safari", titleIncludes = "Deckhand Deck" },
+    BrowserA = { app = "Google Chrome", titleIncludes = "Deckhand BrowserA", pid = 47213 },
+    BrowserB = { app = "Google Chrome", titleIncludes = "Deckhand BrowserB", pid = 47213 },
+  },
   focus = "Terminal",
   script = "Walk through the init flow.\nEmphasize line 42.",
 }

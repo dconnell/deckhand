@@ -17,7 +17,7 @@ function isPlainObject(value) {
  * mocked WebSocket traffic without a real Chrome process.
  *
  * @param {{ discover(): Promise<{ webSocketDebuggerUrl: string, chromePid?: number | null }>, createTransport(url: string): { send(raw: string): void, close(): void, on(event: 'message' | 'close' | 'error', handler: (payload?: string) => void): void, waitUntilReady?(): Promise<void> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Client dependencies.
- * @returns {{ connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string }): Promise<void>, getTargets(): Promise<Array<Record<string, unknown>>> }}
+ * @returns {{ connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string }): Promise<void>, setWindowTitle(details: { targetId: string, title: string }): Promise<void>, closeTarget(details: { targetId: string }): Promise<void>, getTargets(): Promise<Array<Record<string, unknown>>> }}
  */
 export function createCdpClient(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -225,6 +225,38 @@ export function createCdpClient(options) {
       }
 
       await send('Page.navigate', { url }, sessionId);
+    },
+
+    async setWindowTitle({ targetId, title }) {
+      let sessionId = sessions.get(targetId);
+
+      if (sessionId === undefined) {
+        const attach = await send('Target.attachToTarget', { targetId, flatten: true });
+        sessionId = attach.sessionId;
+        sessions.set(targetId, sessionId);
+      }
+
+      const expression = `(() => {
+        const deckhandTitle = ${JSON.stringify(title)};
+        document.title = deckhandTitle;
+        setInterval(() => {
+          if (document.title !== deckhandTitle) {
+            document.title = deckhandTitle;
+          }
+        }, 250);
+      })();`;
+
+      await send('Page.addScriptToEvaluateOnNewDocument', {
+        source: expression,
+      }, sessionId);
+      await send('Runtime.evaluate', {
+        expression,
+      }, sessionId);
+    },
+
+    async closeTarget({ targetId }) {
+      await send('Target.closeTarget', { targetId });
+      sessions.delete(targetId);
     },
 
     async getTargets() {

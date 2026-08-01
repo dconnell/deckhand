@@ -34,7 +34,6 @@ test('runPresenterDoctor reports audience-only configs without failing', async (
       driver: { type: 'revealjs' },
       obs: { url: 'ws://127.0.0.1:4455', password: '' },
       hub: { port: 8765 },
-      hotkeys: { next: 'F13', prev: 'F14' },
       sources: {
         Slide: { kind: 'browser', browser: { tabs: { deck: { url: 'http://127.0.0.1:3000/deck/', initial: true } } } },
       },
@@ -72,7 +71,6 @@ test('runPresenterDoctor reports missing presenter dependencies clearly', async 
       driver: { type: 'revealjs' },
       obs: { url: 'ws://127.0.0.1:4455', password: '' },
       hub: { port: 8765 },
-      hotkeys: { next: 'F13', prev: 'F14' },
       sources: {
         Slide: { kind: 'browser', browser: { tabs: { deck: { url: 'http://127.0.0.1:3000/deck/', initial: true } } } },
       },

@@ -14,7 +14,6 @@ model for OBS, presenter stage, and slide actions.
   "driver": { "type": "revealjs" },
   "obs": { "url": "ws://127.0.0.1:4455", "password": "" },
   "hub": { "port": 8765 },
-  "hotkeys": { "next": "F13", "prev": "F14" },
   "sources": {
     "Slide": {
       "kind": "browser",
@@ -74,6 +73,7 @@ model for OBS, presenter stage, and slide actions.
     }
   },
   "chrome": {
+    "profileName": "Personal",
     "executablePath": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "profileDir": "/tmp/deckhand-chrome",
     "debugPort": 9222
@@ -109,7 +109,6 @@ model for OBS, presenter stage, and slide actions.
 - `obs.url`: OBS WebSocket URL
 - `obs.password`: OBS WebSocket password
 - `hub.port`: localhost WebSocket port for driver and observer clients
-- `hotkeys.next` / `hotkeys.prev`: key names understood by `uiohook-napi`
 
 ## Sources
 
@@ -153,8 +152,8 @@ URL or title lookup.
 }
 ```
 
-- `window.label`: optional label carried in the runtime registry (future
-  window-capture binding detail)
+- `window.label`: optional source label carried in the runtime registry for
+  managed-window bookkeeping
 - `tabs`: non-empty map of source-local tab aliases to tab descriptors
 - each tab descriptor takes:
   - `url`: absolute `http` or `https` URL
@@ -169,13 +168,20 @@ The optional top-level `chrome` section customizes the dedicated Chrome process
 Deckhand launches for browser sources:
 
 - `executablePath`: absolute path to a Chrome or Chromium binary
-- `profileDir`: absolute path to a dedicated user-data directory (defaults to a
-  presentation-scoped directory under the system temp dir)
+- `profileDir`: absolute path to a dedicated user-data directory; when omitted,
+  Deckhand creates a fresh per-run working directory under the system temp dir
+- `profileName`: optional visible Chrome profile name to seed that working copy
+  from, such as `Personal`
 - `debugPort`: remote debugging port (a random port in 9222-9322 by default)
 - `extraArgs`: array of extra Chrome command-line arguments
 
 Deckhand only ever controls windows and tabs it created in this session; the
 operator's ordinary Chrome usage is left untouched.
+
+When `profileName` is set, Deckhand resolves that named Chrome profile and
+launches a Deckhand-owned working copy seeded from it. Chrome DevTools port
+discovery uses the launched profile's `DevToolsActivePort` file so the actual
+port wins even when Chrome chooses a different one than requested.
 
 ## Layouts
 
@@ -243,6 +249,10 @@ Window selectors contain:
 At runtime, presenter observers may upgrade these bootstrap selectors to exact
 session bindings by reporting `pid`, `macWindowId`, and `strict: true` back to
 Deckhand. Those exact fields are runtime state, not part of committed config.
+
+Deckhand uses these bootstrap selectors to seed OBS `window_capture` settings,
+then upgrades them in place to exact managed bindings when runtime window
+handles are available.
 
 ## Slide ID Scheme
 

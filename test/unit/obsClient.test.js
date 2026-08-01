@@ -102,3 +102,37 @@ test('obs client surfaces scene rejection errors', async () => {
   await obs.connect();
   await assert.rejects(() => obs.setScene('Missing Scene'), /scene rejected/i);
 });
+
+test('obs client applies window capture settings for managed sources', async () => {
+  const FakeObsWebSocket = createFakeObsWebSocket();
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: FakeObsWebSocket,
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+  await obs.applyInputSettings('Slide', {
+    owner_name: 'Google Chrome',
+    window_name: 'Deckhand Example Deck',
+    owner_pid: 47213,
+    window: 12345,
+  });
+
+  assert.deepEqual(obs.getClient().calls, [
+    {
+      method: 'SetInputSettings',
+      payload: {
+        inputName: 'Slide',
+        inputSettings: {
+          owner_name: 'Google Chrome',
+          window_name: 'Deckhand Example Deck',
+          owner_pid: 47213,
+          window: 12345,
+        },
+        overlay: true,
+      },
+    },
+  ]);
+});

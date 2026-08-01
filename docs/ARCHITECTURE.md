@@ -149,19 +149,23 @@ Sticky behavior:
 
 Startup order:
 
-1. OBS connect
-2. hub start
-3. browser session start (launches Chrome, creates source windows, preloads tabs)
-4. hotkeys start
+1. presentation HTTP start
+2. OBS connect
+3. hub start
+4. browser session start (launches Chrome, creates source windows, preloads tabs)
 5. presenter HTTP start, when presenter mode is enabled
+6. wait for the first real driver position
+7. wait for a presenter observer when presenter mode is enabled
+8. wait for exact Hammerspoon window bindings for browser sources
+9. final OBS reconcile with exact managed window ids
 
 Shutdown order:
 
 1. presenter HTTP stop
-2. hotkeys stop
-3. browser session stop
-4. hub stop
-5. OBS disconnect
+2. browser session stop (closes tracked Deckhand tabs and windows)
+3. hub stop
+4. OBS disconnect
+5. presentation HTTP stop
 
 ## Driver, Browser Session, And Observer Boundaries
 
@@ -173,10 +177,20 @@ Driver responsibilities:
 Browser session responsibilities:
 
 - launch and own the dedicated Deckhand Chrome session
+- optionally seed that session from a configured Chrome profile name
 - create one window per browser source and preload declared tabs
 - maintain the authoritative source/tab runtime-handle registry
 - resolve `activateTab` and `navigate` commands to runtime handles, never URL or
   title lookup
+- close only the tracked Deckhand-owned tabs and windows on shutdown
+
+OBS adapter responsibilities:
+
+- switch audience scenes
+- provision or reuse stable source-named inputs
+- push macOS `window_capture` settings from bootstrap selectors first
+- upgrade those inputs to exact managed window bindings when runtime
+  `macWindowId`/`pid` data arrives
 
 Observer responsibilities:
 

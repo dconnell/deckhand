@@ -139,8 +139,8 @@ export function listLayoutSources(config) {
  * @param {string} slideId Normalized slide identifier.
  * @param {{ layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }> }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<Record<string, unknown>> }>, presenter: null | { stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }> } }} config Normalized config.
  * @param {number} seq Monotonic presentation-state sequence number.
- * @param {{ windowBindings?: Record<string, { app: string, titleIncludes?: string, pid?: number, macWindowId?: number, strict?: boolean }> }} [runtime] Runtime binding overlays.
- * @returns {{ type: 'presentationState', seq: number, slideId: string, layoutId: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right', rect?: { x: number, y: number, w: number, h: number } }>, windowBindings?: Record<string, { app: string, titleIncludes?: string, pid?: number, macWindowId?: number, strict?: boolean }>, focus: string | null, script: string | null, commands: Array<Record<string, unknown>> }}
+ * @param {{ windowBindings?: Record<string, { app?: string, titleIncludes?: string, pid?: number, macWindowId?: number, strict?: boolean }> }} [runtime] Runtime binding overlays.
+ * @returns {{ type: 'presentationState', seq: number, slideId: string, layoutId: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right', rect?: { x: number, y: number, w: number, h: number } }>, windowBindings?: Record<string, { app: string, titleIncludes?: string, pid?: number, macWindowId?: number, strict?: boolean }>, managedWindowBindings?: Record<string, { app: string, titleIncludes?: string, pid?: number, macWindowId?: number, strict?: boolean }>, focus: string | null, script: string | null, commands: Array<Record<string, unknown>> }}
  */
 export function buildPresentationState(slideId, config, seq, runtime = {}) {
   const slide = config.slides[slideId];
@@ -170,12 +170,18 @@ export function buildPresentationState(slideId, config, seq, runtime = {}) {
     return state;
   }
 
+  const managedWindowBindings = Object.fromEntries(
+    Object.entries(config.presenter.windows).map(([sourceId, binding]) => [
+      sourceId,
+      {
+        ...binding,
+        ...(runtime.windowBindings?.[sourceId] ?? {}),
+      },
+    ]),
+  );
   const windowBindings = {};
   state.slots = layout.slots.map((slot) => {
-    windowBindings[slot.source] = {
-      ...config.presenter.windows[slot.source],
-      ...(runtime.windowBindings?.[slot.source] ?? {}),
-    };
+    windowBindings[slot.source] = managedWindowBindings[slot.source];
 
     return {
       source: slot.source,
@@ -184,6 +190,7 @@ export function buildPresentationState(slideId, config, seq, runtime = {}) {
     };
   });
   state.windowBindings = windowBindings;
+  state.managedWindowBindings = managedWindowBindings;
 
   return state;
 }

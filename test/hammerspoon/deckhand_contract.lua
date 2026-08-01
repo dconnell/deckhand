@@ -57,6 +57,18 @@ local controller = deckhand.start({
           macWindowId = 4002,
           strict = true,
         },
+        BrowserA = {
+          app = "Google Chrome",
+          pid = 47213,
+          macWindowId = 4003,
+          strict = true,
+        },
+        BrowserB = {
+          app = "Google Chrome",
+          pid = 47213,
+          macWindowId = 4004,
+          strict = true,
+        },
       },
       clearedBindings = {},
     }
@@ -145,7 +157,7 @@ assert_equal(sockets[1].sent[4].type, "windowBindings", "expected exact window b
 assert_equal(sockets[1].sent[4].bindings.Slide.macWindowId, 4002, "expected slide macWindowId in report")
 assert_equal(sockets[1].sent[4].bindings.Slide.pid, 2002, "expected slide pid in report")
 assert_equal(sockets[1].sent[4].cleared[1], nil, "expected no cleared bindings in initial report")
-assert_equal(sockets[1].sent[5], nil, "expected no duplicate report when payload already has exact binding")
+assert_equal(sockets[1].sent[5].type, "windowBindings", "expected a second report when other managed bindings are first resolved")
 
 sockets[1].callback("closed", "server restart")
 assert_equal(connect_count, 2, "expected reconnect after close")

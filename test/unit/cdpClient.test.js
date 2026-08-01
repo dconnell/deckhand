@@ -265,6 +265,40 @@ test('navigateTab attaches once per target then sends Page.navigate on the sessi
   await second;
 });
 
+test('setWindowTitle attaches once per target then updates document.title on the session', async () => {
+  const transport = createFakeTransport();
+  const client = createCdpClient({
+    discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://browser', chromePid: 1 }),
+    createTransport() {
+      return transport;
+    },
+  });
+
+  await client.connect();
+
+  const pending = client.setWindowTitle({ targetId: 'TARGET_TAB_HOME', title: 'Deckhand BrowserA' });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(transport.sent[0], {
+    id: 1,
+    method: 'Target.attachToTarget',
+    params: { targetId: 'TARGET_TAB_HOME', flatten: true },
+  });
+
+  respondTo(transport, 1, { sessionId: 'SESSION_HOME' });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(transport.sent[1], {
+    id: 2,
+    method: 'Runtime.evaluate',
+    params: { expression: 'document.title = "Deckhand BrowserA"' },
+    sessionId: 'SESSION_HOME',
+  });
+
+  respondTo(transport, 2, { result: { type: 'string', value: 'Deckhand BrowserA' } });
+  await pending;
+});
+
 test('getTargets resolves the targetInfos returned by Target.getTargets', async () => {
   const transport = createFakeTransport();
   const client = createCdpClient({

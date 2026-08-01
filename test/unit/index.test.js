@@ -62,18 +62,15 @@ test('run reports adapter construction failures clearly', async () => {
         warn() {},
       },
       createHubFn() {
-        return {};
+        throw new Error('adapter load failed');
       },
       createObsClientFn() {
         return {};
       },
-      createHotkeysFn() {
-        throw new Error('uiohook load failed');
-      },
     });
 
     assert.equal(exitCode, 1);
-    assert.match(errors[0], /Failed to build application dependencies: uiohook load failed/);
+    assert.match(errors[0], /Failed to build application dependencies: adapter load failed/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -102,12 +99,8 @@ test('run starts the presenter HTTP server when presenter mode is enabled', asyn
       },
       createCoordinatorFn() {
         return {
-          async start(options = {}) {
+          async start() {
             lifecycle.push('coordinator.start');
-            assert.equal(options.enableHotkeys, false);
-          },
-          async enableHotkeys() {
-            lifecycle.push('coordinator.enableHotkeys');
           },
           async stop() {
             lifecycle.push('coordinator.stop');
@@ -116,9 +109,6 @@ test('run starts the presenter HTTP server when presenter mode is enabled', asyn
             return null;
           },
         };
-      },
-      createHotkeysFn() {
-        return {};
       },
       createHubFn() {
         const handlers = new Map();
@@ -143,6 +133,9 @@ test('run starts the presenter HTTP server when presenter mode is enabled', asyn
         return {
           async connect() {},
           async disconnect() {},
+          async setScene() {},
+          async applyInputSettings() {},
+          getClient() { return this; },
           isConnected() {
             return false;
           },
@@ -171,12 +164,18 @@ test('run starts the presenter HTTP server when presenter mode is enabled', asyn
           },
         };
       },
+      reconcileObsFn: async () => {
+        lifecycle.push('reconcileObs');
+      },
       waitForDriverPositionFn: async ({ hub }) => {
         lifecycle.push('waitForDriverPosition');
         await hub.emit('driverPositionChanged', { id: 'intro', index: { h: 0, v: 0 }, meta: {} });
       },
       waitForPresentationObserverFn: async () => {
         lifecycle.push('waitForPresentationObserver');
+      },
+      resolveMacWindowBindingsFn: async () => {
+        lifecycle.push('resolveMacWindowBindings');
       },
     });
 
@@ -186,9 +185,158 @@ test('run starts the presenter HTTP server when presenter mode is enabled', asyn
       'presentationServer.start',
       'coordinator.start',
       'presenterHttp.start',
+      'reconcileObs',
       'waitForDriverPosition',
       'waitForPresentationObserver',
-      'coordinator.enableHotkeys',
+      'resolveMacWindowBindings',
+      'reconcileObs',
+    ]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('run discovers the actual DevTools port from the launched Chrome session', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-actual-devtools-port-'));
+  const lifecycle = [];
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      installSignalHandlers: false,
+      consoleLike: {
+        error() {},
+        info() {},
+        log() {},
+        warn() {},
+      },
+      createHubFn() {
+        const handlers = new Map();
+        return {
+          on(eventName, handler) {
+            handlers.set(eventName, handler);
+          },
+          async start() {},
+          async stop() {},
+          getAddress() {
+            return { host: '127.0.0.1', port: 8765 };
+          },
+          getSnapshot() {
+            return { activeDriver: null, observers: [{ role: 'observer', subscriptions: ['presentationState'] }], sticky: {} };
+          },
+          emit(eventName, payload) {
+            return handlers.get(eventName)?.(payload);
+          },
+        };
+      },
+      createObsClientFn() {
+        return {
+          async connect() {},
+          async disconnect() {},
+          async setScene() {},
+          async applyInputSettings() {},
+          getClient() { return this; },
+          isConnected() {
+            return false;
+          },
+        };
+      },
+      launchChromeSessionFn: async () => ({
+        chromePid: 47213,
+        debugPort: 9321,
+        profileDir: '/tmp/deckhand-run',
+        async stop() {},
+      }),
+      discoverCdpEndpointFn: async ({ debugPort, profileDir }) => {
+        lifecycle.push(`discover:${debugPort}:${profileDir}`);
+        return {
+          webSocketDebuggerUrl: 'ws://127.0.0.1:9313/devtools/browser/abc',
+          chromePid: null,
+        };
+      },
+      createCdpClientFn({ discover }) {
+        return {
+          async connect() {
+            await discover();
+          },
+          async disconnect() {},
+          isConnected() {
+            return true;
+          },
+          getChromePid() {
+            return 47213;
+          },
+          on() {},
+          async createWindow() { throw new Error('not used'); },
+          async createTab() { throw new Error('not used'); },
+          async activateTab() {},
+          async navigateTab() {},
+          async closeTarget() {},
+        };
+      },
+      createBrowserSessionFn({ createCdpClient }) {
+        const cdpClient = createCdpClient();
+        return {
+          async start() { await cdpClient.connect(); },
+          async stop() { await cdpClient.disconnect(); },
+          async openWindow() {},
+          getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
+          async activateTab() {},
+          async navigateTab() {},
+        };
+      },
+      createCoordinatorFn({ executor, obs, hub }) {
+        return {
+          async start() {
+            await executor.start();
+            await obs.connect();
+            await hub.start();
+          },
+          async stop() {
+            await executor.stop();
+            await hub.stop();
+            await obs.disconnect();
+          },
+          getCurrentPresentationState() {
+            return {
+              type: 'presentationState',
+              seq: 1,
+              slideId: 'intro',
+              layoutId: 'full-slide',
+              audienceScene: 'Full Slide',
+              focus: null,
+              slots: [],
+            };
+          },
+          getRuntimeWindowBindings() {
+            return {};
+          },
+        };
+      },
+      createPresentationServerFn() {
+        return {
+          async start() {},
+          async stop() {},
+          getAddress() { return { host: '127.0.0.1', port: 3000 }; },
+        };
+      },
+      reconcileObsFn: async () => {
+        lifecycle.push('reconcileObs');
+      },
+      waitForDriverPositionFn: async () => {},
+      waitForPresentationObserverFn: async () => {},
+      resolveMacWindowBindingsFn: async () => {},
+    });
+
+    assert.equal(exitCode, 0);
+    assert.deepEqual(lifecycle, [
+      'discover:9321:/tmp/deckhand-run',
+      'reconcileObs',
+      'reconcileObs',
     ]);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -204,7 +352,6 @@ test('run does not create the presenter HTTP server for audience-only configs', 
       driver: { type: 'revealjs' },
       obs: { url: 'ws://127.0.0.1:4455', password: '' },
       hub: { port: 8765 },
-      hotkeys: { next: 'F13', prev: 'F14' },
       sources: {
         Slide: { kind: 'browser', browser: { tabs: { deck: { url: 'http://127.0.0.1:3000/deck/', initial: true } } } },
       },
@@ -233,15 +380,11 @@ test('run does not create the presenter HTTP server for audience-only configs', 
       createCoordinatorFn() {
         return {
           async start() {},
-          async enableHotkeys() {},
           async stop() {},
           getCurrentPresentationState() {
             return null;
           },
         };
-      },
-      createHotkeysFn() {
-        return {};
       },
       createHubFn() {
         const handlers = new Map();
@@ -266,6 +409,9 @@ test('run does not create the presenter HTTP server for audience-only configs', 
         return {
           async connect() {},
           async disconnect() {},
+          async setScene() {},
+          async applyInputSettings() {},
+          getClient() { return this; },
           isConnected() {
             return false;
           },
@@ -287,9 +433,11 @@ test('run does not create the presenter HTTP server for audience-only configs', 
           },
         };
       },
+      reconcileObsFn: async () => {},
       waitForDriverPositionFn: async ({ hub }) => {
         await hub.emit('driverPositionChanged', { id: 'intro', index: { h: 0, v: 0 }, meta: {} });
       },
+      resolveMacWindowBindingsFn: async () => {},
     });
 
     assert.equal(exitCode, 0);
@@ -299,7 +447,7 @@ test('run does not create the presenter HTTP server for audience-only configs', 
   }
 });
 
-test('run stops the launched Chrome session when startup fails after browser launch', async () => {
+test('run uses the browser session cleanup before stopping the launched Chrome process on startup failure', async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-chrome-cleanup-'));
   const errors = [];
   const lifecycle = [];
@@ -319,9 +467,6 @@ test('run stops the launched Chrome session when startup fails after browser lau
         info() {},
         log() {},
         warn() {},
-      },
-      createHotkeysFn() {
-        return {};
       },
       createHubFn() {
         const handlers = new Map();
@@ -351,6 +496,7 @@ test('run stops the launched Chrome session when startup fails after browser lau
           async connect() {},
           async disconnect() {},
           async setScene() {},
+          getClient() { return this; },
           isConnected() {
             return false;
           },
@@ -419,9 +565,6 @@ test('run stops the launched Chrome session when startup fails after browser lau
             await executor.start();
             throw new Error('startup exploded');
           },
-          async enableHotkeys() {
-            lifecycle.push('coordinator.enableHotkeys');
-          },
           async stop() {
             lifecycle.push('coordinator.stop');
             await executor.stop();
@@ -444,6 +587,7 @@ test('run stops the launched Chrome session when startup fails after browser lau
           },
         };
       },
+      reconcileObsFn: async () => {},
     });
 
     assert.equal(exitCode, 1);
@@ -485,9 +629,6 @@ test('run fails startup when the first driver position never arrives', async () 
         log() {},
         warn() {},
       },
-      createHotkeysFn() {
-        return {};
-      },
       createHubFn() {
         return {
           on() {},
@@ -515,9 +656,6 @@ test('run fails startup when the first driver position never arrives', async () 
         return {
           async start() {
             lifecycle.push('coordinator.start');
-          },
-          async enableHotkeys() {
-            lifecycle.push('coordinator.enableHotkeys');
           },
           async stop() {
             lifecycle.push('coordinator.stop');
@@ -550,9 +688,11 @@ test('run fails startup when the first driver position never arrives', async () 
           },
         };
       },
+      reconcileObsFn: async () => {},
       waitForDriverPositionFn: async () => {
         throw new Error('Timed out waiting for the first driver position');
       },
+      resolveMacWindowBindingsFn: async () => {},
     });
 
     assert.equal(exitCode, 1);
@@ -565,6 +705,91 @@ test('run fails startup when the first driver position never arrives', async () 
       'coordinator.stop',
       'presentationServer.stop',
     ]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('run stops a stale Deckhand Chrome process if discovery fails on the requested port', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-stale-chrome-'));
+  const errors = [];
+  const lifecycle = [];
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      installSignalHandlers: false,
+      consoleLike: {
+        error(message) {
+          errors.push(message);
+        },
+        info() {},
+        log() {},
+        warn() {},
+      },
+      createHubFn() {
+        return {
+          on() {},
+          async start() {},
+          async stop() {},
+          getAddress() {
+            return { host: '127.0.0.1', port: 8765 };
+          },
+          getSnapshot() {
+            return { activeDriver: null, observers: [], sticky: {} };
+          },
+        };
+      },
+      createObsClientFn() {
+        return {
+          async connect() {},
+          async disconnect() {},
+          async setScene() {},
+          async applyInputSettings() {},
+          getClient() { return this; },
+          isConnected() {
+            return false;
+          },
+        };
+      },
+      createCoordinatorFn({ executor, obs, hub }) {
+        return {
+          async start() {
+            await obs.connect();
+            await hub.start();
+            await executor?.start?.();
+          },
+          async stop() {
+            await executor?.stop?.();
+            await hub.stop();
+            await obs.disconnect();
+          },
+          getCurrentPresentationState() {
+            return null;
+          },
+        };
+      },
+      launchChromeSessionFn: async () => ({
+        chromePid: 47213,
+        debugPort: 9292,
+        async stop() {
+          lifecycle.push('chrome.stop');
+        },
+      }),
+      discoverCdpEndpointFn: async () => {
+        throw new Error('fetch failed');
+      },
+      reconcileObsFn: async () => {},
+      resolveMacWindowBindingsFn: async () => {},
+    });
+
+    assert.equal(exitCode, 1);
+    assert.match(errors[0], /fetch failed/);
+    assert.deepEqual(lifecycle, ['chrome.stop']);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -590,9 +815,6 @@ test('run fails startup in presenter mode when no presentation observer connects
         info() {},
         log() {},
         warn() {},
-      },
-      createHotkeysFn() {
-        return {};
       },
       createHubFn() {
         const handlers = new Map();
@@ -628,9 +850,6 @@ test('run fails startup in presenter mode when no presentation observer connects
           async start() {
             lifecycle.push('coordinator.start');
           },
-          async enableHotkeys() {
-            lifecycle.push('coordinator.enableHotkeys');
-          },
           async stop() {
             lifecycle.push('coordinator.stop');
           },
@@ -662,12 +881,14 @@ test('run fails startup in presenter mode when no presentation observer connects
           },
         };
       },
+      reconcileObsFn: async () => {},
       waitForDriverPositionFn: async ({ hub }) => {
         await hub.emit('driverPositionChanged', { id: 'intro', index: { h: 0, v: 0 }, meta: {} });
       },
       waitForPresentationObserverFn: async () => {
         throw new Error('Timed out waiting for a presenter observer');
       },
+      resolveMacWindowBindingsFn: async () => {},
     });
 
     assert.equal(exitCode, 1);

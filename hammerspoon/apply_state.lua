@@ -31,26 +31,31 @@ function M.apply(state, dependencies)
   local missing = {}
   local resolved_bindings = {}
   local cleared_bindings = {}
+  local binding_catalog = state.managedWindowBindings or state.windowBindings or {}
+
+  for source, binding in pairs(binding_catalog) do
+    local window = find_window(binding)
+    if window then
+      resolved[source] = window
+
+      local exact_binding = exact_binding_for(window, binding)
+      if exact_binding ~= nil then
+        resolved_bindings[source] = exact_binding
+      end
+    elseif binding.strict == true and binding.macWindowId ~= nil then
+      table.insert(cleared_bindings, source)
+    end
+  end
 
   for _, slot in ipairs(state.slots or {}) do
     local binding = state.windowBindings and state.windowBindings[slot.source]
     if binding then
-      local window = find_window(binding)
+      local window = resolved[slot.source]
       if window and slot.rect then
         window:setFrame(make_rect(slot.rect))
-        resolved[slot.source] = window
         table.insert(applied, slot.source)
-
-        local exact_binding = exact_binding_for(window, binding)
-        if exact_binding ~= nil then
-          resolved_bindings[slot.source] = exact_binding
-        end
       else
         table.insert(missing, slot.source)
-
-        if binding.strict == true and binding.macWindowId ~= nil then
-          table.insert(cleared_bindings, slot.source)
-        end
       end
     end
   end

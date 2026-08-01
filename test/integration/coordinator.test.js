@@ -29,7 +29,6 @@ function createConfig(port) {
     driver: { type: 'revealjs' },
     obs: { url: 'ws://127.0.0.1:4455', password: '' },
     hub: { host: '127.0.0.1', port },
-    hotkeys: { next: 'F13', prev: 'F14' },
     sources: {
       Slide: {
         id: 'Slide',
@@ -127,24 +126,13 @@ async function flushMessages() {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 
-test('coordinator integration publishes presentation state, dispatches browser commands, and relays hotkeys', async () => {
+test('coordinator integration publishes presentation state and dispatches browser commands', async () => {
   const logger = createLogger();
   const obsCalls = [];
   const hub = createHub({ host: '127.0.0.1', port: 0, logger });
   await hub.start();
 
   const port = hub.getAddress().port;
-  const hotkeyHandlers = new Map();
-  const hotkeys = {
-    on(eventName, handler) {
-      hotkeyHandlers.set(eventName, handler);
-    },
-    async start() {},
-    async stop() {},
-    async emit(action) {
-      await hotkeyHandlers.get('action')?.(action);
-    },
-  };
 
   const executedCommands = [];
   const executor = {
@@ -168,7 +156,6 @@ test('coordinator integration publishes presentation state, dispatches browser c
       },
     },
     hub,
-    hotkeys,
     executor,
     logger,
   });
@@ -189,8 +176,6 @@ test('coordinator integration publishes presentation state, dispatches browser c
         meta: { indexh: 15, indexv: 0 },
       },
     });
-    await hotkeys.emit({ type: 'next' });
-    await hotkeys.emit({ type: 'prev' });
     await flushMessages();
 
     assert.deepEqual(obsCalls, ['Dual Browser']);
@@ -198,10 +183,6 @@ test('coordinator integration publishes presentation state, dispatches browser c
       { type: 'activateTab', source: 'BrowserA', tab: 'checkout' },
       { type: 'navigate', source: 'BrowserB', tab: 'main', url: 'https://example.com/other-app' },
     ]);
-    assert.deepEqual(
-      driver.messages.filter((message) => message.type === 'command').map((message) => message.command),
-      [{ type: 'next' }, { type: 'prev' }],
-    );
 
     assert.deepEqual(observer.messages.filter((message) => message.type === 'presentationState'), [
       {

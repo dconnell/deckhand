@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
 import { randomInt } from 'node:crypto';
-import { access, mkdir } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 
 import WebSocket from 'ws';
 
@@ -21,6 +22,70 @@ function createNoopLogger() {
     info() {},
     warn() {},
   };
+}
+
+const MAC_CHROME_USER_DATA_DIR = path.join('Library', 'Application Support', 'Google', 'Chrome');
+
+async function resolveNamedProfilePath(profileName, envFn) {
+  const homeDir = envFn().HOME;
+
+  if (typeof homeDir !== 'string' || homeDir.trim() === '') {
+    throw new Error('HOME must be set to resolve chrome.profileName');
+  }
+
+  const userDataRoot = path.join(homeDir, MAC_CHROME_USER_DATA_DIR);
+  const localStatePath = path.join(userDataRoot, 'Local State');
+  const localState = JSON.parse(await readFile(localStatePath, 'utf8'));
+  const entries = localState?.profile?.info_cache;
+
+  if (entries === undefined || entries === null || typeof entries !== 'object') {
+    throw new Error(`Could not resolve Chrome profile named "${profileName}" from ${localStatePath}`);
+  }
+
+  for (const [directoryName, entry] of Object.entries(entries)) {
+    if (entry?.name === profileName) {
+      return path.join(userDataRoot, directoryName);
+    }
+  }
+
+  throw new Error(`Could not find Chrome profile named "${profileName}"`);
+}
+
+async function prepareProfileDir(profileDir, profileName, envFn) {
+  if (profileName === undefined) {
+    await mkdir(profileDir, { recursive: true });
+    return { profileName: null, profilePath: null, profileDir };
+  }
+
+  const sourceProfilePath = await resolveNamedProfilePath(profileName, envFn);
+  const parentDir = path.dirname(profileDir);
+  await mkdir(parentDir, { recursive: true });
+  const workingProfileDir = await mkdtemp(path.join(parentDir, 'deckhand-profile-'));
+  await cp(sourceProfilePath, path.join(workingProfileDir, path.basename(sourceProfilePath)), { recursive: true });
+
+  return {
+    profileName,
+    profilePath: sourceProfilePath,
+    profileDir: workingProfileDir,
+  };
+}
+
+async function readDevToolsPort(profileDir) {
+  const filePath = path.join(profileDir, 'DevToolsActivePort');
+
+  try {
+    const text = await readFile(filePath, 'utf8');
+    const [portLine] = text.split(/\r?\n/);
+    const port = Number(portLine?.trim());
+
+    if (Number.isInteger(port) && port > 0) {
+      return port;
+    }
+  } catch {
+    // fall back to the requested port when Chrome has not written the file yet
+  }
+
+  return null;
 }
 
 async function resolveChromeExecutable(executablePath, envFn) {
@@ -65,8 +130,8 @@ function buildChromeArgs({ profileDir, debugPort, extraArgs }) {
  * The spawned process owns its own user-data directory so it never touches the
  * operator's ordinary Chrome profile.
  *
- * @param {{ executablePath?: string, profileDir: string, debugPort?: number, extraArgs?: string[], spawnFn?: typeof spawn, envFn?: () => NodeJS.ProcessEnv, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Launch options.
- * @returns {Promise<{ chromePid: number, debugPort: number, executable: string, stop(): Promise<void> }>}
+ * @param {{ executablePath?: string, profileDir: string, profileName?: string, debugPort?: number, extraArgs?: string[], spawnFn?: typeof spawn, envFn?: () => NodeJS.ProcessEnv, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Launch options.
+ * @returns {Promise<{ chromePid: number, debugPort: number, executable: string, profileDir: string, profileName: string | null, profilePath: string | null, stop(): Promise<void> }>}
  */
 export async function launchChromeSession(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -74,16 +139,20 @@ export async function launchChromeSession(options) {
   const envFn = options.envFn ?? (() => process.env);
   const executable = await resolveChromeExecutable(options.executablePath, envFn);
   const debugPort = options.debugPort ?? randomInt(DEFAULT_DEBUG_PORT_RANGE.min, DEFAULT_DEBUG_PORT_RANGE.max + 1);
-
-  await mkdir(path.dirname(options.profileDir), { recursive: true });
+  const preparedProfile = await prepareProfileDir(options.profileDir, options.profileName, envFn);
 
   const args = buildChromeArgs({
-    profileDir: options.profileDir,
+    profileDir: preparedProfile.profileDir,
     debugPort,
     extraArgs: options.extraArgs,
   });
 
-  logger.info('Launching Deckhand Chrome session', { debugPort, executable, profileDir: options.profileDir });
+  logger.info('Launching Deckhand Chrome session', {
+    debugPort,
+    executable,
+    profileDir: preparedProfile.profileDir,
+    profileName: preparedProfile.profileName,
+  });
 
   const child = spawnFn(executable, args, {
     detached: true,
@@ -103,16 +172,15 @@ export async function launchChromeSession(options) {
     chromePid,
     debugPort,
     executable,
-    async stop() {
-      return new Promise((resolve) => {
-        try {
-          child.kill('SIGTERM');
-        } catch {
-          // process may have already exited
-        }
-
-        resolve();
-      });
+    profileDir: preparedProfile.profileDir,
+    profileName: preparedProfile.profileName,
+    profilePath: preparedProfile.profilePath,
+    stop() {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // process may have already exited
+      }
     },
   };
 }
@@ -120,8 +188,8 @@ export async function launchChromeSession(options) {
 /**
  * Discover the CDP browser WebSocket endpoint for an already-launched Chrome.
  *
- * @param {{ debugPort: number, fetchFn?: typeof fetch, retries?: number, retryDelayMs?: number, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Discovery options.
- * @returns {Promise<{ webSocketDebuggerUrl: string, chromePid: null }>}
+ * @param {{ debugPort: number, profileDir?: string, fetchFn?: typeof fetch, retries?: number, retryDelayMs?: number, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Discovery options.
+ * @returns {Promise<{ webSocketDebuggerUrl: string, chromePid: null }>} 
  */
 export async function discoverCdpEndpoint(options) {
   const fetchFn = options.fetchFn ?? fetch;
@@ -133,6 +201,8 @@ export async function discoverCdpEndpoint(options) {
 
   for (let attempt = 0; attempt < retries; attempt += 1) {
     try {
+      const activePort = options.profileDir === undefined ? null : await readDevToolsPort(options.profileDir);
+      const url = `http://127.0.0.1:${activePort ?? options.debugPort}/json/version`;
       const response = await fetchFn(url);
 
       if (!response.ok) {
@@ -152,7 +222,7 @@ export async function discoverCdpEndpoint(options) {
     }
   }
 
-  throw new Error(`Could not reach Chrome DevTools endpoint at ${url}: ${lastError?.message ?? 'unknown error'}`);
+  throw new Error(`Could not reach Chrome DevTools endpoint at http://127.0.0.1:${options.debugPort}/json/version: ${lastError?.message ?? 'unknown error'}`);
 }
 
 /**

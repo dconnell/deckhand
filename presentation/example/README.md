@@ -24,12 +24,6 @@ Highlights:
 
 ## Run It
 
-Serve the deck:
-
-```bash
-npm run presentation:serve -- example
-```
-
 Run Deckhand:
 
 ```bash
@@ -66,7 +60,7 @@ npm run setup:obs -- --set-canvas example
 ## Presenter Add-Ons
 
 - Hammerspoon uses the `presentationState` observer channel to move/focus
-  windows.
+  windows and to report exact managed window bindings back to Deckhand.
 - `npm run presenter:smoke -- example` verifies the local presenter HTTP and hub
   surfaces after startup.
 - `npm run presenter:stt -- example` starts the whisper observer.

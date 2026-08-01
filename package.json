@@ -19,10 +19,7 @@
   },
   "dependencies": {
     "obs-websocket-js": "^5.0.8",
-    "uiohook-napi": "^1.5.5",
     "ws": "^8.21.1"
   },
-  "allowScripts": {
-    "uiohook-napi@1.5.5": true
-  }
+  "allowScripts": {}
 }

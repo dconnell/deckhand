@@ -16,7 +16,6 @@ function createValidConfig() {
     driver: { type: 'revealjs' },
     obs: { url: 'ws://127.0.0.1:4455', password: '' },
     hub: { port: 8765 },
-    hotkeys: { next: 'F13', prev: 'F14' },
     sources: {
       Slide: {
         kind: 'browser',
@@ -184,6 +183,15 @@ test('normalizeConfig defaults preload to true and resolves the initial tab when
 
   assert.equal(normalized.sources.BrowserA.browser.initialTab, 'home');
   assert.equal(normalized.sources.BrowserA.browser.tabs.home.preload, true);
+});
+
+test('normalizeConfig accepts chrome.profileName for seeding a working copy from a named Chrome profile', () => {
+  const config = createValidConfig();
+  config.chrome = { profileName: 'Personal' };
+
+  const normalized = normalizeConfig(config);
+
+  assert.equal(normalized.chrome.profileName, 'Personal');
 });
 
 test('normalizeConfig rejects browser tabs that disable preload', () => {

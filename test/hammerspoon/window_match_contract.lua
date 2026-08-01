@@ -40,8 +40,8 @@ local function create_window(id, title)
   end
 end
 
-local primary, set_primary_app = create_window(4001, "Deckhand Demo Primary")
-local secondary, set_secondary_app = create_window(4002, "Deckhand Demo Secondary")
+local primary, set_primary_app = create_window(4001, "Deckhand BrowserA")
+local secondary, set_secondary_app = create_window(4002, "Deckhand BrowserB")
 local chrome = create_app("Google Chrome", 47213, { primary, secondary })
 set_primary_app(chrome)
 set_secondary_app(chrome)
@@ -88,6 +88,6 @@ hs = {
 local window_match = require("window_match")
 
 assert_equal(window_match.findWindow({ app = "Google Chrome", macWindowId = 4002, pid = 47213, strict = true }):id(), 4002, "expected exact window id match")
-assert_equal(window_match.findWindow({ app = "Google Chrome", titleIncludes = "Primary" }):id(), 4001, "expected title fallback match")
+assert_equal(window_match.findWindow({ app = "Google Chrome", titleIncludes = "Deckhand BrowserA" }):id(), 4001, "expected title fallback match")
 assert_equal(window_match.findWindow({ app = "Google Chrome" }):id(), 4001, "expected first window fallback")
 assert_equal(window_match.findWindow({ app = "Google Chrome", macWindowId = 9999, pid = 47213, strict = true }), nil, "expected strict stale id to fail closed")

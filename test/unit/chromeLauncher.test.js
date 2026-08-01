@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createWsTransport, discoverCdpEndpoint } from '../../src/chromeLauncher.js';
+import os from 'node:os';
+import path from 'node:path';
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+
+import { createWsTransport, discoverCdpEndpoint, launchChromeSession } from '../../src/chromeLauncher.js';
 
 class FakeSocket {
   constructor() {
@@ -86,6 +90,80 @@ test('discoverCdpEndpoint rejects after exhausting retries', async () => {
     }),
     /could not reach chrome devtools/i,
   );
+});
+
+test('discoverCdpEndpoint prefers the actual port recorded in DevToolsActivePort', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-devtools-port-'));
+  const calls = [];
+
+  try {
+    await writeFile(path.join(tempDir, 'DevToolsActivePort'), '9313\n/devtools/browser/abc\n', 'utf8');
+
+    const result = await discoverCdpEndpoint({
+      debugPort: 9292,
+      profileDir: tempDir,
+      retries: 1,
+      retryDelayMs: 0,
+      fetchFn: async (url) => {
+        calls.push(url);
+        return new Response(JSON.stringify({
+          webSocketDebuggerUrl: 'ws://127.0.0.1:9313/devtools/browser/abc',
+        }), { status: 200 });
+      },
+    });
+
+    assert.deepEqual(calls, ['http://127.0.0.1:9313/json/version']);
+    assert.equal(result.webSocketDebuggerUrl, 'ws://127.0.0.1:9313/devtools/browser/abc');
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('launchChromeSession uses a named profile when profileName is configured', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-profile-name-'));
+  const homeDir = path.join(tempDir, 'chrome-home');
+  const userDataRoot = path.join(homeDir, 'Library', 'Application Support', 'Google', 'Chrome');
+  const sourceProfile = path.join(userDataRoot, 'Profile 3');
+  const spawned = [];
+
+  try {
+    await mkdir(sourceProfile, { recursive: true });
+    await writeFile(path.join(userDataRoot, 'Local State'), JSON.stringify({
+      profile: {
+        info_cache: {
+          'Profile 3': { name: 'Personal' },
+        },
+      },
+    }), 'utf8');
+    await writeFile(path.join(sourceProfile, 'Cookies'), 'cookie-data', 'utf8');
+
+    const launch = await launchChromeSession({
+      executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      profileDir: path.join(tempDir, 'deckhand-run'),
+      profileName: 'Personal',
+      spawnFn(executable, args) {
+        spawned.push({ executable, args });
+        return {
+          pid: 12345,
+          on() {},
+          kill() {},
+        };
+      },
+      envFn() {
+        return {
+          HOME: homeDir,
+        };
+      },
+      logger: { info() {}, warn() {}, error() {} },
+    });
+
+    assert.equal(launch.profileName, 'Personal');
+    assert.equal(launch.profilePath.endsWith(path.join('Google', 'Chrome', 'Profile 3')), true);
+    assert.equal(spawned.length, 1);
+    assert.ok(spawned[0].args.some((arg) => arg.startsWith('--user-data-dir=')));
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test('createWsTransport forwards CDP frames and close events through the contract', async () => {
