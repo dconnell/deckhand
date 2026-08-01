@@ -321,6 +321,7 @@ export async function run(options = {}) {
   let chromeLaunch = null;
   let presentationServer = null;
   let phase = 'starting';
+  const resolvedMacWindowBindings = {};
 
   async function stopLaunchedChrome() {
     if (chromeLaunch === null) {
@@ -377,6 +378,15 @@ export async function run(options = {}) {
   try {
     hub = (options.createHubFn ?? createHub)({ ...config.hub, logger });
     obs = (options.createObsClientFn ?? createObsClient)({ ...config.obs, logger });
+
+    hub.on('observerWindowBindings', (payload) => {
+      for (const source of payload?.cleared ?? []) {
+        if (resolvedMacWindowBindings[source] !== undefined) {
+          delete resolvedMacWindowBindings[source];
+          logger.info('Invalidated cached macWindowId', { source });
+        }
+      }
+    });
     presentationServer = (options.createPresentationServerFn ?? createPresentationServer)({
       cwd,
       host: PRESENTATION_SERVER_HOST,
@@ -443,14 +453,19 @@ export async function run(options = {}) {
         const registry = browserSession.getRegistry().sources;
 
         return Object.fromEntries(
-          Object.entries(registry).map(([sourceId, source]) => [
-            sourceId,
-            {
-              app: config.presenter.windows[sourceId]?.app,
-              pid: chromePid,
-              titleIncludes: source.title,
-            },
-          ]),
+          Object.entries(registry).map(([sourceId, source]) => {
+            const cached = resolvedMacWindowBindings[sourceId];
+
+            return [
+              sourceId,
+              {
+                app: config.presenter.windows[sourceId]?.app,
+                pid: chromePid,
+                titleIncludes: source.title,
+                ...(cached?.macWindowId !== undefined ? { macWindowId: cached.macWindowId } : {}),
+              },
+            ];
+          }),
         );
       },
       getManagedBrowserPid() {
@@ -540,12 +555,16 @@ export async function run(options = {}) {
     if (browserSourceIds.length > 0 && config.presenter !== null) {
       const windowResolutionFn = options.resolveMacWindowBindingsFn ?? defaultResolveMacWindowBindings;
 
-      const result = await windowResolutionFn({
+      const result = (await windowResolutionFn({
         browserSession,
         browserSourceIds,
         config,
         logger,
-      });
+      })) ?? {};
+
+      for (const [sourceId, binding] of Object.entries(result)) {
+        resolvedMacWindowBindings[sourceId] = binding;
+      }
 
       const allResolved = browserSourceIds.every((id) => result[id] !== undefined);
       if (allResolved) {
