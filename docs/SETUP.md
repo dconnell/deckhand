@@ -92,7 +92,7 @@ them from bootstrap title matching to exact managed window bindings when
 Hammerspoon reports them.
 
 If OBS requires authentication and your local override does not have the right
-password yet, `npm start my-talk` and presenter smoke checks will fail until
+password yet, `node ./src/index.js my-talk` and presenter smoke checks will fail until
 you update `obs.password`.
 
 ## Serve The Deck And Start The Coordinator
@@ -102,7 +102,7 @@ You need **one terminal window**.
 **Terminal 1 -- managed runtime session:**
 
 ```bash
-npm start my-talk
+node ./src/index.js my-talk
 ```
 
 Connects to OBS, starts the deck and presenter HTTP surfaces, and starts the
@@ -267,7 +267,7 @@ Browser-session health is reported at `/status.json` under `browserSession`.
 ## Troubleshooting
 
 - presenter page stays blank:
-  - verify `npm start my-talk`
+  - verify `node ./src/index.js my-talk`
   - verify `npm run presenter:smoke -- my-talk`
   - verify `/status.json`
   - verify the browser console can connect to `ws://127.0.0.1:8765`

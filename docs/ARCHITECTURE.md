@@ -6,6 +6,7 @@ Deckhand has these runtime boundaries:
 
 - coordinator
 - OBS adapter
+- hub (localhost WebSocket bus tying everything together)
 - driver client boundary
 - browser session runtime (CDP-owned Chrome windows and tabs)
 - observer client boundary
@@ -18,6 +19,30 @@ Observer clients power presenter mode. Current observer implementations are:
 
 The coordinator owns the declarative presentation model. Platform-specific
 presenter behavior lives outside the coordinator.
+
+## Responsibilities
+
+Deckhand is split across two cooperating runtimes: the **Node process** (the
+core) and **Hammerspoon** (a macOS observer that owns the work Node cannot do
+itself). They communicate over the localhost hub — Node runs the server,
+Hammerspoon connects as a client.
+
+| Responsibility | Node | Hammerspoon |
+| --- | --- | --- |
+| Slide hotkeys (next / prev) | — | `Ctrl+Shift+Left/Right` → `driverCommand` |
+| Deckhand Chrome session | launch and tear down (`--remote-debugging-port`, profile) | — |
+| Browser windows and tabs | create, activate, navigate, close via CDP | — |
+| Slide orchestration | switch OBS scene, dispatch browser commands, publish state | — |
+| Hub (localhost WebSocket) | server | client (observer) |
+| Window discovery | bootstrap match via `CGWindowList` + Accessibility | authoritative: resolve `hs.window` → exact `macWindowId` |
+| OBS window capture | `applyInputSettings` using the resolved IDs | — |
+| Window layout and focus | compute slot rects | `setFrame`, raise, focus |
+| Presenter app, STT, `/status.json` | served here | — |
+
+Window discovery is the one shared job, and it runs in two phases. Node opens the
+browser windows and makes a best-effort match; Hammerspoon then resolves the
+exact `macWindowId` for each source and reports it back. Startup blocks on that
+handshake before doing the final OBS reconcile.
 
 ## Source Of Truth
 
@@ -112,9 +137,10 @@ The local hub binds to localhost only and carries a small JSON protocol.
 
 Messages used in the current design:
 
-- `register`
-- `registered`
+- `register` / `registered`
 - `positionChanged`
+- `driverCommand` (observer → hub → active driver; powers Hammerspoon hotkeys)
+- `windowBindings` (observer → hub; Hammerspoon reports resolved `macWindowId`s)
 - `command`
 - `presentationState`
 - `transcript`
@@ -151,8 +177,8 @@ Startup order:
 
 1. presentation HTTP start
 2. OBS connect
-3. hub start
-4. browser session start (launches Chrome, creates source windows, preloads tabs)
+3. browser session start (launches Chrome, creates source windows, preloads tabs)
+4. hub start
 5. presenter HTTP start, when presenter mode is enabled
 6. wait for the first real driver position
 7. wait for a presenter observer when presenter mode is enabled

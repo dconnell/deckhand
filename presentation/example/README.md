@@ -27,7 +27,7 @@ Highlights:
 Run Deckhand:
 
 ```bash
-npm start example
+node ./src/index.js example
 ```
 
 Open the deck:
@@ -69,7 +69,7 @@ npm run setup:obs -- --set-canvas example
 Note: `presentation/example/config.json` intentionally keeps placeholder STT
 paths and an empty OBS password. Put your real OBS password, window selectors,
 and optional STT settings in `presentation/<your-presentation-name>/config.local.json`
-before expecting `npm start <your-presentation-name>` or STT checks to pass
+before expecting `node ./src/index.js <your-presentation-name>` or STT checks to pass
 against your live setup.
 
 See `../../docs/SETUP.md` for the full macOS walkthrough.

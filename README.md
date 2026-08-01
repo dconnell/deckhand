@@ -86,7 +86,7 @@ You need **one terminal window**.
 **Terminal 1 -- managed runtime session**:
 
 ```bash
-npm start my-talk
+node ./src/index.js my-talk
 ```
 
 This starts:
@@ -147,7 +147,7 @@ configured target commands.
 - Automated unit and integration tests pass with `npm test`.
 - `npm run setup:obs -- <presentation-name>` connects to OBS and applies
   layout-derived scenes from that presentation config.
-- `npm start <presentation-name>` starts the managed runtime session, including
+- `node ./src/index.js <presentation-name>` starts the managed runtime session, including
   the deck HTTP server and presenter HTTP surface.
 - `npm run presenter:doctor -- <presentation-name>` validates the local
   presentation config and reports missing STT dependencies clearly.
