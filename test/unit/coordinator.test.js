@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createCoordinator } from '../../src/coordinator.js';
+import { computeSlideDirection, createCoordinator, extractSlideIndex } from '../../src/coordinator.js';
 
 function createLogger() {
   return {
@@ -573,4 +573,264 @@ test('coordinator cleans up partial startup if a dependency fails to start', asy
     'executor.stop',
     'obs.disconnect',
   ]);
+});
+
+test('extractSlideIndex returns a comparable h/v index, or null when absent', () => {
+  assert.deepEqual(extractSlideIndex({ index: { h: 2, v: 1 } }), { h: 2, v: 1 });
+  assert.deepEqual(extractSlideIndex({ index: { h: 0 } }), { h: 0, v: 0 });
+  assert.equal(extractSlideIndex({ index: { v: 1 } }), null);
+  assert.equal(extractSlideIndex({}), null);
+  assert.equal(extractSlideIndex(null), null);
+});
+
+test('computeSlideDirection classifies forward, backward, and neutral jumps', () => {
+  assert.equal(computeSlideDirection({ h: 0, v: 0 }, { h: 1, v: 0 }), 'forward');
+  assert.equal(computeSlideDirection({ h: 1, v: 0 }, { h: 0, v: 0 }), 'backward');
+  assert.equal(computeSlideDirection({ h: 1, v: 0 }, { h: 1, v: 2 }), 'forward');
+  assert.equal(computeSlideDirection({ h: 1, v: 2 }, { h: 1, v: 0 }), 'backward');
+  assert.equal(computeSlideDirection({ h: 2, v: 0 }, { h: 2, v: 0 }), 'none');
+  assert.equal(computeSlideDirection(null, { h: 0, v: 0 }), 'none');
+});
+
+function createTransitionsConfig(overrides = {}) {
+  const config = createConfig();
+  config.obs.transitions = {
+    forward: 'Slide Right',
+    backward: 'Slide Left',
+    freezeScene: 'Freeze',
+    freezeImage: 'Freeze Frame',
+    settleMs: 1,
+    navigationWaitMs: 1,
+    durationMs: 50,
+    ...overrides,
+  };
+  return config;
+}
+
+function createTracingHub(trace) {
+  const handlers = new Map();
+  return {
+    on(eventName, handler) {
+      handlers.set(eventName, handler);
+    },
+    emit(eventName, payload) {
+      return handlers.get(eventName)?.(payload);
+    },
+    async start() {},
+    async stop() {},
+    async sendCommand() {},
+    async publishSticky() {
+      trace.push('publishSticky');
+    },
+    getSnapshot() {
+      return { activeDriver: null, observers: [], sticky: {} };
+    },
+  };
+}
+
+function createTracingObs(trace, { failCapture = false } = {}) {
+  return {
+    async connect() {},
+    async disconnect() {},
+    isConnected() {
+      return true;
+    },
+    async setScene(name) {
+      trace.push(`setScene:${name}`);
+    },
+    async applyInputSettings(name) {
+      trace.push(`applyInputSettings:${name}`);
+    },
+    async getCurrentTransitionName() {
+      trace.push('getCurrentTransitionName');
+      return 'Fade';
+    },
+    async captureProgramScreenshot() {
+      trace.push('captureProgramScreenshot');
+
+      if (failCapture) {
+        throw new Error('screenshot failed');
+      }
+    },
+    async setCurrentTransition(name) {
+      trace.push(`setCurrentTransition:${name}`);
+    },
+    async switchProgramScene(name) {
+      trace.push(`switchProgramScene:${name}`);
+    },
+    async ensureFreezeAssets() {
+      trace.push('ensureFreezeAssets');
+    },
+  };
+}
+
+function createTracingExecutor(trace) {
+  return {
+    async start() {},
+    async stop() {},
+    async execute(command) {
+      trace.push(`execute:${command.type}`);
+    },
+  };
+}
+
+test('coordinator ensures freeze assets at startup when transitions are configured', async () => {
+  const trace = [];
+  const coordinator = createCoordinator({
+    config: createTransitionsConfig(),
+    obs: createTracingObs(trace),
+    hub: createTracingHub(trace),
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+
+  assert.ok(trace.includes('ensureFreezeAssets'));
+});
+
+test('coordinator runs freeze -> mutate -> directional reveal for a forward jump', async () => {
+  const trace = [];
+  const coordinator = createCoordinator({
+    config: createTransitionsConfig(),
+    obs: createTracingObs(trace),
+    hub: createTracingHub(trace),
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+  trace.length = 0;
+  await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+
+  const freezeIndex = trace.indexOf('switchProgramScene:Freeze');
+  const revealIndex = trace.indexOf('switchProgramScene:Dual Browser');
+  const publishIndex = trace.indexOf('publishSticky');
+
+  assert.ok(freezeIndex !== -1 && revealIndex !== -1, 'freeze and reveal scene switches both occur');
+  assert.ok(freezeIndex < publishIndex, 'state publishes only after the freeze scene is showing');
+  assert.ok(publishIndex < revealIndex, 'dirty work completes before the reveal');
+
+  assert.ok(trace.includes('captureProgramScreenshot'), 'captures the outgoing frame');
+  assert.ok(trace.includes('applyInputSettings:Freeze Frame'), 'loads the freeze image source');
+  assert.ok(trace.includes('setCurrentTransition:Cut'), 'cuts to the freeze instantly');
+  assert.ok(trace.includes('setCurrentTransition:Slide Right'), 'reveals with the forward transition');
+
+  const cutIndex = trace.indexOf('setCurrentTransition:Cut');
+  const forwardIndex = trace.indexOf('setCurrentTransition:Slide Right');
+  assert.ok(cutIndex < forwardIndex, 'cut happens before the directional reveal');
+});
+
+test('coordinator picks the backward transition for a prev jump and restores the operator transition', async () => {
+  const trace = [];
+  const coordinator = createCoordinator({
+    config: createTransitionsConfig(),
+    obs: createTracingObs(trace),
+    hub: createTracingHub(trace),
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 2, v: 0 }, meta: {} });
+  trace.length = 0;
+  await coordinator.handleDriverPositionChanged({ id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+
+  assert.ok(trace.includes('setCurrentTransition:Slide Left'), 'reveals with the backward transition');
+  assert.ok(trace.includes('setCurrentTransition:Fade'), 'restores the captured operator transition');
+  const restoreIndex = trace.lastIndexOf('setCurrentTransition:Fade');
+  const revealIndex = trace.indexOf('switchProgramScene:Full Slide');
+  assert.ok(restoreIndex > revealIndex, 'transition is restored after the reveal');
+});
+
+test('coordinator waits the navigation cap behind the freeze for slides with navigate commands', async () => {
+  let observedWait = 0;
+  const config = createTransitionsConfig({ navigationWaitMs: 7, settleMs: 1 });
+  const obs = {
+    async connect() {},
+    async disconnect() {},
+    isConnected() {
+      return true;
+    },
+    async applyInputSettings() {},
+    async getCurrentTransitionName() {
+      return 'Fade';
+    },
+    async captureProgramScreenshot() {},
+    async setCurrentTransition() {},
+    async switchProgramScene() {},
+    async ensureFreezeAssets() {},
+  };
+  const realSetTimeout = setTimeout;
+  const original = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms) => {
+    observedWait = Math.max(observedWait, ms);
+    return realSetTimeout(fn, ms);
+  };
+  try {
+    const coordinator = createCoordinator({
+      config,
+      obs,
+      hub: createTracingHub([]),
+      executor: createTracingExecutor([]),
+      logger: createLogger(),
+    });
+
+    await coordinator.start();
+    await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+
+    assert.ok(observedWait >= 7, 'uses the navigation wait for slides that navigate');
+  } finally {
+    globalThis.setTimeout = original;
+  }
+});
+
+test('coordinator treats a freeze capture failure as best-effort and still reveals the target', async () => {
+  const trace = [];
+  const logger = createLogger();
+  const coordinator = createCoordinator({
+    config: createTransitionsConfig(),
+    obs: createTracingObs(trace, { failCapture: true }),
+    hub: createTracingHub(trace),
+    executor: createTracingExecutor(trace),
+    logger,
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+
+  assert.ok(trace.includes('switchProgramScene:Dual Browser'), 'still reveals the target scene');
+  assert.ok(trace.includes('setCurrentTransition:Fade'), 'restores the operator transition');
+  assert.ok(logger.warns.some((entry) => /arm freeze frame/i.test(entry.message)), 'warns about the failed freeze arm');
+});
+
+test('coordinator falls back to a direct scene switch when the reveal itself fails', async () => {
+  const trace = [];
+  const logger = createLogger();
+  const obs = createTracingObs(trace);
+  // The reveal switch passes { waitForEvent: true }; the fallback passes none.
+  const realSwitch = obs.switchProgramScene;
+  obs.switchProgramScene = async (name, opts) => {
+    if (opts && opts.waitForEvent && name === 'Dual Browser') {
+      throw new Error('reveal rejected');
+    }
+
+    return realSwitch(name);
+  };
+
+  const coordinator = createCoordinator({
+    config: createTransitionsConfig(),
+    obs,
+    hub: createTracingHub(trace),
+    executor: createTracingExecutor(trace),
+    logger,
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+
+  assert.ok(trace.includes('switchProgramScene:Dual Browser'), 'attempts the reveal');
+  assert.ok(trace.includes('setCurrentTransition:Fade'), 'restores the operator transition after failure');
+  assert.ok(logger.errors.some((entry) => /Slide transition failed/i.test(entry.message)), 'logs the transition failure');
 });

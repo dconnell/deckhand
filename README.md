@@ -53,6 +53,10 @@ npm run setup:obs -- my-talk
 pushes macOS `window_capture` settings into those inputs and upgrades them from
 bootstrap app/title selectors to exact managed window bindings when available.
 
+Optional: for whole-frame slide transitions instead of instant cuts, add two
+Slide transitions in the OBS UI and an `obs.transitions` block to your config.
+See [docs/SETUP.md](docs/SETUP.md#whole-frame-slide-transitions-optional).
+
 5. Install Hammerspoon for window management:
 
 ```bash

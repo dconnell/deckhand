@@ -163,6 +163,62 @@ test('normalizeConfig accepts audience-only mode when presenter is omitted', () 
   assert.equal(normalized.slides.welcome.layoutId, 'full-slide');
 });
 
+test('normalizeConfig leaves obs.transitions null when slide transitions are not configured', () => {
+  const config = normalizeConfig(createValidConfig());
+
+  assert.equal(config.obs.transitions, null);
+});
+
+test('normalizeConfig normalizes the slide-transitions block with defaults', () => {
+  const config = createValidConfig();
+  config.obs.transitions = { forward: 'Slide Right', backward: 'Slide Left' };
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.obs.transitions, {
+    forward: 'Slide Right',
+    backward: 'Slide Left',
+    freezeScene: 'Deckhand Freeze',
+    freezeImage: 'Deckhand Freeze Frame',
+    freezeImagePath: null,
+    durationMs: 300,
+    settleMs: 200,
+    navigationWaitMs: 1000,
+  });
+});
+
+test('normalizeConfig rejects slide transitions without both directional transition names', () => {
+  const config = createValidConfig();
+  config.obs.transitions = { forward: 'Slide Right' };
+
+  assertConfigError(
+    () => normalizeConfig(config),
+    'obs.transitions.backward',
+    /non-empty/i,
+  );
+});
+
+test('normalizeConfig accepts operator overrides for freeze assets and timing', () => {
+  const config = createValidConfig();
+  config.obs.transitions = {
+    forward: 'Slide Right',
+    backward: 'Slide Left',
+    freezeScene: 'Freeze',
+    freezeImage: 'Freeze Frame',
+    freezeImagePath: '/tmp/freeze.png',
+    durationMs: 250,
+    settleMs: 150,
+    navigationWaitMs: 800,
+  };
+
+  const normalized = normalizeConfig(config);
+
+  assert.equal(normalized.obs.transitions.freezeScene, 'Freeze');
+  assert.equal(normalized.obs.transitions.freezeImagePath, '/tmp/freeze.png');
+  assert.equal(normalized.obs.transitions.durationMs, 250);
+  assert.equal(normalized.obs.transitions.navigationWaitMs, 800);
+});
+
 test('normalizeConfig converts slide browser actions into typed command objects', () => {
   const config = normalizeConfig(createValidConfig());
 

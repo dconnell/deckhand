@@ -108,6 +108,9 @@ model for OBS, presenter stage, and slide actions.
 - `driver.type`: currently `revealjs`
 - `obs.url`: OBS WebSocket URL
 - `obs.password`: OBS WebSocket password
+- `obs.transitions`: optional block enabling whole-frame slide transitions;
+  see [Slide Transitions](#slide-transitions). Absent means the legacy instant
+  cut is used and OBS transitions are never touched.
 - `hub.port`: localhost WebSocket port for driver and observer clients
 
 ## Sources
@@ -224,6 +227,55 @@ Each `browser` action contains:
 
 `activateTab` switches to a preloaded tab by its runtime handle without
 reloading it. `navigate` loads a new URL in the named tab.
+
+## Slide Transitions
+
+`obs.transitions` is optional. When present, advancing the deck runs a
+freeze -> resize -> directional-reveal sequence instead of an instant cut:
+the previous audience frame is held as a still while windows resize and tabs
+navigate behind it, then the new scene slides in. When absent, Deckhand uses
+the legacy instant cut and never touches OBS transitions.
+
+OBS WebSocket cannot create transitions, so you must add the two Slide
+transitions in the OBS UI and reference them by name here (see
+[SETUP.md](SETUP.md#whole-frame-slide-transitions-optional)).
+
+```json
+"obs": {
+  "transitions": {
+    "forward": "Slide Right",
+    "backward": "Slide Left"
+  }
+}
+```
+
+Required:
+
+- `forward`: OBS Slide transition name used for `next`/forward moves
+- `backward`: OBS Slide transition name used for `prev`/backward moves
+
+Optional (with defaults):
+
+- `freezeScene`: OBS scene name for the freeze still (`Deckhand Freeze`);
+  created automatically at startup
+- `freezeImage`: `image_source` input name inside the freeze scene
+  (`Deckhand Freeze Frame`); created automatically
+- `freezeImagePath`: PNG path for the freeze still; defaults to
+  `deckhand-freeze-frame.png` under the system temp dir
+- `durationMs`: slide transition duration in milliseconds (`300`)
+- `settleMs`: pause after the freeze appears and after pure-resize mutates,
+  before revealing (`200`)
+- `navigationWaitMs`: cap waited behind the freeze for slides that navigate a
+  tab, before revealing regardless of load state (`1000`)
+
+Behavior notes:
+
+- Every slide advance runs the sequence when this block is present, including
+  same-scene advances, for a consistent experience.
+- Deckhand captures your default transition at startup and restores it after
+  each change, so manual OBS use between advances is unaffected.
+- Set `transition: 'none'` in the deck's `Reveal.initialize` so OBS owns all
+  perceived motion.
 
 ## Presenter
 
