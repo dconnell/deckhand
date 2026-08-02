@@ -7,6 +7,11 @@ import {
   getExpectedPresenterCanvas,
   parseSetupObsOptions,
 } from './obsSetupPlan.js';
+import {
+  computeDesiredManagedNames,
+  computeManagedPruneSet,
+  deckhandInputName,
+} from './obsNames.js';
 import { resolvePresentationPaths } from './presentations.js';
 import { loadPresentationConfig } from './presentations.js';
 
@@ -53,9 +58,9 @@ export function buildMacWindowCaptureSettings(binding) {
   return settings;
 }
 
-function buildPresenterWindowSettings(config, sourceName, windowBindings = {}) {
-  const binding = config.presenter?.windows?.[sourceName];
-  const runtimeBinding = windowBindings[sourceName];
+function buildPresenterWindowSettings(config, sourceId, windowBindings = {}) {
+  const binding = config.presenter?.windows?.[sourceId];
+  const runtimeBinding = windowBindings[sourceId];
 
   if (binding === undefined && runtimeBinding === undefined) {
     return {};
@@ -244,6 +249,42 @@ export async function reconcileObsPresentation({ config, logger, obs, canvasOpti
   const existingInputs = new Set(inputList.inputs.map((entry) => entry.inputName));
   const inputKindByName = new Map(inputList.inputs.map((entry) => [entry.inputName, entry.inputKind]));
 
+  if (config.obs?.prune !== false) {
+    const desired = computeDesiredManagedNames(config);
+    const prune = computeManagedPruneSet({
+      existingInputs: [...existingInputs],
+      existingScenes: [...existingScenes],
+      desired,
+    });
+
+    for (const sceneName of prune.scenes) {
+      try {
+        await obs.call('RemoveScene', { sceneName });
+        existingScenes.delete(sceneName);
+        logger.info('Pruned stale Deckhand OBS scene', { scene: sceneName });
+      } catch (error) {
+        logger.warn('Failed to prune stale Deckhand OBS scene', {
+          error: error instanceof Error ? error.message : String(error),
+          scene: sceneName,
+        });
+      }
+    }
+
+    for (const inputName of prune.inputs) {
+      try {
+        await obs.call('RemoveInput', { inputName });
+        existingInputs.delete(inputName);
+        inputKindByName.delete(inputName);
+        logger.info('Pruned stale Deckhand OBS input', { input: inputName });
+      } catch (error) {
+        logger.warn('Failed to prune stale Deckhand OBS input', {
+          error: error instanceof Error ? error.message : String(error),
+          input: inputName,
+        });
+      }
+    }
+  }
+
   for (const scene of sceneDefinitions.scenes) {
     if (!existingScenes.has(scene.sceneName)) {
       await obs.call('CreateScene', { sceneName: scene.sceneName });
@@ -255,7 +296,7 @@ export async function reconcileObsPresentation({ config, logger, obs, canvasOpti
     const sceneRefs = await createSceneReferences(obs, scene, existingInputs);
 
     for (const item of scene.items) {
-      const inputSettings = buildPresenterWindowSettings(config, item.sourceName, windowBindings);
+      const inputSettings = buildPresenterWindowSettings(config, item.source, windowBindings);
       let sceneItemId = await ensureManagedInput(obs, scene, item, sceneRefs.existingInputs, kind, inputKindByName, inputSettings, logger);
 
       if (sceneItemId === null) {
@@ -283,9 +324,10 @@ export async function reconcileObsPresentation({ config, logger, obs, canvasOpti
 
   const allBrowserSettings = buildAllBrowserSourceSettings(config, windowBindings);
   for (const [sourceId, inputSettings] of Object.entries(allBrowserSettings)) {
-    if (existingInputs.has(sourceId)) {
+    const inputName = deckhandInputName(sourceId);
+    if (existingInputs.has(inputName)) {
       await obs.call('SetInputSettings', {
-        inputName: sourceId,
+        inputName,
         inputSettings,
         overlay: true,
       });

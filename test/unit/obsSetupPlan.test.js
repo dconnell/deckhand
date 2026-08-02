@@ -37,10 +37,11 @@ test('buildObsSceneDefinitions derives scenes and unique sources from layouts', 
   assert.deepEqual(buildObsSceneDefinitions(createConfig(), { width: 1800, height: 1168 }), {
     scenes: [
       {
-        sceneName: 'Full Slide',
+        sceneName: 'Deckhand_Full Slide',
         items: [
           {
-            sourceName: 'Slide',
+            source: 'Slide',
+            sourceName: 'Deckhand_Slide',
             position: 'full',
             transform: {
               positionX: 0,
@@ -53,10 +54,11 @@ test('buildObsSceneDefinitions derives scenes and unique sources from layouts', 
         ],
       },
       {
-        sceneName: 'Dual Browser',
+        sceneName: 'Deckhand_Dual Browser',
         items: [
           {
-            sourceName: 'BrowserA',
+            source: 'BrowserA',
+            sourceName: 'Deckhand_BrowserA',
             position: 'left',
             transform: {
               positionX: 0,
@@ -67,7 +69,8 @@ test('buildObsSceneDefinitions derives scenes and unique sources from layouts', 
             },
           },
           {
-            sourceName: 'BrowserB',
+            source: 'BrowserB',
+            sourceName: 'Deckhand_BrowserB',
             position: 'right',
             transform: {
               positionX: 900,

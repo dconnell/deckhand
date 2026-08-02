@@ -276,10 +276,10 @@ test('coordinator publishes sticky presentation state for scene-only slides', as
   await coordinator.start();
   await hub.emit('driverPositionChanged', { id: 'intro', index: { h: 0, v: 0 }, meta: {} });
 
-  assert.deepEqual(obs.state.scenes, ['Full Slide']);
+  assert.deepEqual(obs.state.scenes, ['Deckhand_Full Slide']);
   assert.deepEqual(obs.state.inputSettings, [
     {
-      inputName: 'Slide',
+      inputName: 'Deckhand_Slide',
       inputSettings: {
         owner_name: 'Google Chrome',
         owner_pid: 47213,
@@ -329,11 +329,11 @@ test('coordinator dispatches typed slide commands through the injected executor'
   await coordinator.start();
   await hub.emit('driverPositionChanged', { id: 'demo', index: { h: 1, v: 0 }, meta: {} });
 
-  assert.deepEqual(obs.state.scenes, ['Dual Browser']);
+  assert.deepEqual(obs.state.scenes, ['Deckhand_Dual Browser']);
   assert.equal(hub.state.stickyPublishes[0].payload.seq, 1);
   assert.deepEqual(obs.state.inputSettings, [
     {
-      inputName: 'BrowserA',
+      inputName: 'Deckhand_BrowserA',
       inputSettings: {
         owner_name: 'Google Chrome',
         window_name: 'Primary',
@@ -342,7 +342,7 @@ test('coordinator dispatches typed slide commands through the injected executor'
       },
     },
     {
-      inputName: 'BrowserB',
+      inputName: 'Deckhand_BrowserB',
       inputSettings: {
         owner_name: 'Google Chrome',
         window_name: 'Secondary',
@@ -400,7 +400,7 @@ test('coordinator continues after observer publish failure', async () => {
   await coordinator.start();
   await hub.emitPosition({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
 
-  assert.deepEqual(obs.state.scenes, ['Dual Browser']);
+  assert.deepEqual(obs.state.scenes, ['Deckhand_Dual Browser']);
   assert.equal(executor.state.executedCommands.length, 2);
   assert.match(logger.errors[0].message, /Observer state publish failed/i);
 });
@@ -430,7 +430,7 @@ test('coordinator republishes sticky presentation state when observer window bin
   assert.equal(hub.state.stickyPublishes.length, 2);
   assert.equal(hub.state.stickyPublishes[1].payload.seq, 2);
   assert.deepEqual(obs.state.inputSettings.at(-2), {
-    inputName: 'BrowserA',
+    inputName: 'Deckhand_BrowserA',
     inputSettings: {
       owner_name: 'Google Chrome',
       window_name: 'Primary',
@@ -448,7 +448,7 @@ test('coordinator republishes sticky presentation state when observer window bin
     },
     BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
   });
-  assert.deepEqual(obs.state.scenes, ['Dual Browser']);
+  assert.deepEqual(obs.state.scenes, ['Deckhand_Dual Browser']);
 });
 
 test('coordinator clears runtime window binding overrides and republishes bootstrap selectors', async () => {
@@ -481,7 +481,7 @@ test('coordinator clears runtime window binding overrides and republishes bootst
   assert.equal(hub.state.stickyPublishes.length, 3);
   assert.equal(hub.state.stickyPublishes[2].payload.seq, 3);
   assert.deepEqual(obs.state.inputSettings.at(-2), {
-    inputName: 'BrowserA',
+    inputName: 'Deckhand_BrowserA',
     inputSettings: {
       owner_name: 'Google Chrome',
       window_name: 'Primary',
@@ -505,7 +505,7 @@ test('coordinator continues after partial executor failures', async () => {
   executor.state.nextError = new Error('browser session degraded');
   await hub.emit('driverPositionChanged', { id: 'demo', index: { h: 1, v: 0 }, meta: {} });
 
-  assert.deepEqual(obs.state.scenes, ['Dual Browser']);
+  assert.deepEqual(obs.state.scenes, ['Deckhand_Dual Browser']);
   assert.equal(executor.state.executedCommands.length, 2);
   assert.match(logger.errors[0].message, /Browser command failed/i);
 });
@@ -519,7 +519,7 @@ test('coordinator runs without an executor for audience-only slides', async () =
   await coordinator.start();
   await hub.emit('driverPositionChanged', { id: 'intro', index: { h: 0, v: 0 }, meta: {} });
 
-  assert.deepEqual(obs.state.scenes, ['Full Slide']);
+  assert.deepEqual(obs.state.scenes, ['Deckhand_Full Slide']);
 });
 
 test('coordinator cleans up partial startup if a dependency fails to start', async () => {
@@ -705,7 +705,7 @@ test('coordinator runs freeze -> mutate -> directional reveal for a forward jump
   await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
 
   const freezeIndex = trace.indexOf('switchProgramScene:Freeze');
-  const revealIndex = trace.indexOf('switchProgramScene:Dual Browser');
+  const revealIndex = trace.indexOf('switchProgramScene:Deckhand_Dual Browser');
   const publishIndex = trace.indexOf('publishSticky');
 
   assert.ok(freezeIndex !== -1 && revealIndex !== -1, 'freeze and reveal scene switches both occur');
@@ -740,7 +740,7 @@ test('coordinator picks the backward transition for a prev jump and restores the
   assert.ok(trace.includes('setCurrentTransition:Slide Left'), 'reveals with the backward transition');
   assert.ok(trace.includes('setCurrentTransition:Fade'), 'restores the captured operator transition');
   const restoreIndex = trace.lastIndexOf('setCurrentTransition:Fade');
-  const revealIndex = trace.indexOf('switchProgramScene:Full Slide');
+  const revealIndex = trace.indexOf('switchProgramScene:Deckhand_Full Slide');
   assert.ok(restoreIndex > revealIndex, 'transition is restored after the reveal');
 });
 
@@ -800,7 +800,7 @@ test('coordinator treats a freeze capture failure as best-effort and still revea
   await coordinator.start();
   await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
 
-  assert.ok(trace.includes('switchProgramScene:Dual Browser'), 'still reveals the target scene');
+  assert.ok(trace.includes('switchProgramScene:Deckhand_Dual Browser'), 'still reveals the target scene');
   assert.ok(trace.includes('setCurrentTransition:Fade'), 'restores the operator transition');
   assert.ok(logger.warns.some((entry) => /arm freeze frame/i.test(entry.message)), 'warns about the failed freeze arm');
 });
@@ -812,7 +812,7 @@ test('coordinator falls back to a direct scene switch when the reveal itself fai
   // The reveal switch passes { waitForEvent: true }; the fallback passes none.
   const realSwitch = obs.switchProgramScene;
   obs.switchProgramScene = async (name, opts) => {
-    if (opts && opts.waitForEvent && name === 'Dual Browser') {
+    if (opts && opts.waitForEvent && name === 'Deckhand_Dual Browser') {
       throw new Error('reveal rejected');
     }
 
@@ -830,7 +830,7 @@ test('coordinator falls back to a direct scene switch when the reveal itself fai
   await coordinator.start();
   await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
 
-  assert.ok(trace.includes('switchProgramScene:Dual Browser'), 'attempts the reveal');
+  assert.ok(trace.includes('switchProgramScene:Deckhand_Dual Browser'), 'attempts the reveal');
   assert.ok(trace.includes('setCurrentTransition:Fade'), 'restores the operator transition after failure');
   assert.ok(logger.errors.some((entry) => /Slide transition failed/i.test(entry.message)), 'logs the transition failure');
 });

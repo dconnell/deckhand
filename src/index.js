@@ -17,7 +17,10 @@ import { buildRuntimeStatus } from './runtimeStatus.js';
 import { createCdpClient } from './cdpClient.js';
 import { createBrowserSession, createBrowserCommandExecutor } from './browserSession.js';
 import { createWsTransport, discoverCdpEndpoint, launchChromeSession } from './chromeLauncher.js';
-import { enumerateWindowsByPid } from './macWindows.js';
+import { enumerateWindowsByPid, enumerateWindowsByOwnerName } from './macWindows.js';
+import { resolveOwnedWindowBindings } from './ownedWindows.js';
+import { findIterm2Pid, launchIterm2Window } from './launchers/iterm2.js';
+import { launchAppWindow } from './launchers/app.js';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 
@@ -43,6 +46,86 @@ function listBrowserSourceIds(config) {
   return Object.entries(config.sources)
     .filter(([, source]) => source?.kind === 'browser')
     .map(([id]) => id);
+}
+
+/**
+ * Derive the macOS owner (app) name for an owned source.
+ *
+ * Owned kinds resolve their owner without relying on `presenter.windows`:
+ * `iterm2` is always iTerm2, `app` carries its owner name, and browser sources
+ * fall back to the configured app name (or Google Chrome) (`app-sources.md`
+ * decision 5).
+ *
+ * @param {{ sources: Record<string, { kind: string, app?: string }>, presenter?: null | { windows: Record<string, { app?: string }> } }} config Normalized config.
+ * @param {string} sourceId Logical source ID.
+ * @returns {string}
+ */
+function getSourceOwnerName(config, sourceId) {
+  const source = config.sources[sourceId];
+
+  if (source?.kind === 'iterm2') {
+    return 'iTerm2';
+  }
+
+  if (source?.kind === 'app') {
+    return source.app;
+  }
+
+  return config.presenter?.windows?.[sourceId]?.app ?? 'Google Chrome';
+}
+
+/**
+ * List owned app-window sources (iterm2 + app) that Deckhand must launch.
+ *
+ * @param {{ sources: Record<string, { kind: string }> }} config Normalized config.
+ * @returns {Array<[string, { kind: string, command?: string, cwd?: string, app?: string, args?: string[] }]>}
+ */
+function listOwnedAppSourceEntries(config) {
+  return Object.entries(config.sources).filter(([, source]) => source?.kind === 'iterm2' || source?.kind === 'app');
+}
+
+/**
+ * Default launch+diff resolver for owned app-window sources.
+ *
+ * Builds a per-kind launch strategy (iTerm2 AppleScript with PID diff; generic
+ * `open -a` with owner-name diff) and resolves each via the generic owned-window
+ * resolver. No-ops when there are no owned app sources.
+ *
+ * @param {{ config: { sources: Record<string, { kind: string, command?: string, cwd?: string, app?: string, args?: string[] }> } }} options Resolver options.
+ * @param {{ info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void }} logger Logger.
+ * @returns {Promise<Record<string, { macWindowId: number, pid?: number }>>}
+ */
+async function defaultResolveOwnedWindowBindings({ config, logger }) {
+  const entries = [];
+
+  for (const [sourceId, source] of listOwnedAppSourceEntries(config)) {
+    if (source.kind === 'iterm2') {
+      entries.push({
+        sourceId,
+        snapshot() {
+          const pid = findIterm2Pid();
+          return pid !== null ? enumerateWindowsByPid(pid) : [];
+        },
+        launch: () => launchIterm2Window({ command: source.command, cwd: source.cwd, logger }),
+      });
+    } else if (source.kind === 'app') {
+      entries.push({
+        sourceId,
+        snapshot: () => enumerateWindowsByOwnerName(source.app),
+        launch: () => launchAppWindow({ app: source.app, args: source.args, cwd: source.cwd, logger }),
+      });
+    }
+  }
+
+  logger.info('Launching owned app-window sources', { sources: entries.map((entry) => entry.sourceId) });
+
+  return resolveOwnedWindowBindings({
+    entries,
+    delay: (ms) => new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    }),
+    logger,
+  });
 }
 
 async function defaultResolveMacWindowBindings({ browserSession, browserSourceIds, config, logger }) {
@@ -444,29 +527,44 @@ export async function run(options = {}) {
 
     coordinator = (options.createCoordinatorFn ?? createCoordinator)({
       config,
-      getManagedBrowserBindings() {
-        if (browserSession === null || config.presenter === null) {
+      getManagedWindowBindings() {
+        if (config.presenter === null) {
           return {};
         }
 
-        const chromePid = browserSession.getStatus().chromePid;
-        const registry = browserSession.getRegistry().sources;
+        const chromePid = browserSession?.getStatus().chromePid ?? null;
+        const registrySources = browserSession?.getRegistry().sources ?? {};
+        const result = {};
 
-        return Object.fromEntries(
-          Object.entries(registry).map(([sourceId, source]) => {
-            const cached = resolvedMacWindowBindings[sourceId];
+        for (const [sourceId, source] of Object.entries(config.sources)) {
+          const configured = config.presenter.windows?.[sourceId];
+          const cached = resolvedMacWindowBindings[sourceId];
+          const binding = {};
 
-            return [
-              sourceId,
-              {
-                app: config.presenter.windows[sourceId]?.app,
-                pid: chromePid,
-                titleIncludes: source.title,
-                ...(cached?.macWindowId !== undefined ? { macWindowId: cached.macWindowId } : {}),
-              },
-            ];
-          }),
-        );
+          if (source.kind === 'browser') {
+            binding.app = configured?.app ?? getSourceOwnerName(config, sourceId);
+            binding.titleIncludes = registrySources[sourceId]?.title;
+            if (typeof chromePid === 'number') {
+              binding.pid = chromePid;
+            }
+          } else {
+            binding.app = configured?.app ?? getSourceOwnerName(config, sourceId);
+            if (configured?.titleIncludes !== undefined) {
+              binding.titleIncludes = configured.titleIncludes;
+            }
+            if (typeof cached?.pid === 'number') {
+              binding.pid = cached.pid;
+            }
+          }
+
+          if (cached?.macWindowId !== undefined) {
+            binding.macWindowId = cached.macWindowId;
+          }
+
+          result[sourceId] = binding;
+        }
+
+        return result;
       },
       getManagedBrowserPid() {
         return browserSession?.getStatus().chromePid ?? null;
@@ -581,7 +679,7 @@ export async function run(options = {}) {
       const obsWindowBindings = {};
       for (const [sourceId, binding] of Object.entries(result)) {
         obsWindowBindings[sourceId] = {
-          app: config.presenter.windows[sourceId]?.app ?? 'Google Chrome',
+          app: getSourceOwnerName(config, sourceId),
           pid: binding.pid,
           macWindowId: binding.macWindowId,
           strict: true,
@@ -594,6 +692,52 @@ export async function run(options = {}) {
         obs: typeof obs.getClient === 'function' ? obs.getClient() : obs,
         windowBindings: obsWindowBindings,
       });
+    }
+
+    const ownedEntries = listOwnedAppSourceEntries(config);
+    if (ownedEntries.length > 0 && config.presenter !== null) {
+      const ownedResolutionFn = options.resolveOwnedWindowBindingsFn ?? defaultResolveOwnedWindowBindings;
+
+      const ownedResult = (await ownedResolutionFn({ config, logger })) ?? {};
+
+      for (const [sourceId, binding] of Object.entries(ownedResult)) {
+        resolvedMacWindowBindings[sourceId] = binding;
+      }
+
+      const resolvedOwnedIds = Object.keys(ownedResult);
+      if (resolvedOwnedIds.length > 0) {
+        logger.info('Resolved owned app-window bindings', { sources: resolvedOwnedIds });
+      }
+
+      const missingOwned = ownedEntries.map(([id]) => id).filter((id) => ownedResult[id] === undefined);
+      if (missingOwned.length > 0) {
+        logger.warn('Not all owned app sources resolved; OBS may show blank captures for missing sources', {
+          resolved: resolvedOwnedIds,
+          missing: missingOwned,
+        });
+      }
+
+      if (resolvedOwnedIds.length > 0) {
+        const ownedObsBindings = {};
+        for (const [sourceId, binding] of Object.entries(ownedResult)) {
+          ownedObsBindings[sourceId] = {
+            app: getSourceOwnerName(config, sourceId),
+            macWindowId: binding.macWindowId,
+            strict: true,
+          };
+
+          if (binding.pid !== undefined) {
+            ownedObsBindings[sourceId].pid = binding.pid;
+          }
+        }
+
+        await (options.reconcileObsFn ?? reconcileObsPresentation)({
+          config,
+          logger,
+          obs: typeof obs.getClient === 'function' ? obs.getClient() : obs,
+          windowBindings: ownedObsBindings,
+        });
+      }
     }
 
     phase = 'ready';

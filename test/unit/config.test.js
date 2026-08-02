@@ -26,7 +26,7 @@ function createValidConfig() {
           },
         },
       },
-      Terminal: { kind: 'terminal' },
+      Terminal: { kind: 'iterm2', command: 'npm run dev', cwd: '/repos/demo' },
       BrowserA: {
         kind: 'browser',
         browser: {
@@ -142,7 +142,12 @@ test('normalizeConfig accepts the greenfield presenter-mode model', () => {
       initialTab: 'home',
     },
   });
-  assert.deepEqual(config.sources.Terminal, { id: 'Terminal', kind: 'terminal' });
+  assert.deepEqual(config.sources.Terminal, {
+    id: 'Terminal',
+    kind: 'iterm2',
+    command: 'npm run dev',
+    cwd: '/repos/demo',
+  });
   assert.deepEqual(config.slides['code-walkthrough'], {
     layoutId: 'left-terminal-right-slide',
     focus: 'Terminal',
@@ -178,8 +183,8 @@ test('normalizeConfig normalizes the slide-transitions block with defaults', () 
   assert.deepEqual(normalized.obs.transitions, {
     forward: 'Slide Right',
     backward: 'Slide Left',
-    freezeScene: 'Deckhand Freeze',
-    freezeImage: 'Deckhand Freeze Frame',
+    freezeScene: 'Deckhand_Freeze',
+    freezeImage: 'Deckhand_Freeze Frame',
     freezeImagePath: null,
     durationMs: 300,
     settleMs: 200,
@@ -196,6 +201,26 @@ test('normalizeConfig rejects slide transitions without both directional transit
     'obs.transitions.backward',
     /non-empty/i,
   );
+});
+
+test('normalizeConfig defaults obs.prune to true so stale Deckhand entities are reconciled', () => {
+  const config = normalizeConfig(createValidConfig());
+
+  assert.equal(config.obs.prune, true);
+});
+
+test('normalizeConfig honors an explicit obs.prune override', () => {
+  const config = createValidConfig();
+  config.obs.prune = false;
+
+  assert.equal(normalizeConfig(config).obs.prune, false);
+});
+
+test('normalizeConfig rejects a non-boolean obs.prune', () => {
+  const config = createValidConfig();
+  config.obs.prune = 'yes';
+
+  assertConfigError(() => normalizeConfig(config), 'obs.prune', /must be a boolean/i);
 });
 
 test('normalizeConfig accepts operator overrides for freeze assets and timing', () => {
@@ -275,7 +300,97 @@ test('normalizeConfig rejects unknown source kinds', () => {
   const config = createValidConfig();
   config.sources.Slide.kind = 'slide-deck';
 
-  assertConfigError(() => normalizeConfig(config), 'sources.Slide.kind', /browser, terminal/i);
+  assertConfigError(() => normalizeConfig(config), 'sources.Slide.kind', /browser, iterm2, app/i);
+});
+
+test('normalizeConfig rejects the removed terminal kind', () => {
+  const config = createValidConfig();
+  config.sources.Terminal.kind = 'terminal';
+
+  assertConfigError(() => normalizeConfig(config), 'sources.Terminal.kind', /browser, iterm2, app/i);
+});
+
+test('normalizeConfig normalizes iterm2 command and cwd fields', () => {
+  const config = normalizeConfig(createValidConfig());
+
+  assert.deepEqual(config.sources.Terminal, {
+    id: 'Terminal',
+    kind: 'iterm2',
+    command: 'npm run dev',
+    cwd: '/repos/demo',
+  });
+});
+
+test('normalizeConfig accepts iterm2 sources without command or cwd', () => {
+  const config = createValidConfig();
+  config.sources.Terminal = { kind: 'iterm2' };
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.sources.Terminal, { id: 'Terminal', kind: 'iterm2' });
+});
+
+test('normalizeConfig rejects iterm2 sources with a non-string command', () => {
+  const config = createValidConfig();
+  config.sources.Terminal = { kind: 'iterm2', command: 42 };
+
+  assertConfigError(() => normalizeConfig(config), 'sources.Terminal.command', /non-empty string/i);
+});
+
+test('normalizeConfig rejects relative iterm2 cwd paths', () => {
+  const config = createValidConfig();
+  config.sources.Terminal = { kind: 'iterm2', cwd: './demo' };
+
+  assertConfigError(() => normalizeConfig(config), 'sources.Terminal.cwd', /absolute path/i);
+});
+
+test('normalizeConfig normalizes app source owner, args, and cwd fields', () => {
+  const config = createValidConfig();
+  config.sources.Editor = { kind: 'app', app: 'Visual Studio Code', args: ['--new-window', '/repos/demo'], cwd: '/repos/demo' };
+  config.layouts['full-editor'] = {
+    audienceScene: 'Full Editor',
+    slots: [{ source: 'Editor', position: 'full' }],
+  };
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.sources.Editor, {
+    id: 'Editor',
+    kind: 'app',
+    app: 'Visual Studio Code',
+    args: ['--new-window', '/repos/demo'],
+    cwd: '/repos/demo',
+  });
+});
+
+test('normalizeConfig rejects app sources without an owner app name', () => {
+  const config = createValidConfig();
+  config.sources.Editor = { kind: 'app' };
+
+  assertConfigError(() => normalizeConfig(config), 'sources.Editor.app', /non-empty string/i);
+});
+
+test('normalizeConfig rejects app sources with non-string args', () => {
+  const config = createValidConfig();
+  config.sources.Editor = { kind: 'app', app: 'Visual Studio Code', args: '--new-window' };
+
+  assertConfigError(() => normalizeConfig(config), 'sources.Editor.args', /array of non-empty strings/i);
+});
+
+test('normalizeConfig rejects app sources with empty-string args', () => {
+  const config = createValidConfig();
+  config.sources.Editor = { kind: 'app', app: 'Visual Studio Code', args: ['--new-window', '   '] };
+
+  assertConfigError(() => normalizeConfig(config), 'sources.Editor.args', /array of non-empty strings/i);
+});
+
+test('normalizeConfig accepts app sources with only an owner name', () => {
+  const config = createValidConfig();
+  config.sources.Editor = { kind: 'app', app: 'Visual Studio Code' };
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.sources.Editor, { id: 'Editor', kind: 'app', app: 'Visual Studio Code' });
 });
 
 test('normalizeConfig rejects browser sources that omit the tab catalog', () => {
@@ -409,6 +524,30 @@ test('normalizeConfig rejects missing presenter windows when presenter mode is e
   delete config.presenter.windows;
 
   assertConfigError(() => normalizeConfig(config), 'presenter.windows', /must be an object/i);
+});
+
+test('normalizeConfig relaxes presenter.windows requirement for owned source kinds', () => {
+  const config = createValidConfig();
+  delete config.presenter.windows.Terminal;
+
+  const normalized = normalizeConfig(config);
+
+  assert.equal(Object.prototype.hasOwnProperty.call(normalized.presenter.windows, 'Terminal'), false);
+  assert.equal(normalized.sources.Terminal.kind, 'iterm2');
+});
+
+test('normalizeConfig accepts an app source without a presenter.windows entry', () => {
+  const config = createValidConfig();
+  config.sources.Editor = { kind: 'app', app: 'Visual Studio Code' };
+  config.layouts['full-editor'] = {
+    audienceScene: 'Full Editor',
+    slots: [{ source: 'Editor', position: 'full' }],
+  };
+
+  const normalized = normalizeConfig(config);
+
+  assert.equal(normalized.sources.Editor.kind, 'app');
+  assert.equal(Object.prototype.hasOwnProperty.call(normalized.presenter.windows, 'Editor'), false);
 });
 
 test('normalizeConfig rejects malformed window selectors', () => {

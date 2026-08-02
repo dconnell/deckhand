@@ -1,0 +1,59 @@
+import { spawn } from 'node:child_process';
+
+/**
+ * Build the argv for launching an app via macOS `open`.
+ *
+ * Produces `['-a', appName]`, appending `--args` plus any launch arguments
+ * when supplied. The array is intended to follow `open` on the command line
+ * (e.g. `spawn('open', buildOpenArgs({...}))`).
+ *
+ * @param {{ app: string, args?: string[] }} options Launch options.
+ * @returns {string[]}
+ */
+export function buildOpenArgs({ app, args }) {
+  const openArgs = ['-a', app];
+
+  if (Array.isArray(args) && args.length > 0) {
+    openArgs.push('--args', ...args);
+  }
+
+  return openArgs;
+}
+
+/**
+ * Launch a generic app window via macOS `open -a`.
+ *
+ * `open` returns before the window appears, so the caller must poll and diff to
+ * capture the new window. Electron single-instance apps (VS Code) hand off to
+ * an already-running process, which is exactly why owned `app` sources capture
+ * by owner-name diff rather than child PID (`plans/app-sources.md`).
+ *
+ * No-ops off macOS so the launch layer is safe to construct on non-darwin hosts.
+ *
+ * @param {{ app: string, args?: string[], cwd?: string }} options Launch options.
+ * @returns {Promise<{ ownerName: string }>}
+ */
+export async function launchAppWindow({ app, args, cwd }) {
+  if (process.platform !== 'darwin') {
+    return { ownerName: app };
+  }
+
+  await new Promise((resolve, reject) => {
+    const child = spawn('open', buildOpenArgs({ app, args }), {
+      cwd: cwd ?? undefined,
+      stdio: 'ignore',
+    });
+
+    child.on('error', reject);
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`open -a ${app} exited with code ${code}`));
+      }
+    });
+  });
+
+  return { ownerName: app };
+}

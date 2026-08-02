@@ -46,11 +46,19 @@ local chrome = create_app("Google Chrome", 47213, { primary, secondary })
 set_primary_app(chrome)
 set_secondary_app(chrome)
 
+local terminal, set_terminal_app = create_window(5001, "demo — fish")
+local iterm2 = create_app("iTerm2", 4321, { terminal })
+set_terminal_app(iterm2)
+
 hs = {
   application = {
     applicationForPID = function(pid)
       if pid == 47213 then
         return chrome
+      end
+
+      if pid == 4321 then
+        return iterm2
       end
 
       return nil
@@ -60,11 +68,19 @@ hs = {
         return chrome
       end
 
+      if name == "iTerm2" then
+        return iterm2
+      end
+
       return nil
     end,
     find = function(name)
       if name == "Google Chrome" then
         return chrome
+      end
+
+      if name == "iTerm2" then
+        return iterm2
       end
 
       return nil
@@ -80,6 +96,10 @@ hs = {
         return secondary
       end
 
+      if id == 5001 then
+        return terminal
+      end
+
       return nil
     end,
   },
@@ -91,3 +111,5 @@ assert_equal(window_match.findWindow({ app = "Google Chrome", macWindowId = 4002
 assert_equal(window_match.findWindow({ app = "Google Chrome", titleIncludes = "Deckhand BrowserA" }):id(), 4001, "expected title fallback match")
 assert_equal(window_match.findWindow({ app = "Google Chrome" }):id(), 4001, "expected first window fallback")
 assert_equal(window_match.findWindow({ app = "Google Chrome", macWindowId = 9999, pid = 47213, strict = true }), nil, "expected strict stale id to fail closed")
+assert_equal(window_match.findWindow({ app = "iTerm2", macWindowId = 5001, pid = 4321, strict = true }):id(), 5001, "expected exact match for owned terminal source")
+assert_equal(window_match.findWindow({ app = "iTerm2", macWindowId = 9999, strict = true }), nil, "expected owned source to fail closed on stale id")

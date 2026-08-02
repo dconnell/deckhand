@@ -1,4 +1,5 @@
 import { listLayoutSources, regionTransform } from './scenes.js';
+import { deckhandInputName, deckhandSceneName } from './obsNames.js';
 import { parsePresentationCliArgs } from './presentations.js';
 
 /**
@@ -99,9 +100,10 @@ export function evaluateCanvasPolicy(input) {
 export function buildObsSceneDefinitions(config, canvas) {
   return {
     scenes: Object.values(config.layouts).map((layout) => ({
-      sceneName: layout.audienceScene,
+      sceneName: deckhandSceneName(layout.audienceScene),
       items: layout.slots.map((slot) => ({
-        sourceName: slot.source,
+        source: slot.source,
+        sourceName: deckhandInputName(slot.source),
         position: slot.position,
         transform: regionTransform(slot.position, canvas.width, canvas.height),
       })),

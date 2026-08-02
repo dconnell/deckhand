@@ -178,7 +178,7 @@ test('coordinator integration publishes presentation state and dispatches browse
     });
     await flushMessages();
 
-    assert.deepEqual(obsCalls, ['Dual Browser']);
+    assert.deepEqual(obsCalls, ['Deckhand_Dual Browser']);
     assert.deepEqual(executedCommands, [
       { type: 'activateTab', source: 'BrowserA', tab: 'checkout' },
       { type: 'navigate', source: 'BrowserB', tab: 'main', url: 'https://example.com/other-app' },
@@ -204,6 +204,11 @@ test('coordinator integration publishes presentation state and dispatches browse
           },
         ],
         windowBindings: {
+          BrowserA: { app: 'Google Chrome', titleIncludes: 'Primary' },
+          BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
+        },
+        managedWindowBindings: {
+          Slide: { app: 'Google Chrome' },
           BrowserA: { app: 'Google Chrome', titleIncludes: 'Primary' },
           BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
         },

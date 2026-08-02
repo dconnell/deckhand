@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { buildPresentationState } from './scenes.js';
 import { buildMacWindowCaptureSettings } from './setupObs.js';
+import { deckhandInputName, deckhandSceneName } from './obsNames.js';
 
 function createNoopLogger() {
   return {
@@ -114,7 +115,7 @@ export function createCoordinator(options) {
   const runtimeWindowBindings = {};
 
   function buildResolvedPresentationState(slideId, seq) {
-    const bootstrapWindowBindings = options.getManagedBrowserBindings?.() ?? {};
+    const bootstrapWindowBindings = options.getManagedWindowBindings?.() ?? {};
 
     return buildPresentationState(slideId, options.config, seq, {
       windowBindings: {
@@ -231,7 +232,7 @@ export function createCoordinator(options) {
         }
       }
 
-      await options.obs.applyInputSettings(slot.source, buildMacWindowCaptureSettings(managedBinding));
+      await options.obs.applyInputSettings(deckhandInputName(slot.source), buildMacWindowCaptureSettings(managedBinding));
     }
   }
 
@@ -261,16 +262,17 @@ export function createCoordinator(options) {
   }
 
   async function applyLegacyAudienceScene(presentationState, slideId) {
+    const sceneName = deckhandSceneName(presentationState.audienceScene);
     try {
-      await options.obs.setScene(presentationState.audienceScene);
+      await options.obs.setScene(sceneName);
       logger.info('Applied OBS scene for slide', {
-        scene: presentationState.audienceScene,
+        scene: sceneName,
         slideId,
       });
     } catch (error) {
       logger.error('OBS scene switch failed', {
         error: error instanceof Error ? error.message : String(error),
-        scene: presentationState.audienceScene,
+        scene: sceneName,
         slideId,
       });
     }
@@ -293,7 +295,7 @@ export function createCoordinator(options) {
    * @param {boolean} requiresNavigationWait Whether to wait the navigation cap.
    */
   async function runSlideTransition(transitions, presentationState, direction, slideId, mutate, requiresNavigationWait) {
-    const targetScene = presentationState.audienceScene;
+    const targetScene = deckhandSceneName(presentationState.audienceScene);
 
     try {
       // The freeze frame is pre-armed with the *previous* frame (captured after

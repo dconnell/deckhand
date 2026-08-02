@@ -4,7 +4,9 @@ import path from 'node:path';
 const BUILTIN_DRIVER_TYPES = ['revealjs'];
 const VALID_SLOT_POSITIONS = new Set(['full', 'left', 'right']);
 const BROWSER_SOURCE_KIND = 'browser';
-const VALID_SOURCE_KINDS = new Set([BROWSER_SOURCE_KIND, 'terminal']);
+const ITERM2_SOURCE_KIND = 'iterm2';
+const APP_SOURCE_KIND = 'app';
+const VALID_SOURCE_KINDS = new Set([BROWSER_SOURCE_KIND, ITERM2_SOURCE_KIND, APP_SOURCE_KIND]);
 const VALID_BROWSER_ACTIONS = new Set(['activateTab', 'navigate']);
 
 function isPlainObject(value) {
@@ -75,6 +77,14 @@ function normalizeAbsolutePath(value, pathName) {
   }
 
   return resolved;
+}
+
+function normalizeStringArray(value, pathName) {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
+    throw new ConfigError(pathName, 'must be an array of non-empty strings');
+  }
+
+  return [...value];
 }
 
 function normalizeObsUrl(value, pathName) {
@@ -206,7 +216,7 @@ function normalizeBrowserCatalog(browser, pathName) {
  *
  * @param {string} sourceId The source ID key from the catalog.
  * @param {unknown} entry The raw source descriptor.
- * @returns {{ id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }}
+ * @returns {{ id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[] }}
  */
 function normalizeSourceEntry(sourceId, entry) {
   const pathName = `sources.${sourceId}`;
@@ -224,16 +234,49 @@ function normalizeSourceEntry(sourceId, entry) {
 
   if (kind === BROWSER_SOURCE_KIND) {
     source.browser = normalizeBrowserCatalog(value.browser, `${pathName}.browser`);
+  } else if (kind === ITERM2_SOURCE_KIND) {
+    normalizeOwnedLaunchFields(value, source, pathName, ['command', 'cwd']);
+  } else if (kind === APP_SOURCE_KIND) {
+    source.app = assertNonEmptyString(value.app, `${pathName}.app`);
+    normalizeOwnedLaunchFields(value, source, pathName, ['args', 'cwd']);
   }
 
   return source;
 }
 
 /**
+ * Normalize the optional launch fields shared by owned app-window sources.
+ *
+ * `command`/`args`/`cwd` are only meaningful to the launch layer; here we only
+ * validate their shape. Per-kind required fields (e.g. `app`) are handled by
+ * the caller.
+ *
+ * @param {Record<string, unknown>} value The raw source descriptor.
+ * @param {Record<string, unknown>} source The normalized source being built.
+ * @param {string} pathName The config path of the source entry.
+ * @param {Array<'command' | 'args' | 'cwd'>} fields The optional fields to copy.
+ */
+function normalizeOwnedLaunchFields(value, source, pathName, fields) {
+  for (const field of fields) {
+    if (value[field] === undefined) {
+      continue;
+    }
+
+    if (field === 'args') {
+      source.args = normalizeStringArray(value.args, `${pathName}.args`);
+    } else if (field === 'cwd') {
+      source.cwd = normalizeAbsolutePath(value.cwd, `${pathName}.cwd`);
+    } else if (field === 'command') {
+      source.command = assertNonEmptyString(value.command, `${pathName}.command`);
+    }
+  }
+}
+
+/**
  * Normalize the authoritative `sources` catalog.
  *
  * @param {unknown} sources The raw sources object.
- * @returns {Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }>}
+ * @returns {Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[] }>}
  */
 function normalizeSources(sources) {
   const value = assertPlainObject(sources, 'sources');
@@ -254,8 +297,8 @@ function normalizeObsTransitions(value) {
   return {
     forward,
     backward,
-    freezeScene: typeof t.freezeScene === 'string' && t.freezeScene.trim() !== '' ? t.freezeScene.trim() : 'Deckhand Freeze',
-    freezeImage: typeof t.freezeImage === 'string' && t.freezeImage.trim() !== '' ? t.freezeImage.trim() : 'Deckhand Freeze Frame',
+    freezeScene: typeof t.freezeScene === 'string' && t.freezeScene.trim() !== '' ? t.freezeScene.trim() : 'Deckhand_Freeze',
+    freezeImage: typeof t.freezeImage === 'string' && t.freezeImage.trim() !== '' ? t.freezeImage.trim() : 'Deckhand_Freeze Frame',
     freezeImagePath: typeof t.freezeImagePath === 'string' && t.freezeImagePath.trim() !== '' ? t.freezeImagePath.trim() : null,
     durationMs: Number.isFinite(t.durationMs) ? t.durationMs : 300,
     settleMs: Number.isFinite(t.settleMs) ? t.settleMs : 200,
@@ -270,6 +313,7 @@ function normalizeObs(obs) {
     url: normalizeObsUrl(value.url, 'obs.url'),
     password: typeof value.password === 'string' ? value.password : '',
     transitions: value.transitions === undefined ? null : normalizeObsTransitions(value.transitions),
+    prune: value.prune === undefined ? true : assertBoolean(value.prune, 'obs.prune'),
   };
 }
 
@@ -576,9 +620,19 @@ function normalizePresenter(presenter, layouts, sources) {
   const requiredSources = new Set(Object.values(layouts).flatMap((layout) => layout.sources));
 
   for (const source of requiredSources) {
-    if (!Object.prototype.hasOwnProperty.call(windows, source)) {
-      throw new ConfigError(`presenter.windows.${source}`, 'must be configured for every layout source');
+    if (Object.prototype.hasOwnProperty.call(windows, source)) {
+      continue;
     }
+
+    // Owned source kinds (browser, iterm2, app) derive their owner name from
+    // the source descriptor and resolve exact macWindowId bindings at launch,
+    // so a presenter.windows selector is optional rather than required.
+    const kind = sources[source]?.kind;
+    if (kind !== undefined && VALID_SOURCE_KINDS.has(kind)) {
+      continue;
+    }
+
+    throw new ConfigError(`presenter.windows.${source}`, 'must be configured for every layout source');
   }
 
   for (const windowSource of Object.keys(windows)) {
@@ -616,7 +670,7 @@ export class ConfigError extends Error {
  * Normalize a raw config object into the coordinator's internal model.
  *
  * @param {unknown} rawConfig The parsed config JSON.
- * @returns {{ driver: { type: string }, obs: { url: string, password: string, transitions: null | { forward: string, backward: string, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number } }, hub: { host: string, port: number }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, profileName?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, chunkSeconds: number, language?: string }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
+ * @returns {{ driver: { type: string }, obs: { url: string, password: string, prune: boolean, transitions: null | { forward: string, backward: string, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number } }, hub: { host: string, port: number }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[] }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, profileName?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, chunkSeconds: number, language?: string }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
  */
 export function normalizeConfig(rawConfig) {
   const root = assertPlainObject(rawConfig, 'config');

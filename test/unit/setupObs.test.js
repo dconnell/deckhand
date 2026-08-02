@@ -124,6 +124,15 @@ function createFakeObsSocket() {
         return {};
       }
 
+      if (method === 'RemoveScene') {
+        const sceneIndex = this.scenes.indexOf(payload.sceneName);
+        if (sceneIndex !== -1) {
+          this.scenes.splice(sceneIndex, 1);
+        }
+        this.sceneItemsByScene.delete(payload.sceneName);
+        return {};
+      }
+
       if (method === 'GetSceneItemList') {
         return {
           sceneItems: this.sceneItemsByScene.get(payload.sceneName) ?? [],
@@ -154,7 +163,10 @@ function createFakeObsSocket() {
       }
 
       if (method === 'RemoveInput') {
-        this.inputs = this.inputs.filter((inputName) => inputName !== payload.inputName);
+        const inputIndex = this.inputs.indexOf(payload.inputName);
+        if (inputIndex !== -1) {
+          this.inputs.splice(inputIndex, 1);
+        }
         this.inputKinds.delete(payload.inputName);
 
         for (const [sceneName, sceneItems] of this.sceneItemsByScene.entries()) {
@@ -301,15 +313,15 @@ test('setupObs recreates stale managed inputs with bootstrap capture settings', 
   assert.equal(exitCode, 0);
 
   const client = FakeObsSocket.getLatestInstance();
-  client.inputs = ['Slide', 'BrowserA', 'BrowserB'];
-  client.inputKinds.set('Slide', 'window_capture');
-  client.inputKinds.set('BrowserA', 'window_capture');
-  client.inputKinds.set('BrowserB', 'window_capture');
-  client.scenes = ['Full Slide', 'Dual Browser'];
-  client.sceneItemsByScene.set('Full Slide', [{ sceneItemId: 1, sourceName: 'Slide' }]);
-  client.sceneItemsByScene.set('Dual Browser', [
-    { sceneItemId: 1, sourceName: 'BrowserA' },
-    { sceneItemId: 2, sourceName: 'BrowserB' },
+  client.inputs = ['Deckhand_Slide', 'Deckhand_BrowserA', 'Deckhand_BrowserB'];
+  client.inputKinds.set('Deckhand_Slide', 'window_capture');
+  client.inputKinds.set('Deckhand_BrowserA', 'window_capture');
+  client.inputKinds.set('Deckhand_BrowserB', 'window_capture');
+  client.scenes = ['Deckhand_Full Slide', 'Deckhand_Dual Browser'];
+  client.sceneItemsByScene.set('Deckhand_Full Slide', [{ sceneItemId: 1, sourceName: 'Deckhand_Slide' }]);
+  client.sceneItemsByScene.set('Deckhand_Dual Browser', [
+    { sceneItemId: 1, sourceName: 'Deckhand_BrowserA' },
+    { sceneItemId: 2, sourceName: 'Deckhand_BrowserB' },
   ]);
   client.calls.length = 0;
 
@@ -326,7 +338,7 @@ test('setupObs recreates stale managed inputs with bootstrap capture settings', 
   );
   assert.deepEqual(
     client.calls.filter((entry) => entry.method === 'SetInputSettings').map((entry) => entry.payload.inputName).sort(),
-    ['BrowserA', 'BrowserB', 'Slide'],
+    ['Deckhand_BrowserA', 'Deckhand_BrowserB', 'Deckhand_Slide'],
   );
   assert.deepEqual(
     client.calls.filter((entry) => entry.method === 'SetInputSettings').map((entry) => ({
@@ -335,7 +347,7 @@ test('setupObs recreates stale managed inputs with bootstrap capture settings', 
     })),
     [
       {
-        inputName: 'Slide',
+        inputName: 'Deckhand_Slide',
         inputSettings: {
           owner_name: 'Google Chrome',
           window_name: 'Deckhand Deck',
@@ -343,7 +355,7 @@ test('setupObs recreates stale managed inputs with bootstrap capture settings', 
         },
       },
       {
-        inputName: 'BrowserA',
+        inputName: 'Deckhand_BrowserA',
         inputSettings: {
           owner_name: 'Google Chrome',
           window_name: 'Deckhand Demo Primary',
@@ -351,7 +363,7 @@ test('setupObs recreates stale managed inputs with bootstrap capture settings', 
         },
       },
       {
-        inputName: 'BrowserB',
+        inputName: 'Deckhand_BrowserB',
         inputSettings: {
           owner_name: 'Google Chrome',
           window_name: 'Deckhand Demo Secondary',
@@ -367,11 +379,11 @@ test('setupObs removes stale scene items that are not part of the layout model',
   const FakeObsSocket = createFakeObsSocket();
   const client = new FakeObsSocket();
 
-  client.scenes.push('Full Browser');
-  client.sceneItemsByScene.set('Full Browser', [
-    { sceneItemId: 1, sourceName: 'BrowserA' },
-    { sceneItemId: 2, sourceName: 'BrowserPrimary' },
-    { sceneItemId: 3, sourceName: 'Browser' },
+  client.scenes.push('Deckhand_Full Browser');
+  client.sceneItemsByScene.set('Deckhand_Full Browser', [
+    { sceneItemId: 1, sourceName: 'Deckhand_BrowserA' },
+    { sceneItemId: 2, sourceName: 'Deckhand_BrowserPrimary' },
+    { sceneItemId: 3, sourceName: 'Deckhand_Browser' },
   ]);
 
   const config = createConfig();
@@ -393,4 +405,138 @@ test('setupObs removes stale scene items that are not part of the layout model',
     client.calls.filter((entry) => entry.method === 'RemoveSceneItem').map((entry) => entry.payload.sceneItemId).sort(),
     [2, 3],
   );
+});
+
+function createPruneConfig({ includeB = true, includeC = true, transitions = null } = {}) {
+  const layouts = {
+    'full-a': { id: 'full-a', audienceScene: 'Full A', slots: [{ source: 'RandomAppA', position: 'full' }], sources: ['RandomAppA'] },
+  };
+
+  if (includeB) {
+    layouts['full-b'] = { id: 'full-b', audienceScene: 'Full B', slots: [{ source: 'RandomAppB', position: 'full' }], sources: ['RandomAppB'] };
+  }
+
+  if (includeC) {
+    layouts['full-c'] = { id: 'full-c', audienceScene: 'Full C', slots: [{ source: 'RandomAppC', position: 'full' }], sources: ['RandomAppC'] };
+  }
+
+  const resolvedTransitions = transitions === null
+    ? null
+    : { freezeScene: 'Deckhand_Freeze', freezeImage: 'Deckhand_Freeze Frame', ...transitions };
+
+  return {
+    obs: { url: 'ws://127.0.0.1:4455', password: '', prune: true, transitions: resolvedTransitions },
+    layouts,
+    presenter: null,
+  };
+}
+
+test('reconcileObsPresentation prunes Deckhand_ inputs and scenes dropped from the config', async () => {
+  const logger = createLogger();
+  const FakeObsSocket = createFakeObsSocket();
+
+  await setupObs({
+    config: createPruneConfig({ includeB: true, includeC: true }),
+    logger,
+    OBSWebSocketClass: FakeObsSocket,
+  });
+
+  const client = FakeObsSocket.getLatestInstance();
+  // Simulate the operator's own, non-Deckhand OBS content alongside Deckhand's.
+  client.inputs.push('MyPersonalInput');
+  client.scenes.push('MyIntroScene');
+  client.calls.length = 0;
+
+  const exitCode = await setupObs({
+    config: createPruneConfig({ includeB: false, includeC: false }),
+    logger,
+    OBSWebSocketClass: FakeObsSocket,
+  });
+
+  assert.equal(exitCode, 0);
+
+  assert.deepEqual(
+    client.calls.filter((entry) => entry.method === 'RemoveInput').map((entry) => entry.payload.inputName).sort(),
+    ['Deckhand_RandomAppB', 'Deckhand_RandomAppC'],
+  );
+  assert.deepEqual(
+    client.calls.filter((entry) => entry.method === 'RemoveScene').map((entry) => entry.payload.sceneName).sort(),
+    ['Deckhand_Full B', 'Deckhand_Full C'],
+  );
+
+  // Non-Deckhand content survives, and the still-desired Deckhand input remains.
+  assert.ok(client.inputs.includes('Deckhand_RandomAppA'));
+  assert.ok(client.inputs.includes('MyPersonalInput'));
+  assert.ok(client.scenes.includes('Deckhand_Full A'));
+  assert.ok(client.scenes.includes('MyIntroScene'));
+  assert.equal(client.inputs.includes('Deckhand_RandomAppB'), false);
+  assert.equal(client.scenes.includes('Deckhand_Full C'), false);
+});
+
+test('reconcileObsPresentation leaves Deckhand_ entities alone when obs.prune is false', async () => {
+  const logger = createLogger();
+  const FakeObsSocket = createFakeObsSocket();
+
+  await setupObs({
+    config: createPruneConfig({ includeB: true, includeC: true }),
+    logger,
+    OBSWebSocketClass: FakeObsSocket,
+  });
+
+  const client = FakeObsSocket.getLatestInstance();
+  client.calls.length = 0;
+
+  const noPruneConfig = createPruneConfig({ includeB: false, includeC: false });
+  noPruneConfig.obs.prune = false;
+
+  const exitCode = await setupObs({
+    config: noPruneConfig,
+    logger,
+    OBSWebSocketClass: FakeObsSocket,
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(client.calls.some((entry) => entry.method === 'RemoveInput'), false);
+  assert.equal(client.calls.some((entry) => entry.method === 'RemoveScene'), false);
+  // The dropped inputs still linger because pruning is disabled.
+  assert.ok(client.inputs.includes('Deckhand_RandomAppB'));
+});
+
+test('reconcileObsPresentation retains freeze assets with transitions and prunes them without', async () => {
+  const logger = createLogger();
+  const FakeObsSocket = createFakeObsSocket();
+
+  await setupObs({
+    config: createPruneConfig({ transitions: { forward: 'Slide Right', backward: 'Slide Left' } }),
+    logger,
+    OBSWebSocketClass: FakeObsSocket,
+  });
+
+  const client = FakeObsSocket.getLatestInstance();
+  // Freeze assets are normally created by the coordinator; seed them as existing.
+  client.inputs.push('Deckhand_Freeze Frame');
+  client.scenes.push('Deckhand_Freeze');
+  client.calls.length = 0;
+
+  // Transitions still configured: freeze assets are desired and must survive.
+  await setupObs({
+    config: createPruneConfig({ transitions: { forward: 'Slide Right', backward: 'Slide Left' } }),
+    logger,
+    OBSWebSocketClass: FakeObsSocket,
+  });
+
+  assert.equal(client.calls.some((entry) => entry.method === 'RemoveInput' && entry.payload.inputName === 'Deckhand_Freeze Frame'), false);
+  assert.equal(client.calls.some((entry) => entry.method === 'RemoveScene' && entry.payload.sceneName === 'Deckhand_Freeze'), false);
+
+  client.calls.length = 0;
+
+  // Transitions dropped: freeze assets are no longer desired and are pruned.
+  await setupObs({
+    config: createPruneConfig({ transitions: null }),
+    logger,
+    OBSWebSocketClass: FakeObsSocket,
+  });
+
+  assert.ok(client.calls.some((entry) => entry.method === 'RemoveInput' && entry.payload.inputName === 'Deckhand_Freeze Frame'));
+  assert.ok(client.calls.some((entry) => entry.method === 'RemoveScene' && entry.payload.sceneName === 'Deckhand_Freeze'));
 });

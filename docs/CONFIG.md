@@ -24,7 +24,8 @@ model for OBS, presenter stage, and slide actions.
         }
       }
     },
-    "Terminal": { "kind": "terminal" },
+    "Terminal": { "kind": "iterm2", "command": "npm run dev", "cwd": "/repos/demo" },
+    "Editor": { "kind": "app", "app": "Visual Studio Code", "args": ["--new-window", "/repos/demo"] },
     "BrowserA": {
       "kind": "browser",
       "browser": {
@@ -108,6 +109,11 @@ model for OBS, presenter stage, and slide actions.
 - `driver.type`: currently `revealjs`
 - `obs.url`: OBS WebSocket URL
 - `obs.password`: OBS WebSocket password
+- `obs.prune`: boolean, default `true`. Deckhand reconciles OBS to the current
+  config, removing any `Deckhand_*` inputs/scenes it created that this
+  presentation no longer references. Non-`Deckhand_*` OBS content is never
+  touched. Set `false` to leave stale entities in place. See
+  [OBS Reconciliation](#obs-reconciliation).
 - `obs.transitions`: optional block enabling whole-frame slide transitions;
   see [Slide Transitions](#slide-transitions). Absent means the legacy instant
   cut is used and OBS transitions are never touched.
@@ -128,7 +134,12 @@ The canonical presentation sources are:
 Each entry declares a `kind`. Current kinds:
 
 - `browser`: a source Deckhand owns end-to-end through its own Chrome session
-- `terminal`: terminal source
+- `iterm2`: a terminal source Deckhand launches and tracks via iTerm2
+- `app`: a generic macOS app Deckhand launches via `open -a` (e.g. an editor)
+
+`iterm2` and `app` are *owned* sources: Deckhand launches the window, captures
+its exact macOS window id by diffing the window list before and after launch,
+and binds it strictly. Identity is the runtime window handle, never title.
 
 Source IDs are position-agnostic and stay stable across layouts. They do not
 encode OBS scene names, transport identifiers, or window-match hints. If you
@@ -164,6 +175,45 @@ URL or title lookup.
     first declared) is the active tab at startup
   - `preload`: optional boolean that currently must remain `true`; Deckhand
     preloads every declared tab at startup
+
+### iTerm2 Sources
+
+An `iterm2` source is a terminal Deckhand launches and owns. Deckhand creates a
+new iTerm2 window, optionally runs a shell command at a working directory, and
+binds the exact macOS window id by diffing iTerm2's windows before and after
+launch. The terminal Deckhand was launched from predates the snapshot and is
+therefore never captured.
+
+```json
+"Terminal": {
+  "kind": "iterm2",
+  "command": "npm run dev",
+  "cwd": "/repos/demo"
+}
+```
+
+- `command`: optional shell command run inside the new window
+- `cwd`: optional absolute working directory for the command
+
+### App Sources
+
+An `app` source is a generic macOS app Deckhand launches via `open -a`. The new
+window is captured by owner-name diff (PID-based diff is unreliable for Electron
+single-instance apps such as VS Code, which hand off to an already-running
+process).
+
+```json
+"Editor": {
+  "kind": "app",
+  "app": "Visual Studio Code",
+  "args": ["--new-window", "/repos/demo"]
+}
+```
+
+- `app`: required macOS owner name, exactly as macOS reports it
+  (`kCGWindowOwnerName`)
+- `args`: optional array of launch arguments passed after `--args`
+- `cwd`: optional absolute working directory where relevant
 
 ## Chrome Session
 
@@ -256,10 +306,10 @@ Required:
 
 Optional (with defaults):
 
-- `freezeScene`: OBS scene name for the freeze still (`Deckhand Freeze`);
+- `freezeScene`: OBS scene name for the freeze still (`Deckhand_Freeze`);
   created automatically at startup
 - `freezeImage`: `image_source` input name inside the freeze scene
-  (`Deckhand Freeze Frame`); created automatically
+  (`Deckhand_Freeze Frame`); created automatically
 - `freezeImagePath`: PNG path for the freeze still; defaults to
   `deckhand-freeze-frame.png` under the system temp dir
 - `durationMs`: slide transition duration in milliseconds (`300`)
@@ -277,6 +327,32 @@ Behavior notes:
 - Set `transition: 'none'` in the deck's `Reveal.initialize` so OBS owns all
   perceived motion.
 
+## OBS Reconciliation
+
+Every OBS entity Deckhand creates is named with a `Deckhand_` prefix (for
+example the `BrowserA` source becomes the `Deckhand_BrowserA` input, and the
+`Full Browser` audience scene becomes `Deckhand_Full Browser`). The prefix is
+the ownership marker that lets Deckhand reconcile safely against the operator's
+own OBS content.
+
+On `setup:obs` and at runtime (controlled by `obs.prune`, default `true`),
+Deckhand reconciles OBS to the current presentation:
+
+- inputs and scenes for every source/scene in the current layouts are created
+  or updated;
+- any existing `Deckhand_*` input or scene no longer referenced by the current
+  config is removed — so switching to a presentation with fewer sources prunes
+  the dropped ones automatically;
+- non-`Deckhand_*` entities are never modified or removed;
+- freeze assets (`Deckhand_Freeze` / `Deckhand_Freeze Frame`) are retained while
+  `obs.transitions` is configured and pruned when a presentation drops
+  transitions.
+
+This is stateless: there is no manifest or state directory, and the
+reconciliation is driven entirely by the current config and the `Deckhand_`
+prefix. Because earlier builds named OBS entities without the prefix, a
+one-time manual cleanup of those old names may be needed after upgrading.
+
 ## Presenter
 
 `presenter` is optional as a whole. If omitted, Deckhand still supports the
@@ -286,8 +362,11 @@ When present:
 
 - `platform` must be `macos`
 - `stage` defines the presenter-stage rectangle; width must be even
-- `windows` maps each logical source to a macOS window selector; every key must
-  exist in `sources`
+- `windows` maps logical sources to macOS window selectors; every key must exist
+  in `sources`. A selector is optional for owned source kinds (`browser`,
+  `iterm2`, `app`): their owner name is derived from the source descriptor and
+  their exact `macWindowId` is resolved at launch, so `titleIncludes` is not
+  required
 - `stt` configures the local whisper.cpp observer
 - `teleprompter.followEnabledByDefault` controls initial follow mode
 - `http` configures the presenter web app/status surface
@@ -322,6 +401,7 @@ The config loader returns path-based errors for invalid input, including:
 - missing or invalid `driver.type`
 - missing or empty `sources`
 - unknown source `kind`
+- `iterm2`/`app` sources with invalid `command`/`args`/`cwd`/`app` fields
 - missing `layouts`
 - unknown `slides.<id>.layout`
 - layout slots that reference unknown sources

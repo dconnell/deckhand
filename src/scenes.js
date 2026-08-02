@@ -170,15 +170,23 @@ export function buildPresentationState(slideId, config, seq, runtime = {}) {
     return state;
   }
 
-  const managedWindowBindings = Object.fromEntries(
-    Object.entries(config.presenter.windows).map(([sourceId, binding]) => [
-      sourceId,
-      {
-        ...binding,
-        ...(runtime.windowBindings?.[sourceId] ?? {}),
-      },
-    ]),
-  );
+  const managedWindowBindings = {};
+  for (const [sourceId, binding] of Object.entries(config.presenter.windows)) {
+    managedWindowBindings[sourceId] = {
+      ...binding,
+      ...(runtime.windowBindings?.[sourceId] ?? {}),
+    };
+  }
+
+  // Owned source kinds (iterm2, app) may omit a presenter.windows selector:
+  // their owner name and exact macWindowId are derived from the runtime
+  // binding rather than committed config. Surface those bindings too so they
+  // flow to Hammerspoon and OBS without a configured window selector.
+  for (const [sourceId, binding] of Object.entries(runtime.windowBindings ?? {})) {
+    if (managedWindowBindings[sourceId] === undefined) {
+      managedWindowBindings[sourceId] = { ...binding };
+    }
+  }
   const windowBindings = {};
   state.slots = layout.slots.map((slot) => {
     windowBindings[slot.source] = managedWindowBindings[slot.source];
