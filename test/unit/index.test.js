@@ -1314,6 +1314,105 @@ test('run derives owner names and publishes strict macWindowId bindings for owne
   }
 });
 
+test('run requests stability confirmation for owned app-window binding resolution', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-owned-stability-'));
+  const capturedEntries = [];
+
+  try {
+    const config = JSON.stringify({
+      driver: { type: 'revealjs' },
+      obs: { url: 'ws://127.0.0.1:4455', password: '' },
+      hub: { port: 8765 },
+      sources: {
+        Slide: { kind: 'browser', browser: { tabs: { deck: { url: 'http://127.0.0.1:3000/deck/', initial: true } } } },
+        Editor: { kind: 'app', app: 'Visual Studio Code', args: ['--new-window', '/repos/demo'] },
+      },
+      layouts: {
+        'full-slide': { audienceScene: 'Full Slide', slots: [{ source: 'Slide', position: 'full' }] },
+        'full-editor': { audienceScene: 'Full Editor', slots: [{ source: 'Editor', position: 'full' }] },
+      },
+      slides: { intro: { layout: 'full-slide' } },
+      presenter: {
+        platform: 'macos',
+        stage: { x: 0, y: 0, width: 1800, height: 1168 },
+        windows: {
+          Slide: { app: 'Google Chrome', titleIncludes: 'Deckhand Deck' },
+        },
+      },
+    }, null, 2);
+    await writePresentationConfig(tempDir, 'owned-stability', config);
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'owned-stability',
+      installSignalHandlers: false,
+      consoleLike: createSilentConsole(),
+      createHubFn() {
+        const handlers = new Map();
+        return {
+          on(eventName, handler) { handlers.set(eventName, handler); },
+          async start() {},
+          async stop() {},
+          getAddress() { return { host: '127.0.0.1', port: 8765 }; },
+          getSnapshot() {
+            return { activeDriver: null, observers: [{ role: 'observer', subscriptions: ['presentationState'] }], sticky: {}, targets: [] };
+          },
+          emit(eventName, payload) { return handlers.get(eventName)?.(payload); },
+        };
+      },
+      createObsClientFn() {
+        return {
+          async connect() {}, async disconnect() {}, async setScene() {},
+          async applyInputSettings() {}, getClient() { return this; }, isConnected() { return false; },
+        };
+      },
+      launchChromeSessionFn: async () => ({
+        chromePid: 47213, debugPort: 9222, profileDir: '/tmp/deckhand-owned-stability', async stop() {},
+      }),
+      discoverCdpEndpointFn: async () => ({
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc', chromePid: null,
+      }),
+      createCdpClientFn() { return createCdpClientMock(47213); },
+      createBrowserSessionFn() {
+        return {
+          async start() {}, async stop() {}, async openWindow() {},
+          getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
+          getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
+          async activateTab() {}, async navigateTab() {},
+        };
+      },
+      createCoordinatorFn() {
+        return {
+          async start() {}, async stop() {}, getCurrentPresentationState() { return null; },
+        };
+      },
+      createPresenterHttpFn() { return { async start() {}, async stop() {} }; },
+      createPresentationServerFn() {
+        return { async start() {}, async stop() {}, getAddress() { return { host: '127.0.0.1', port: 3000 }; } };
+      },
+      reconcileObsFn: async () => {},
+      waitForDriverPositionFn: async () => {},
+      waitForPresentationObserverFn: async () => {},
+      resolveMacWindowBindingsFn: async () => ({
+        Slide: { macWindowId: 11111, pid: 47213 },
+      }),
+      resolveOwnedWindowBindingsFn: async ({ config }) => {
+        for (const [sourceId, source] of Object.entries(config.sources)) {
+          if (source?.kind === 'app') {
+            capturedEntries.push(sourceId);
+          }
+        }
+        return {};
+      },
+    });
+
+    assert.equal(exitCode, 0);
+    assert.deepEqual(capturedEntries, ['Editor']);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('run closes owned app windows on shutdown via closeOwnedWindowsFn', async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-shutdown-owned-'));
   const closedBindings = [];
@@ -1425,9 +1524,129 @@ test('run closes owned app windows on shutdown via closeOwnedWindowsFn', async (
   assert.deepEqual(closedBindings[0], {
     kind: 'iterm2',
     sourceId: 'Terminal',
+    discardUnsavedChanges: false,
     macWindowId: 555,
     ownerName: 'iTerm',
     pid: 4321,
     sessionId: undefined,
+  });
+});
+
+test('run requests discardUnsavedChanges when shutting down owned app windows', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-shutdown-owned-discard-'));
+  const closedBindings = [];
+  const originalExit = process.exit;
+
+  try {
+    const config = JSON.stringify({
+      driver: { type: 'revealjs' },
+      obs: { url: 'ws://127.0.0.1:4455', password: '' },
+      hub: { port: 8765 },
+      sources: {
+        Slide: { kind: 'browser', browser: { tabs: { deck: { url: 'http://127.0.0.1:3000/deck/', initial: true } } } },
+        Editor: { kind: 'app', app: 'Visual Studio Code', args: ['--new-window', '/repos/demo'] },
+      },
+      layouts: {
+        'full-slide': { audienceScene: 'Full Slide', slots: [{ source: 'Slide', position: 'full' }] },
+        'full-editor': { audienceScene: 'Full Editor', slots: [{ source: 'Editor', position: 'full' }] },
+      },
+      slides: { intro: { layout: 'full-slide' } },
+      presenter: {
+        platform: 'macos',
+        stage: { x: 0, y: 0, width: 1800, height: 1168 },
+        windows: {
+          Slide: { app: 'Google Chrome', titleIncludes: 'Deckhand Deck' },
+        },
+      },
+    }, null, 2);
+    await writePresentationConfig(tempDir, 'shutdown-discard', config);
+
+    process.exit = () => {
+      throw new Error('EXIT_CALLED');
+    };
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'shutdown-discard',
+      installSignalHandlers: true,
+      consoleLike: createSilentConsole(),
+      closeOwnedWindowsFn: ({ bindings }) => {
+        closedBindings.push(...bindings);
+      },
+      createHubFn() {
+        const handlers = new Map();
+        return {
+          on(eventName, handler) { handlers.set(eventName, handler); },
+          async start() {},
+          async stop() {},
+          getAddress() { return { host: '127.0.0.1', port: 8765 }; },
+          getSnapshot() {
+            return { activeDriver: null, observers: [{ role: 'observer', subscriptions: ['presentationState'] }], sticky: {}, targets: [] };
+          },
+          emit(eventName, payload) { return handlers.get(eventName)?.(payload); },
+        };
+      },
+      createObsClientFn() {
+        return {
+          async connect() {}, async disconnect() {}, async setScene() {},
+          async applyInputSettings() {}, getClient() { return this; }, isConnected() { return false; },
+        };
+      },
+      launchChromeSessionFn: async () => ({
+        chromePid: 47213, debugPort: 9222, profileDir: '/tmp/deckhand-shutdown-discard', async stop() {},
+      }),
+      discoverCdpEndpointFn: async () => ({
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc', chromePid: null,
+      }),
+      createCdpClientFn() { return createCdpClientMock(47213); },
+      createBrowserSessionFn() {
+        return {
+          async start() {}, async stop() {}, async openWindow() {},
+          getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
+          getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
+          async activateTab() {}, async navigateTab() {},
+        };
+      },
+      createCoordinatorFn() {
+        return {
+          async start() {}, async stop() {}, getCurrentPresentationState() { return null; },
+        };
+      },
+      createPresenterHttpFn() { return { async start() {}, async stop() {} }; },
+      createPresentationServerFn() {
+        return { async start() {}, async stop() {}, getAddress() { return { host: '127.0.0.1', port: 3000 }; } };
+      },
+      reconcileObsFn: async () => {},
+      waitForDriverPositionFn: async () => {},
+      waitForPresentationObserverFn: async () => {},
+      resolveMacWindowBindingsFn: async () => ({
+        Slide: { macWindowId: 11111, pid: 47213 },
+      }),
+      resolveOwnedWindowBindingsFn: async () => ({
+        Editor: { macWindowId: 888, pid: 9999 },
+      }),
+    });
+
+    assert.equal(exitCode, 0);
+
+    try {
+      process.emit('SIGTERM');
+    } catch {
+      // process.exit inside the handler throws — expected
+    }
+  } finally {
+    process.exit = originalExit;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+
+  assert.equal(closedBindings.length, 1);
+  assert.deepEqual(closedBindings[0], {
+    kind: 'app',
+    sourceId: 'Editor',
+    macWindowId: 888,
+    ownerName: 'Visual Studio Code',
+    pid: 9999,
+    sessionId: undefined,
+    discardUnsavedChanges: true,
   });
 });

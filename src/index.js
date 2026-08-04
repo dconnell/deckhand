@@ -17,7 +17,7 @@ import { buildRuntimeStatus } from './runtimeStatus.js';
 import { createCdpClient } from './cdpClient.js';
 import { createBrowserSession, createBrowserCommandExecutor } from './browserSession.js';
 import { createWsTransport, discoverCdpEndpoint, launchChromeSession } from './chromeLauncher.js';
-import { enumerateWindowsByOwnerName, enumerateWindowsByPid } from './macWindows.js';
+import { closeMacWindow, enumerateWindowsByOwnerName, enumerateWindowsByPid } from './macWindows.js';
 import { resolveOwnedWindowBindings } from './ownedWindows.js';
 import { closeIterm2OwnedWindow, launchIterm2Window } from './launchers/iterm2.js';
 import { launchAppWindow } from './launchers/app.js';
@@ -210,6 +210,7 @@ async function defaultResolveOwnedWindowBindings({ config, logger }) {
         sourceId,
         snapshot: () => enumerateWindowsByOwnerName(''),
         launch: () => launchAppWindow({ app: source.app, args: source.args, cwd: source.cwd, logger }),
+        confirm: { stableSamples: 2 },
       });
     }
   }
@@ -536,9 +537,21 @@ export async function run(options = {}) {
     }
 
     const closeOwnedWindowsFn = options.closeOwnedWindowsFn ?? (async ({ bindings }) => {
-      for (const { kind, sourceId, pid, sessionId } of bindings) {
+      for (const {
+        kind,
+        sourceId,
+        macWindowId,
+        pid,
+        sessionId,
+        discardUnsavedChanges = false,
+      } of bindings) {
         if (kind === 'iterm2') {
           closeIterm2OwnedWindow(sessionId);
+        } else if (typeof macWindowId === 'number' && typeof pid === 'number') {
+          const closed = closeMacWindow(macWindowId, pid, { discardUnsavedChanges });
+          if (!closed) {
+            await terminateProcessGroup(pid, logger, sourceId ?? 'app');
+          }
         } else {
           await terminateProcessGroup(pid, logger, sourceId ?? 'app');
         }
@@ -571,6 +584,7 @@ export async function run(options = {}) {
             bindings: [{
               kind: source.kind,
               sourceId,
+              discardUnsavedChanges: source.kind === 'app',
               macWindowId: cached?.macWindowId,
               ownerName: getSourceOwnerName(config, sourceId),
               pid: cached?.pid,

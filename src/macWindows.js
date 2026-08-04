@@ -16,10 +16,44 @@ for w in info {
     let bounds = w["kCGWindowBounds"] as? [String: CGFloat] ?? [:]
     let x = bounds["X"] ?? 0
     let y = bounds["Y"] ?? 0
+    let width = bounds["Width"] ?? 0
+    let height = bounds["Height"] ?? 0
     results.append([
         "windowId": windowId,
         "x": Int(x),
         "y": Int(y),
+        "width": Int(width),
+        "height": Int(height),
+    ])
+}
+let jsonData = try! JSONSerialization.data(withJSONObject: results, options: [])
+print(String(data: jsonData, encoding: .utf8)!)
+`;
+
+const SWIFT_SCRIPT_ALL_BY_PID = `
+import CoreGraphics
+import Foundation
+
+let pid = Int(CommandLine.arguments[1])!
+let info = CGWindowListCopyWindowInfo([], kCGNullWindowID) as! [[String: Any]]
+var results: [[String: Any]] = []
+for w in info {
+    let ownerPID = w["kCGWindowOwnerPID"] as? Int ?? 0
+    if ownerPID != pid { continue }
+    let layer = w["kCGWindowLayer"] as? Int ?? 0
+    if layer != 0 { continue }
+    let windowId = w["kCGWindowNumber"] as? Int ?? 0
+    let bounds = w["kCGWindowBounds"] as? [String: CGFloat] ?? [:]
+    let x = bounds["X"] ?? 0
+    let y = bounds["Y"] ?? 0
+    let width = bounds["Width"] ?? 0
+    let height = bounds["Height"] ?? 0
+    results.append([
+        "windowId": windowId,
+        "x": Int(x),
+        "y": Int(y),
+        "width": Int(width),
+        "height": Int(height),
     ])
 }
 let jsonData = try! JSONSerialization.data(withJSONObject: results, options: [])
@@ -109,6 +143,43 @@ function getWindowIdsViaCGList(pid) {
   } catch {
     return [];
   }
+}
+
+function getAllWindowIdsViaCGList(pid) {
+  if (process.platform !== 'darwin') {
+    return [];
+  }
+
+  try {
+    const output = execSync(`swift - ${pid}`, {
+      encoding: 'utf8',
+      timeout: 5000,
+      input: SWIFT_SCRIPT_ALL_BY_PID,
+    });
+
+    return JSON.parse(output.trim()).filter((entry) => entry.windowId > 0);
+  } catch {
+    return [];
+  }
+}
+
+function hasWindowIdForPid(macWindowId, pid) {
+  if (!Number.isInteger(macWindowId) || macWindowId <= 0 || !Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+
+  return getAllWindowIdsViaCGList(pid).some((window) => window.windowId === macWindowId);
+}
+
+function getWindowIndexForPid(macWindowId, pid) {
+  if (!Number.isInteger(macWindowId) || macWindowId <= 0 || !Number.isInteger(pid) || pid <= 0) {
+    return null;
+  }
+
+  const windows = getAllWindowIdsViaCGList(pid);
+  const index = windows.findIndex((window) => window.windowId === macWindowId);
+
+  return index >= 0 ? index : null;
 }
 
 /**
@@ -276,34 +347,219 @@ export function resolveMacWindowIds(pid, sourceTitles) {
   return result;
 }
 
-const SWIFT_CLOSE_WINDOW = `
+const SWIFT_DISCARD_UNSAVED_HELPERS = `
+func normalizedTitle(_ value: String) -> String {
+    return value
+        .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+        .replacingOccurrences(of: "’", with: "'")
+        .replacingOccurrences(of: "‘", with: "'")
+}
+
+func attributeString(_ element: AXUIElement, _ attribute: CFString) -> String {
+    var ref: CFTypeRef?
+    let result = AXUIElementCopyAttributeValue(element, attribute, &ref)
+    guard result == .success else {
+        return ""
+    }
+
+    return ref as? String ?? ""
+}
+
+func childElements(_ element: AXUIElement) -> [AXUIElement] {
+    var ref: CFTypeRef?
+    let result = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &ref)
+    guard result == .success else {
+        return []
+    }
+
+    return ref as? [AXUIElement] ?? []
+}
+
+func windowsForApp(_ app: AXUIElement) -> [AXUIElement] {
+    var ref: CFTypeRef?
+    let result = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &ref)
+    guard result == .success else {
+        return []
+    }
+
+    return ref as? [AXUIElement] ?? []
+}
+
+func findDiscardButton(in element: AXUIElement) -> AXUIElement? {
+    let role = attributeString(element, kAXRoleAttribute as CFString)
+    if role == kAXButtonRole as String {
+        let title = normalizedTitle(
+            attributeString(element, kAXTitleAttribute as CFString)
+            + " "
+            + attributeString(element, kAXDescriptionAttribute as CFString)
+        )
+        if title.contains("don't save")
+            || title.contains("dont save")
+            || title.contains("do not save")
+            || title.contains("discard") {
+            return element
+        }
+    }
+
+    for child in childElements(element) {
+        if let match = findDiscardButton(in: child) {
+            return match
+        }
+    }
+
+    return nil
+}
+
+func tryPressDiscardButton(in window: AXUIElement) -> Bool {
+    var sheetsRef: CFTypeRef?
+    let sheetsResult = AXUIElementCopyAttributeValue(window, kAXSheetsAttribute as CFString, &sheetsRef)
+    guard sheetsResult == .success, let sheets = sheetsRef as? [AXUIElement] else {
+        return false
+    }
+
+    for sheet in sheets {
+        if let discardButton = findDiscardButton(in: sheet) {
+            let pressResult = AXUIElementPerformAction(discardButton, kAXPressAction as CFString)
+            if pressResult == .success {
+                return true
+            }
+        }
+    }
+
+    return false
+}
+
+func tryPressDiscardButton(inApp app: AXUIElement) -> Bool {
+    for appWindow in windowsForApp(app) {
+        if let discardButton = findDiscardButton(in: appWindow) {
+            let pressResult = AXUIElementPerformAction(discardButton, kAXPressAction as CFString)
+            if pressResult == .success {
+                return true
+            }
+        }
+
+        if tryPressDiscardButton(in: appWindow) {
+            return true
+        }
+    }
+
+    return false
+}
+`;
+
+/**
+ * Build the Swift script used to close a macOS window by CGWindowID.
+ *
+ * @param {{ discardUnsavedChanges?: boolean }} [options] Close options.
+ * @returns {string}
+ */
+export function buildCloseWindowSwiftScript({ discardUnsavedChanges = false } = {}) {
+  const discardHelpers = discardUnsavedChanges ? SWIFT_DISCARD_UNSAVED_HELPERS : '';
+  const discardAfterClose = discardUnsavedChanges
+    ? `
+            for _ in 0..<20 {
+                if tryPressDiscardButton(in: window) || tryPressDiscardButton(inApp: axApp) {
+                    break
+                }
+
+                usleep(100_000)
+            }
+`
+    : '';
+
+  return `
 import Cocoa
 import CoreGraphics
 
-@_silgen_name("_AXUIElementGetWindow")
-func _AXUIElementGetWindow(_ axElement: AXUIElement) -> CGWindowID
-
-let targetWindowId = UInt32(CommandLine.arguments[1])!
+${discardHelpers}
+let targetIndex = Int(CommandLine.arguments[1])!
 let pid = pid_t(CommandLine.arguments[2])!
+
+if let app = NSRunningApplication(processIdentifier: pid) {
+    app.activate(options: [.activateIgnoringOtherApps])
+}
 
 let axApp = AXUIElementCreateApplication(pid)
 var windowsRef: CFTypeRef?
 AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef)
 
-if let windows = windowsRef as? [AXUIElement] {
-    for window in windows {
-        let wid = _AXUIElementGetWindow(window)
-        if wid == targetWindowId {
-            var closeBtn: CFTypeRef?
-            AXUIElementCopyAttributeValue(window, kAXCloseButtonAttribute as CFString, &closeBtn)
-            if let btn = closeBtn {
-                AXUIElementPerformAction(btn, kAXPressAction as CFString)
-            }
-            break
+if let windows = windowsRef as? [AXUIElement], targetIndex >= 0, targetIndex < windows.count {
+    let window = windows[targetIndex]
+    _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+
+    let closeResult = AXUIElementPerformAction(window, kAXCloseAction as CFString)
+    if closeResult != .success {
+        var closeBtn: CFTypeRef?
+        AXUIElementCopyAttributeValue(window, kAXCloseButtonAttribute as CFString, &closeBtn)
+        if let button = closeBtn as? AXUIElement {
+            _ = AXUIElementPerformAction(button, kAXPressAction as CFString)
         }
     }
+
+${discardAfterClose}
 }
 `;
+}
+
+function raiseMacWindow(windowIndex, pid) {
+  const script = `tell application "System Events"
+  tell (first process whose unix id is ${Math.floor(pid)})
+    set frontmost to true
+    set targetWindow to window ${Math.floor(windowIndex) + 1}
+    perform action "AXRaise" of targetWindow
+  end tell
+end tell`;
+
+  try {
+    execSync('osascript', {
+      encoding: 'utf8',
+      timeout: 3000,
+      input: script,
+      stdio: ['pipe', 'ignore', 'ignore'],
+    });
+  } catch {
+    // best-effort raise
+  }
+}
+
+function closeMacWindowViaAppleScript(windowIndex, pid, { discardUnsavedChanges = false } = {}) {
+  const closeAndDiscardScript = discardUnsavedChanges
+    ? `
+    repeat with i from 1 to 12
+      keystroke "w" using {command down}
+      delay 0.1
+      keystroke "d" using {command down}
+      delay 0.1
+    end repeat
+`
+    : `
+    repeat with i from 1 to 6
+      keystroke "w" using {command down}
+      delay 0.1
+    end repeat
+`;
+
+  const script = `tell application "System Events"
+  tell (first process whose unix id is ${Math.floor(pid)})
+    set frontmost to true
+    set targetWindow to window ${Math.floor(windowIndex) + 1}
+    perform action "AXRaise" of targetWindow
+    delay 0.1
+${closeAndDiscardScript}
+  end tell
+end tell`;
+
+  try {
+    execSync('osascript', {
+      encoding: 'utf8',
+      timeout: 6000,
+      input: script,
+      stdio: ['pipe', 'ignore', 'ignore'],
+    });
+  } catch {
+    // best-effort close via AppleScript
+  }
+}
 
 /**
  * Close a specific macOS window by CGWindowID via the Accessibility API.
@@ -317,27 +573,81 @@ if let windows = windowsRef as? [AXUIElement] {
  *
  * @param {number} macWindowId The CGWindowID of the window to close.
  * @param {number} pid The process ID owning the window.
- * @returns {void}
+ * @param {{ discardUnsavedChanges?: boolean }} [options] Close options.
+ * @returns {boolean} True when the target window is no longer present.
  */
-export function closeMacWindow(macWindowId, pid) {
+export function closeMacWindow(macWindowId, pid, options = {}) {
   if (process.platform !== 'darwin') {
-    return;
+    return false;
   }
 
   if (typeof macWindowId !== 'number' || typeof pid !== 'number') {
-    return;
+    return false;
+  }
+
+  const targetWindowId = Math.floor(macWindowId);
+  const targetPid = Math.floor(pid);
+  let targetWindowIndex = getWindowIndexForPid(targetWindowId, targetPid);
+
+  if (targetWindowIndex === null) {
+    return !hasWindowIdForPid(targetWindowId, targetPid);
   }
 
   try {
-    execSync(`swift - ${Math.floor(macWindowId)} ${Math.floor(pid)}`, {
+    execSync(`swift - ${targetWindowIndex} ${targetPid}`, {
       encoding: 'utf8',
       timeout: 5000,
-      input: SWIFT_CLOSE_WINDOW,
+      input: buildCloseWindowSwiftScript(options),
       stdio: ['pipe', 'ignore', 'ignore'],
     });
   } catch {
     // best-effort close — the window may have already been closed by the user
   }
+
+  closeMacWindowViaAppleScript(targetWindowIndex, targetPid, {
+    discardUnsavedChanges: options.discardUnsavedChanges === true,
+  });
+
+  if (!hasWindowIdForPid(targetWindowId, targetPid)) {
+    return true;
+  }
+
+  if (options.discardUnsavedChanges !== true) {
+    return false;
+  }
+
+  if (!hasWindowIdForPid(targetWindowId, targetPid)) {
+    return true;
+  }
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    targetWindowIndex = getWindowIndexForPid(targetWindowId, targetPid);
+    if (targetWindowIndex === null) {
+      return !hasWindowIdForPid(targetWindowId, targetPid);
+    }
+
+    raiseMacWindow(targetWindowIndex, targetPid);
+    closeMacWindowViaAppleScript(targetWindowIndex, targetPid, {
+      discardUnsavedChanges: true,
+    });
+
+    try {
+      execSync(`swift - ${targetWindowIndex} ${targetPid}`, {
+        encoding: 'utf8',
+        timeout: 5000,
+        input: buildCloseWindowSwiftScript({ discardUnsavedChanges: true }),
+        stdio: ['pipe', 'ignore', 'ignore'],
+      });
+    } catch {
+      // continue fallback attempts
+    }
+
+    if (!hasWindowIdForPid(targetWindowId, targetPid)) {
+      return true;
+    }
+  }
+
+  return !hasWindowIdForPid(targetWindowId, targetPid);
 }
 
 /**

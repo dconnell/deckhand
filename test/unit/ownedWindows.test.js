@@ -250,3 +250,44 @@ test('resolveOwnedWindowBindings carries sessionId from launchResult for iTerm2 
   assert.equal(result.Terminal.macWindowId, 42);
   assert.equal(result.Terminal.sessionId, 'ABCD-1234-EF56');
 });
+
+test('resolveOwnedWindowBindings can require stable repeated sightings before binding', async () => {
+  let launches = 0;
+  let frameIndex = 0;
+  const frames = [
+    [{ windowId: 1, title: 'existing' }],
+    [{ windowId: 1, title: 'existing' }, { windowId: 20, title: 'transient helper', width: 100, height: 100, pid: 9000 }],
+    [{ windowId: 1, title: 'existing' }, { windowId: 21, title: 'editor main', width: 1200, height: 800, pid: 9000 }],
+    [{ windowId: 1, title: 'existing' }, { windowId: 21, title: 'editor main', width: 1200, height: 800, pid: 9000 }],
+  ];
+
+  const entry = {
+    sourceId: 'Editor',
+    snapshot() {
+      return frames[Math.min(frameIndex, frames.length - 1)];
+    },
+    async launch() {
+      launches += 1;
+      return {};
+    },
+    confirm: { stableSamples: 2 },
+  };
+
+  const delays = [];
+  const result = await resolveOwnedWindowBindings({
+    entries: [entry],
+    delay: async (ms) => {
+      delays.push(ms);
+      frameIndex += 1;
+    },
+    maxAttempts: 8,
+    retryDelayMs: 10,
+    logger: createNoopLogger(),
+  });
+
+  assert.equal(launches, 1);
+  assert.ok(delays.length >= 2);
+  assert.deepEqual(result, {
+    Editor: { macWindowId: 21, pid: 9000 },
+  });
+});

@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { closeMacWindow, diffNewWindows, findPidByOwnerName } from '../../src/macWindows.js';
+import {
+  buildCloseWindowSwiftScript,
+  closeMacWindow,
+  diffNewWindows,
+  findPidByOwnerName,
+} from '../../src/macWindows.js';
 
 test('diffNewWindows returns windows present in after but absent from before', () => {
   const before = [
@@ -107,6 +112,29 @@ test('diffNewWindows combines rejectEmptyTitle and titleIncludes confirmation', 
   );
 });
 
+test('buildCloseWindowSwiftScript emits the plain close flow by default', () => {
+  const script = buildCloseWindowSwiftScript();
+
+  assert.match(script, /kAXCloseAction/);
+  assert.match(script, /kAXCloseButtonAttribute/);
+  assert.doesNotMatch(script, /kAXSheetsAttribute/);
+  assert.doesNotMatch(script, /don't save/i);
+});
+
+test('buildCloseWindowSwiftScript adds discard-without-saving handling when requested', () => {
+  const script = buildCloseWindowSwiftScript({ discardUnsavedChanges: true });
+
+  assert.match(script, /kAXSheetsAttribute/);
+  assert.match(script, /don't save/i);
+  assert.match(script, /discard/i);
+});
+
+test('buildCloseWindowSwiftScript includes close-button action in discard mode', () => {
+  const script = buildCloseWindowSwiftScript({ discardUnsavedChanges: true });
+
+  assert.match(script, /AXUIElementPerformAction\(button, kAXPressAction as CFString\)/);
+});
+
 test('closeMacWindow is a no-op off darwin', () => {
   const originalPlatform = process.platform;
   Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
@@ -119,9 +147,9 @@ test('closeMacWindow is a no-op off darwin', () => {
 });
 
 test('closeMacWindow ignores non-numeric arguments', () => {
-  assert.doesNotThrow(() => closeMacWindow('abc', 99));
-  assert.doesNotThrow(() => closeMacWindow(42, 'xyz'));
-  assert.doesNotThrow(() => closeMacWindow(undefined, 99));
+  assert.equal(closeMacWindow('abc', 99), false);
+  assert.equal(closeMacWindow(42, 'xyz'), false);
+  assert.equal(closeMacWindow(undefined, 99), false);
 });
 
 test('findPidByOwnerName returns null when no windows match the owner name', () => {

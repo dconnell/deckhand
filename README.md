@@ -106,8 +106,12 @@ In presenter mode it also waits for Hammerspoon to report exact window ids for
 the managed browser windows before doing the final OBS binding pass. This can
 add a short startup delay and is intentional.
 
-On shutdown, Deckhand closes only the browser windows and tabs it created for
-the session before disconnecting from Chrome.
+On shutdown, Deckhand closes only windows it launched for the session: managed
+browser windows/tabs, owned iTerm2 windows, and owned `app` windows.
+
+For owned `app` windows (for example VS Code), Deckhand closes the tracked
+window by exact macOS window id and will choose Don't Save/Discard if an
+unsaved-changes sheet appears.
 
 If you are using Hammerspoon, it also owns the macOS global slide hotkeys.
 

@@ -18,7 +18,7 @@ function createNoopLogger() {
  * unit-testable without real windows; `src/index.js` wires the concrete
  * strategies per source kind.
  *
- * @param {{ entries: Array<{ sourceId: string, snapshot: () => Array<{ windowId: number, title?: string }>, launch: () => Promise<{ pid?: number }>, confirm?: { titleIncludes?: string, rejectEmptyTitle?: boolean } }>, delay: (ms: number) => Promise<void>, maxAttempts?: number, retryDelayMs?: number, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Resolver options.
+ * @param {{ entries: Array<{ sourceId: string, snapshot: () => Array<{ windowId: number, title?: string }>, launch: () => Promise<{ pid?: number }>, confirm?: { titleIncludes?: string, rejectEmptyTitle?: boolean, stableSamples?: number } }>, delay: (ms: number) => Promise<void>, maxAttempts?: number, retryDelayMs?: number, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Resolver options.
  * @returns {Promise<Record<string, { macWindowId: number, pid?: number }>>}
  */
 export async function resolveOwnedWindowBindings(options) {
@@ -33,6 +33,10 @@ export async function resolveOwnedWindowBindings(options) {
       const before = entry.snapshot();
       const launchResult = await entry.launch();
       let resolved = null;
+      const stableSamples = Number.isInteger(entry.confirm?.stableSamples) && entry.confirm.stableSamples > 0
+        ? entry.confirm.stableSamples
+        : 1;
+      const stableCounts = new Map();
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         const after = entry.snapshot();
@@ -51,6 +55,16 @@ export async function resolveOwnedWindowBindings(options) {
               const areaB = (b.width ?? 0) * (b.height ?? 0);
               return areaB > areaA ? b : a;
             });
+          const nextStableCount = (stableCounts.get(best.windowId) ?? 0) + 1;
+          stableCounts.set(best.windowId, nextStableCount);
+
+          if (nextStableCount < stableSamples) {
+            if (attempt < maxAttempts) {
+              await delay(retryDelayMs);
+            }
+            continue;
+          }
+
           resolved = { macWindowId: best.windowId };
 
           if (typeof best.pid === 'number') {

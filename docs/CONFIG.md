@@ -202,6 +202,11 @@ window is captured by owner-name diff (PID-based diff is unreliable for Electron
 single-instance apps such as VS Code, which hand off to an already-running
 process).
 
+At shutdown, Deckhand closes only the tracked window for each `app` source by
+exact `macWindowId` (not the whole app process). If the app shows an
+unsaved-changes sheet, Deckhand attempts to press Don't Save/Discard so
+shutdown can complete without manual prompts.
+
 ```json
 "Editor": {
   "kind": "app",
