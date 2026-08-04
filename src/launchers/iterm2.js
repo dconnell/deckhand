@@ -56,6 +56,10 @@ function applescriptEscape(value) {
  * Build the AppleScript that creates a new iTerm2 window and, when a command or
  * cwd is configured, runs the composed shell text inside its first session.
  *
+ * The script returns the new session's stable UUID so the caller can later
+ * close that exact window on shutdown, regardless of what process is running
+ * inside it (`plans/app-sources.md`).
+ *
  * @param {{ command?: string, cwd?: string }} [options] Launch options.
  * @returns {string}
  */
@@ -69,6 +73,8 @@ export function buildIterm2AppleScript({ command, cwd } = {}) {
     body += `    write text "${applescriptEscape(writeText)}"\n`;
     body += '  end tell\n';
   }
+
+  body += '  return id of (current session of (current tab of newWindow))\n';
 
   return `tell application "iTerm2"\n  activate\n${body}end tell`;
 }
@@ -88,7 +94,7 @@ export function findIterm2Pid() {
   }
 
   try {
-    const script = 'tell application "System Events" to get unix id of first process whose name is "iTerm2"';
+    const script = 'tell application "System Events" to get unix id of first process whose name starts with "iTerm"';
     const output = execSync(`osascript -e '${script}'`, {
       encoding: 'utf8',
       timeout: 5000,
@@ -104,12 +110,11 @@ export function findIterm2Pid() {
 /**
  * Launch a new iTerm2 window running an optional command at an optional cwd.
  *
- * Returns the iTerm2 PID (discovered after launch) so the caller can poll
- * windows by PID and diff against the pre-launch snapshot. No-ops off macOS so
- * the launch layer is safe to construct on non-darwin hosts.
+ * Returns the iTerm2 PID and the new session's stable UUID so the caller can
+ * later close that exact window on shutdown.
  *
  * @param {{ command?: string, cwd?: string }} [options] Launch options.
- * @returns {Promise<{ pid?: number }>}
+ * @returns {Promise<{ pid?: number, sessionId?: string }>}
  */
 export async function launchIterm2Window({ command, cwd } = {}) {
   if (process.platform !== 'darwin') {
@@ -118,12 +123,61 @@ export async function launchIterm2Window({ command, cwd } = {}) {
 
   const script = buildIterm2AppleScript({ command, cwd });
 
-  execSync('osascript', {
+  const output = execSync('osascript', {
     encoding: 'utf8',
     timeout: 10000,
     input: script,
-  });
+  }).trim();
 
   const pid = findIterm2Pid();
-  return pid !== null ? { pid } : {};
+
+  return {
+    ...(pid !== null ? { pid } : {}),
+    ...(output !== '' ? { sessionId: output } : {}),
+  };
+}
+
+/**
+ * Close the iTerm2 window whose session has the given UUID.
+ *
+ * The session UUID is assigned by iTerm2 at creation time and is stable for
+ * the lifetime of the window — it does not change when the foreground process
+ * changes, making it a reliable close target even when a long-running command
+ * (e.g. `npm run dev`) is active inside the session.
+ *
+ * Best-effort: any AppleScript error is swallowed so shutdown cannot hang.
+ *
+ * @param {string} sessionId The iTerm2 session UUID returned by {@link launchIterm2Window}.
+ * @returns {void}
+ */
+export function closeIterm2OwnedWindow(sessionId) {
+  if (process.platform !== 'darwin' || typeof sessionId !== 'string' || sessionId === '') {
+    return;
+  }
+
+  const script = `tell application "iTerm2"
+  repeat with w in windows
+    try
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if (id of s) is "${applescriptEscape(sessionId)}" then
+            close w
+            return
+          end if
+        end repeat
+      end repeat
+    end try
+  end repeat
+end tell`;
+
+  try {
+    execSync('osascript', {
+      encoding: 'utf8',
+      timeout: 5000,
+      input: script,
+      stdio: ['pipe', 'ignore', 'ignore'],
+    });
+  } catch {
+    // best-effort — the window may have already been closed by the user
+  }
 }

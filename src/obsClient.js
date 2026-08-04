@@ -74,7 +74,7 @@ export function createObsClient(options) {
         await client.call('SetInputSettings', {
           inputName,
           inputSettings,
-          overlay: true,
+          overlay: false,
         });
         logger.info('Applied OBS input settings', { inputName });
       } catch (error) {

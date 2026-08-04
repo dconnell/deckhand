@@ -163,10 +163,18 @@ export function createCoordinator(options) {
     }
   }
 
+  function observerCanResolveSource(source) {
+    return options.config.sources[source]?.kind === 'browser';
+  }
+
   function mergeRuntimeWindowBindings(payload) {
     let changed = false;
 
     for (const source of payload.cleared ?? []) {
+      if (!observerCanResolveSource(source)) {
+        continue;
+      }
+
       if (Object.prototype.hasOwnProperty.call(runtimeWindowBindings, source)) {
         delete runtimeWindowBindings[source];
         changed = true;
@@ -174,6 +182,10 @@ export function createCoordinator(options) {
     }
 
     for (const [source, binding] of Object.entries(payload.bindings ?? {})) {
+      if (!observerCanResolveSource(source)) {
+        continue;
+      }
+
       const current = runtimeWindowBindings[source];
       const next = { ...binding };
 
@@ -511,7 +523,13 @@ export function createCoordinator(options) {
         }
 
         if (executorStarted) {
-          await executor?.stop().catch(() => {});
+          if (executor !== null && typeof executor.stop === 'function') {
+            try {
+              await Promise.resolve(executor.stop());
+            } catch {
+              // best-effort cleanup
+            }
+          }
           executorStarted = false;
         }
 

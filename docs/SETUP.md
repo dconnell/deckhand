@@ -89,7 +89,13 @@ npm run setup:obs -- --set-canvas my-talk
 `setup:obs` provisions the scenes and stable input names only. During runtime,
 Deckhand pushes macOS `window_capture` settings into those inputs and upgrades
 them from bootstrap title matching to exact managed window bindings when
-Hammerspoon reports them.
+Hammerspoon reports them. For strict `macWindowId` updates, Deckhand applies a
+two-step settings update (`window: 0` then exact id) to force OBS to refresh
+the bound target without removing and recreating the source.
+
+If OBS returns `Failed to create the scene item.` while Deckhand is reconciling
+managed scenes, Deckhand now performs a one-time recovery reset of
+`Deckhand_*` scenes and inputs and retries the reconcile automatically.
 
 If OBS requires authentication and your local override does not have the right
 password yet, `node ./src/index.js my-talk` and presenter smoke checks will fail until

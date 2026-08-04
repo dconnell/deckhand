@@ -265,7 +265,7 @@ test('navigateTab attaches once per target then sends Page.navigate on the sessi
   await second;
 });
 
-test('setWindowTitle attaches once per target then updates document.title on the session', async () => {
+test('setWindowTitle attaches once per target then applies the persistent title script on the session', async () => {
   const transport = createFakeTransport();
   const client = createCdpClient({
     discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://browser', chromePid: 1 }),
@@ -288,14 +288,23 @@ test('setWindowTitle attaches once per target then updates document.title on the
   respondTo(transport, 1, { sessionId: 'SESSION_HOME' });
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.deepEqual(transport.sent[1], {
-    id: 2,
+  assert.equal(transport.sent[1].id, 2);
+  assert.equal(transport.sent[1].method, 'Page.addScriptToEvaluateOnNewDocument');
+  assert.equal(transport.sent[1].sessionId, 'SESSION_HOME');
+  assert.equal(typeof transport.sent[1].params?.source, 'string');
+  assert.match(transport.sent[1].params.source, /const deckhandTitle = "Deckhand BrowserA"/);
+
+  respondTo(transport, 2, { identifier: 'deckhand-title-script' });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(transport.sent[2], {
+    id: 3,
     method: 'Runtime.evaluate',
-    params: { expression: 'document.title = "Deckhand BrowserA"' },
+    params: { expression: transport.sent[1].params.source },
     sessionId: 'SESSION_HOME',
   });
 
-  respondTo(transport, 2, { result: { type: 'string', value: 'Deckhand BrowserA' } });
+  respondTo(transport, 3, { result: { type: 'string', value: 'Deckhand BrowserA' } });
   await pending;
 });
 

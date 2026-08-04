@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Deckhand Example2 Deck</title>
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/theme/white.css" />
+
+    <style>
+      .reveal section { text-align: left; }
+      .reveal h1, .reveal h2, .reveal h3 { text-transform: none; }
+      .deckhand-tag {
+        display: block;
+        margin-top: 1.2em;
+        font-size: 0.55em;
+        opacity: 0.6;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .reveal pre { width: 100%; font-size: 0.5em; }
+    </style>
+  </head>
+  <body>
+    <div class="reveal">
+      <div class="slides">
+        <section data-deckhand-id="welcome">
+          <h2>Deckhand — Example 2</h2>
+          <p>An editor + three terminals flow. No dual browser this time.</p>
+          <span class="deckhand-tag">data-deckhand-id="welcome" → layout: full-slide</span>
+        </section>
+
+        <section data-deckhand-id="editor-walkthrough">
+          <h3>Editor Walkthrough</h3>
+          <pre><code data-trim>$ code --new-window /repos/example2
+# VS Code opens owned by Deckhand
+# audience scene = Full Editor</code></pre>
+          <span class="deckhand-tag">data-deckhand-id="editor-walkthrough" → layout: full-editor · focus: Editor</span>
+        </section>
+
+        <section data-deckhand-id="code-review">
+          <h3>Code Review</h3>
+          <p><code>Editor</code> on the left, <code>TerminalA</code> on the right.</p>
+          <span class="deckhand-tag">data-deckhand-id="code-review" → layout: left-editor-right-terminal-a · focus: Editor · script: yes</span>
+        </section>
+
+        <section data-deckhand-id="terminal-a-deep-dive">
+          <h3>Terminal A — app</h3>
+          <p>Full-screen terminal rooted at <code>/repos/example2/app</code>.</p>
+          <span class="deckhand-tag">data-deckhand-id="terminal-a-deep-dive" → layout: full-terminal-a · focus: TerminalA</span>
+        </section>
+
+        <section data-deckhand-id="terminal-b-deep-dive">
+          <h3>Terminal B — infra</h3>
+          <p>Full-screen terminal rooted at <code>/repos/example2/infra</code>.</p>
+          <span class="deckhand-tag">data-deckhand-id="terminal-b-deep-dive" → layout: full-terminal-b · focus: TerminalB</span>
+        </section>
+
+        <section data-deckhand-id="terminal-c-deep-dive">
+          <h3>Terminal C — docs</h3>
+          <p>Full-screen terminal rooted at <code>/repos/example2/docs</code>.</p>
+          <span class="deckhand-tag">data-deckhand-id="terminal-c-deep-dive" → layout: full-terminal-c · focus: TerminalC</span>
+        </section>
+
+        <section data-deckhand-id="architecture">
+          <h3>Architecture</h3>
+          <p>Same layout model drives OBS, the presenter stage, and the teleprompter.</p>
+          <span class="deckhand-tag">data-deckhand-id="architecture" → layout: left-terminal-b-right-slide · script: yes</span>
+        </section>
+
+        <section data-deckhand-id="live-coding">
+          <h3>Live Coding</h3>
+          <p>Slide on the left for context; <code>TerminalC</code> on the right for the edit.</p>
+          <span class="deckhand-tag">data-deckhand-id="live-coding" → layout: right-terminal-c-left-slide · focus: TerminalC · script: yes</span>
+        </section>
+
+        <section data-deckhand-id="dual-terminal">
+          <h3>Dual Terminal Demo</h3>
+          <p>Two owned terminals at once:</p>
+          <ul>
+            <li><code>TerminalA</code> → app cwd</li>
+            <li><code>TerminalB</code> → infra cwd</li>
+          </ul>
+          <span class="deckhand-tag">data-deckhand-id="dual-terminal" → layout: left-terminal-a-right-terminal-b · focus: TerminalA · script: yes</span>
+        </section>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.js"></script>
+    <script src="/reveal/deckhand-plugin.js"></script>
+    <script>
+      Reveal.initialize({
+        controls: true,
+        progress: true,
+        hash: true,
+        transition: 'none',
+        plugins: [DeckhandRevealPlugin({ hubUrl: 'ws://127.0.0.1:8765' })]
+      });
+    </script>
+  </body>
+</html>

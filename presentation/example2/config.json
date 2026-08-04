@@ -1,0 +1,230 @@
+{
+  "driver": {
+    "type": "revealjs"
+  },
+  "obs": {
+    "url": "ws://127.0.0.1:4455",
+    "password": ""
+  },
+  "hub": {
+    "port": 8765
+  },
+  "sources": {
+    "Slide": {
+      "kind": "browser",
+      "browser": {
+        "window": { "label": "slide" },
+        "tabs": {
+          "deck": {
+            "url": "http://127.0.0.1:3000/presentation/example2/deck/index.html",
+            "initial": true
+          }
+        }
+      }
+    },
+    "Editor": {
+      "kind": "app",
+      "app": "Visual Studio Code",
+      "args": ["--new-window", "/repos/example2"]
+    },
+    "TerminalA": {
+      "kind": "iterm2",
+      "command": "npm run dev",
+      "cwd": "/repos/example2/app"
+    },
+    "TerminalB": {
+      "kind": "iterm2",
+      "command": "npm run watch",
+      "cwd": "/repos/example2/infra"
+    },
+    "TerminalC": {
+      "kind": "iterm2",
+      "command": "npm run docs",
+      "cwd": "/repos/example2/docs"
+    }
+  },
+  "layouts": {
+    "full-slide": {
+      "audienceScene": "Full Slide",
+      "slots": [
+        {
+          "source": "Slide",
+          "position": "full"
+        }
+      ]
+    },
+    "full-editor": {
+      "audienceScene": "Full Editor",
+      "slots": [
+        {
+          "source": "Editor",
+          "position": "full"
+        }
+      ]
+    },
+    "full-terminal-a": {
+      "audienceScene": "Full Terminal A",
+      "slots": [
+        {
+          "source": "TerminalA",
+          "position": "full"
+        }
+      ]
+    },
+    "full-terminal-b": {
+      "audienceScene": "Full Terminal B",
+      "slots": [
+        {
+          "source": "TerminalB",
+          "position": "full"
+        }
+      ]
+    },
+    "full-terminal-c": {
+      "audienceScene": "Full Terminal C",
+      "slots": [
+        {
+          "source": "TerminalC",
+          "position": "full"
+        }
+      ]
+    },
+    "left-editor-right-terminal-a": {
+      "audienceScene": "Left Editor Right Terminal A",
+      "slots": [
+        {
+          "source": "Editor",
+          "position": "left"
+        },
+        {
+          "source": "TerminalA",
+          "position": "right"
+        }
+      ]
+    },
+    "left-terminal-b-right-slide": {
+      "audienceScene": "Left Terminal B Right Slide",
+      "slots": [
+        {
+          "source": "TerminalB",
+          "position": "left"
+        },
+        {
+          "source": "Slide",
+          "position": "right"
+        }
+      ]
+    },
+    "right-terminal-c-left-slide": {
+      "audienceScene": "Right Terminal C Left Slide",
+      "slots": [
+        {
+          "source": "Slide",
+          "position": "left"
+        },
+        {
+          "source": "TerminalC",
+          "position": "right"
+        }
+      ]
+    },
+    "left-terminal-a-right-terminal-b": {
+      "audienceScene": "Left Terminal A Right Terminal B",
+      "slots": [
+        {
+          "source": "TerminalA",
+          "position": "left"
+        },
+        {
+          "source": "TerminalB",
+          "position": "right"
+        }
+      ]
+    }
+  },
+  "slides": {
+    "welcome": {
+      "layout": "full-slide",
+      "script": "Welcome to the second Deckhand example.\nThis one leans on an editor and three terminals instead of browsers."
+    },
+    "editor-walkthrough": {
+      "layout": "full-editor",
+      "focus": "Editor",
+      "script": "Full-screen VS Code.\nWalk the audience through the module layout before running anything."
+    },
+    "code-review": {
+      "layout": "left-editor-right-terminal-a",
+      "focus": "Editor",
+      "script": "Editor on the left, app terminal on the right.\nPoint at the init flow, then jump to the terminal to run it."
+    },
+    "terminal-a-deep-dive": {
+      "layout": "full-terminal-a",
+      "focus": "TerminalA",
+      "script": "Stay in the app terminal.\nKeep the presenter focus on live commands running from /repos/example2/app."
+    },
+    "terminal-b-deep-dive": {
+      "layout": "full-terminal-b",
+      "focus": "TerminalB",
+      "script": "Switch to the infra terminal.\nIt started in its own cwd so the watch task is already running."
+    },
+    "terminal-c-deep-dive": {
+      "layout": "full-terminal-c",
+      "focus": "TerminalC",
+      "script": "Third terminal, docs cwd.\nShow the docs build pipeline end to end."
+    },
+    "architecture": {
+      "layout": "left-terminal-b-right-slide",
+      "script": "Infra terminal next to the slide.\nThe same layout model still drives OBS, the presenter stage, and the teleprompter."
+    },
+    "live-coding": {
+      "layout": "right-terminal-c-left-slide",
+      "focus": "TerminalC",
+      "script": "Slide on the left for context, docs terminal on the right for the live edit."
+    },
+    "dual-terminal": {
+      "layout": "left-terminal-a-right-terminal-b",
+      "focus": "TerminalA",
+      "script": "Two terminals at once:\napp on the left, infra on the right, each from its own working directory."
+    }
+  },
+  "presenter": {
+    "platform": "macos",
+    "stage": {
+      "x": 0,
+      "y": 0,
+      "width": 1800,
+      "height": 1168
+    },
+    "windows": {
+      "Slide": {
+        "app": "Google Chrome",
+        "titleIncludes": "Deckhand Deck"
+      },
+      "Editor": {
+        "app": "Visual Studio Code"
+      },
+      "TerminalA": {
+        "app": "iTerm2"
+      },
+      "TerminalB": {
+        "app": "iTerm2"
+      },
+      "TerminalC": {
+        "app": "iTerm2"
+      }
+    },
+    "stt": {
+      "whisperBin": "/absolute/path/to/whisper-cli",
+      "model": "/absolute/path/to/ggml-base.en.bin",
+      "chunkSeconds": 2.5,
+      "language": "en"
+    },
+    "teleprompter": {
+      "followEnabledByDefault": true
+    },
+    "http": {
+      "host": "127.0.0.1",
+      "port": 3001
+    }
+  }
+}

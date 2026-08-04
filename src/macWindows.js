@@ -32,20 +32,26 @@ import Foundation
 
 let env = ProcessInfo.processInfo.environment
 let ownerName = env["DECKHAND_OWNER_NAME"] ?? ""
-let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as! [[String: Any]]
+let info = CGWindowListCopyWindowInfo([], kCGNullWindowID) as! [[String: Any]]
 var results: [[String: Any]] = []
 for w in info {
     let name = w["kCGWindowOwnerName"] as? String ?? ""
-    if name.lowercased() != ownerName.lowercased() { continue }
+    if !ownerName.isEmpty && !name.lowercased().hasPrefix(ownerName.lowercased()) { continue }
     let layer = w["kCGWindowLayer"] as? Int ?? 0
     if layer != 0 { continue }
     let windowId = w["kCGWindowNumber"] as? Int ?? 0
     let ownerPID = w["kCGWindowOwnerPID"] as? Int ?? 0
     let title = w["kCGWindowName"] as? String ?? ""
+    let bounds = w["kCGWindowBounds"] as? [String: CGFloat] ?? [:]
+    let width = Int(bounds["Width"] ?? 0)
+    let height = Int(bounds["Height"] ?? 0)
     results.append([
         "windowId": windowId,
         "title": title,
         "pid": ownerPID,
+        "ownerName": name,
+        "width": width,
+        "height": height,
     ])
 }
 let jsonData = try! JSONSerialization.data(withJSONObject: results, options: [])
@@ -143,17 +149,27 @@ export function enumerateWindowsByPid(pid) {
 }
 
 /**
- * Enumerate on-screen macOS windows for a given owner name.
+ * Enumerate macOS windows whose owner name starts with the given prefix.
  *
- * Uses CGWindowListCopyWindowInfo filtered by `kCGWindowOwnerName` (case-
- * insensitive). Unlike {@link enumerateWindowsByPid}, titles come straight
- * from `kCGWindowName` rather than the Accessibility API: owner-name diffing is
- * used for apps Deckhand cannot address by PID (e.g. Electron single-instance
- * hand-off), and the title is only a secondary splash-rejection signal, not an
- * identity source of truth.
+ * Uses CGWindowListCopyWindowInfo (all windows, not just on-screen) filtered by
+ * `kCGWindowOwnerName` case-insensitive prefix match. Two departures from
+ * {@link enumerateWindowsByPid} are intentional:
  *
- * @param {string} ownerName macOS owner (app) name, as in `kCGWindowOwnerName`.
- * @returns {Array<{ windowId: number, title: string, pid?: number }>}
+ * - **All windows, not `.optionOnScreenOnly`**: owned apps (iTerm2, VS Code)
+ *   may be in the background when the before-snapshot is taken. Excluding
+ *   off-screen windows would leave the snapshot empty and cause the diff to
+ *   treat every existing window as "new" — binding the launch terminal instead
+ *   of the freshly-created one.
+ *
+ * - **Prefix match (`hasPrefix`), not exact**: iTerm2's `kCGWindowOwnerName`
+ *   is `"iTerm"` in the window server regardless of the marketing name, so a
+ *   caller passing `"iTerm"` matches both `"iTerm"` and `"iTerm2"` processes.
+ *
+ * Titles come from `kCGWindowName` rather than the Accessibility API: the title
+ * is only a secondary splash-rejection signal, not the identity source of truth.
+ *
+ * @param {string} ownerName macOS owner (app) name prefix, as in `kCGWindowOwnerName`. Pass an empty string to enumerate all layer-0 windows regardless of owner.
+ * @returns {Array<{ windowId: number, title: string, pid?: number, ownerName?: string }>}
  */
 export function enumerateWindowsByOwnerName(ownerName) {
   if (process.platform !== 'darwin') {
@@ -174,6 +190,15 @@ export function enumerateWindowsByOwnerName(ownerName) {
         const window = { windowId: entry.windowId, title: entry.title ?? '' };
         if (typeof entry.pid === 'number') {
           window.pid = entry.pid;
+        }
+        if (typeof entry.ownerName === 'string') {
+          window.ownerName = entry.ownerName;
+        }
+        if (typeof entry.width === 'number') {
+          window.width = entry.width;
+        }
+        if (typeof entry.height === 'number') {
+          window.height = entry.height;
         }
         return window;
       });
@@ -249,4 +274,86 @@ export function resolveMacWindowIds(pid, sourceTitles) {
   }
 
   return result;
+}
+
+const SWIFT_CLOSE_WINDOW = `
+import Cocoa
+import CoreGraphics
+
+@_silgen_name("_AXUIElementGetWindow")
+func _AXUIElementGetWindow(_ axElement: AXUIElement) -> CGWindowID
+
+let targetWindowId = UInt32(CommandLine.arguments[1])!
+let pid = pid_t(CommandLine.arguments[2])!
+
+let axApp = AXUIElementCreateApplication(pid)
+var windowsRef: CFTypeRef?
+AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef)
+
+if let windows = windowsRef as? [AXUIElement] {
+    for window in windows {
+        let wid = _AXUIElementGetWindow(window)
+        if wid == targetWindowId {
+            var closeBtn: CFTypeRef?
+            AXUIElementCopyAttributeValue(window, kAXCloseButtonAttribute as CFString, &closeBtn)
+            if let btn = closeBtn {
+                AXUIElementPerformAction(btn, kAXPressAction as CFString)
+            }
+            break
+        }
+    }
+}
+`;
+
+/**
+ * Close a specific macOS window by CGWindowID via the Accessibility API.
+ *
+ * Used during shutdown to close owned app windows (iTerm2, generic apps) that
+ * Deckhand launched, without quitting the entire application (which would also
+ * close the terminal Deckhand was launched from).
+ *
+ * Best-effort: any Swift or AX error is swallowed so that one un-closeable
+ * window cannot block the rest of the shutdown sequence.
+ *
+ * @param {number} macWindowId The CGWindowID of the window to close.
+ * @param {number} pid The process ID owning the window.
+ * @returns {void}
+ */
+export function closeMacWindow(macWindowId, pid) {
+  if (process.platform !== 'darwin') {
+    return;
+  }
+
+  if (typeof macWindowId !== 'number' || typeof pid !== 'number') {
+    return;
+  }
+
+  try {
+    execSync(`swift - ${Math.floor(macWindowId)} ${Math.floor(pid)}`, {
+      encoding: 'utf8',
+      timeout: 5000,
+      input: SWIFT_CLOSE_WINDOW,
+      stdio: ['pipe', 'ignore', 'ignore'],
+    });
+  } catch {
+    // best-effort close — the window may have already been closed by the user
+  }
+}
+
+/**
+ * Find the PID of the first on-screen window matching an owner name.
+ *
+ * @param {string} ownerName macOS owner (app) name.
+ * @returns {number | null}
+ */
+export function findPidByOwnerName(ownerName) {
+  const windows = enumerateWindowsByOwnerName(ownerName);
+
+  for (const window of windows) {
+    if (typeof window.pid === 'number' && window.pid > 0) {
+      return window.pid;
+    }
+  }
+
+  return null;
 }

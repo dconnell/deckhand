@@ -17,9 +17,9 @@ import { buildRuntimeStatus } from './runtimeStatus.js';
 import { createCdpClient } from './cdpClient.js';
 import { createBrowserSession, createBrowserCommandExecutor } from './browserSession.js';
 import { createWsTransport, discoverCdpEndpoint, launchChromeSession } from './chromeLauncher.js';
-import { enumerateWindowsByPid, enumerateWindowsByOwnerName } from './macWindows.js';
+import { enumerateWindowsByOwnerName, enumerateWindowsByPid } from './macWindows.js';
 import { resolveOwnedWindowBindings } from './ownedWindows.js';
-import { findIterm2Pid, launchIterm2Window } from './launchers/iterm2.js';
+import { closeIterm2OwnedWindow, launchIterm2Window } from './launchers/iterm2.js';
 import { launchAppWindow } from './launchers/app.js';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -29,6 +29,74 @@ const PRESENTATION_SERVER_PORT = Number(process.env.PORT ?? 3000);
 const DRIVER_READY_TIMEOUT_MS = 10000;
 const PRESENTER_OBSERVER_TIMEOUT_MS = 5000;
 const WINDOW_BINDINGS_TIMEOUT_MS = 15000;
+const APP_SHUTDOWN_GRACE_MS = 2000;
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function isMissingProcessError(error) {
+  return error instanceof Error
+    && typeof error === 'object'
+    && 'code' in error
+    && error.code === 'ESRCH';
+}
+
+function isPromiseLike(value) {
+  return value !== null
+    && typeof value === 'object'
+    && 'then' in value
+    && typeof value.then === 'function';
+}
+
+async function terminateProcessGroup(pid, logger, sourceId, graceMs = APP_SHUTDOWN_GRACE_MS) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return;
+  }
+
+  try {
+    process.kill(-pid, 'SIGTERM');
+  } catch (error) {
+    if (!isMissingProcessError(error)) {
+      logger.warn('Failed to send SIGTERM to owned app process group', {
+        source: sourceId,
+        pid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return;
+  }
+
+  await delay(graceMs);
+
+  try {
+    process.kill(-pid, 0);
+  } catch (error) {
+    if (!isMissingProcessError(error)) {
+      logger.warn('Failed to probe owned app process group after SIGTERM', {
+        source: sourceId,
+        pid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return;
+  }
+
+  try {
+    process.kill(-pid, 'SIGKILL');
+    logger.warn('Escalated owned app process-group shutdown to SIGKILL', { source: sourceId, pid });
+  } catch (error) {
+    if (!isMissingProcessError(error)) {
+      logger.warn('Failed to send SIGKILL to owned app process group', {
+        source: sourceId,
+        pid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
 
 function hasBrowserSources(config) {
   return Object.values(config.sources).some((source) => source?.kind === 'browser');
@@ -64,7 +132,7 @@ function getSourceOwnerName(config, sourceId) {
   const source = config.sources[sourceId];
 
   if (source?.kind === 'iterm2') {
-    return 'iTerm2';
+    return 'iTerm';
   }
 
   if (source?.kind === 'app') {
@@ -85,6 +153,38 @@ function listOwnedAppSourceEntries(config) {
 }
 
 /**
+ * Build OBS window-capture bindings from all resolved macWindowId bindings.
+ *
+ * Every reconcile must carry the full set of resolved bindings so that
+ * processing a scene item for one source never silently regresses the
+ * macWindowId of another (browser sources losing their exact window when the
+ * owned-source reconcile processes browser scenes with an empty overlay).
+ *
+ * @param {{ sources: Record<string, { kind: string, app?: string }>, presenter?: null | { windows: Record<string, { app?: string }> } }} config Normalized config.
+ * @param {Record<string, { macWindowId: number, pid?: number }>} resolvedMacWindowBindings Accumulated mac-window bindings (browser + owned).
+ * @returns {Record<string, { app: string, macWindowId: number, strict: true, pid?: number }>}
+ */
+function buildObsWindowBindings(config, resolvedMacWindowBindings) {
+  const bindings = {};
+
+  for (const [sourceId, binding] of Object.entries(resolvedMacWindowBindings)) {
+    const obsBinding = {
+      app: binding.ownerName ?? getSourceOwnerName(config, sourceId),
+      macWindowId: binding.macWindowId,
+      strict: true,
+    };
+
+    if (binding.pid !== undefined) {
+      obsBinding.pid = binding.pid;
+    }
+
+    bindings[sourceId] = obsBinding;
+  }
+
+  return bindings;
+}
+
+/**
  * Default launch+diff resolver for owned app-window sources.
  *
  * Builds a per-kind launch strategy (iTerm2 AppleScript with PID diff; generic
@@ -102,16 +202,13 @@ async function defaultResolveOwnedWindowBindings({ config, logger }) {
     if (source.kind === 'iterm2') {
       entries.push({
         sourceId,
-        snapshot() {
-          const pid = findIterm2Pid();
-          return pid !== null ? enumerateWindowsByPid(pid) : [];
-        },
+        snapshot: () => enumerateWindowsByOwnerName('iTerm'),
         launch: () => launchIterm2Window({ command: source.command, cwd: source.cwd, logger }),
       });
     } else if (source.kind === 'app') {
       entries.push({
         sourceId,
-        snapshot: () => enumerateWindowsByOwnerName(source.app),
+        snapshot: () => enumerateWindowsByOwnerName(''),
         launch: () => launchAppWindow({ app: source.app, args: source.args, cwd: source.cwd, logger }),
       });
     }
@@ -413,11 +510,24 @@ export async function run(options = {}) {
 
     const currentLaunch = chromeLaunch;
     chromeLaunch = null;
-    await currentLaunch.stop().catch(() => {});
+
+    try {
+      await Promise.resolve(currentLaunch.stop());
+    } catch {
+      // best-effort cleanup
+    }
   }
 
   async function stopBrowserRuntime() {
-    await coordinator?.stop().catch(() => {});
+    if (coordinator === undefined || coordinator === null || typeof coordinator.stop !== 'function') {
+      return;
+    }
+
+    try {
+      await Promise.resolve(coordinator.stop());
+    } catch {
+      // best-effort cleanup
+    }
   }
 
   function installShutdownHandlers() {
@@ -425,9 +535,61 @@ export async function run(options = {}) {
       return;
     }
 
-    const shutdown = (signal) => {
+    const closeOwnedWindowsFn = options.closeOwnedWindowsFn ?? (async ({ bindings }) => {
+      for (const { kind, sourceId, pid, sessionId } of bindings) {
+        if (kind === 'iterm2') {
+          closeIterm2OwnedWindow(sessionId);
+        } else {
+          await terminateProcessGroup(pid, logger, sourceId ?? 'app');
+        }
+      }
+    });
+
+    let shuttingDown = false;
+
+    const shutdown = async (signal) => {
+      if (shuttingDown) {
+        return;
+      }
+
+      shuttingDown = true;
       phase = 'shuttingDown';
       logger.info('Received shutdown signal', { signal });
+
+      for (const [sourceId, source] of Object.entries(config.sources)) {
+        if (source.kind !== 'iterm2' && source.kind !== 'app') {
+          continue;
+        }
+
+        const cached = resolvedMacWindowBindings[sourceId];
+        if (cached?.macWindowId === undefined && cached?.sessionId === undefined && cached?.pid === undefined) {
+          continue;
+        }
+
+        try {
+          const closeResult = closeOwnedWindowsFn({
+            bindings: [{
+              kind: source.kind,
+              sourceId,
+              macWindowId: cached?.macWindowId,
+              ownerName: getSourceOwnerName(config, sourceId),
+              pid: cached?.pid,
+              sessionId: cached?.sessionId,
+            }],
+          });
+
+          if (isPromiseLike(closeResult)) {
+            await closeResult;
+          }
+
+          logger.info('Closed owned app window', { source: sourceId });
+        } catch (error) {
+          logger.warn('Failed to close owned app window', {
+            source: sourceId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
 
       const chromePid = chromeLaunch?.chromePid;
 
@@ -454,8 +616,19 @@ export async function run(options = {}) {
       process.exit(0);
     };
 
-    process.once('SIGINT', () => shutdown('SIGINT'));
-    process.once('SIGTERM', () => shutdown('SIGTERM'));
+    function bindShutdownSignal(signal) {
+      process.once(signal, () => {
+        shutdown(signal).catch((error) => {
+          logger.error('Shutdown sequence failed', {
+            signal,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      });
+    }
+
+    bindShutdownSignal('SIGINT');
+    bindShutdownSignal('SIGTERM');
   }
 
   try {
@@ -548,7 +721,7 @@ export async function run(options = {}) {
               binding.pid = chromePid;
             }
           } else {
-            binding.app = configured?.app ?? getSourceOwnerName(config, sourceId);
+            binding.app = cached?.ownerName ?? configured?.app ?? getSourceOwnerName(config, sourceId);
             if (configured?.titleIncludes !== undefined) {
               binding.titleIncludes = configured.titleIncludes;
             }
@@ -676,21 +849,11 @@ export async function run(options = {}) {
         });
       }
 
-      const obsWindowBindings = {};
-      for (const [sourceId, binding] of Object.entries(result)) {
-        obsWindowBindings[sourceId] = {
-          app: getSourceOwnerName(config, sourceId),
-          pid: binding.pid,
-          macWindowId: binding.macWindowId,
-          strict: true,
-        };
-      }
-
       await (options.reconcileObsFn ?? reconcileObsPresentation)({
         config,
         logger,
         obs: typeof obs.getClient === 'function' ? obs.getClient() : obs,
-        windowBindings: obsWindowBindings,
+        windowBindings: buildObsWindowBindings(config, resolvedMacWindowBindings),
       });
     }
 
@@ -718,24 +881,11 @@ export async function run(options = {}) {
       }
 
       if (resolvedOwnedIds.length > 0) {
-        const ownedObsBindings = {};
-        for (const [sourceId, binding] of Object.entries(ownedResult)) {
-          ownedObsBindings[sourceId] = {
-            app: getSourceOwnerName(config, sourceId),
-            macWindowId: binding.macWindowId,
-            strict: true,
-          };
-
-          if (binding.pid !== undefined) {
-            ownedObsBindings[sourceId].pid = binding.pid;
-          }
-        }
-
         await (options.reconcileObsFn ?? reconcileObsPresentation)({
           config,
           logger,
           obs: typeof obs.getClient === 'function' ? obs.getClient() : obs,
-          windowBindings: ownedObsBindings,
+          windowBindings: buildObsWindowBindings(config, resolvedMacWindowBindings),
         });
       }
     }
@@ -744,10 +894,26 @@ export async function run(options = {}) {
   } catch (error) {
     phase = 'failed';
     consoleLike.error(`Coordinator failed to start: ${error instanceof Error ? error.message : String(error)}`);
-    await presenterHttp?.stop().catch(() => {});
+
+    if (presenterHttp !== null && typeof presenterHttp.stop === 'function') {
+      try {
+        await Promise.resolve(presenterHttp.stop());
+      } catch {
+        // best-effort cleanup
+      }
+    }
+
     await stopBrowserRuntime();
     await stopLaunchedChrome();
-    await presentationServer?.stop().catch(() => {});
+
+    if (presentationServer !== null && typeof presentationServer.stop === 'function') {
+      try {
+        await Promise.resolve(presentationServer.stop());
+      } catch {
+        // best-effort cleanup
+      }
+    }
+
     return 1;
   }
 

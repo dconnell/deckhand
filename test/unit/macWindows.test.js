@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { diffNewWindows } from '../../src/macWindows.js';
+import { closeMacWindow, diffNewWindows, findPidByOwnerName } from '../../src/macWindows.js';
 
 test('diffNewWindows returns windows present in after but absent from before', () => {
   const before = [
@@ -105,4 +105,32 @@ test('diffNewWindows combines rejectEmptyTitle and titleIncludes confirmation', 
     }),
     [{ windowId: 3, title: 'index.js - demo - Visual Studio Code' }],
   );
+});
+
+test('closeMacWindow is a no-op off darwin', () => {
+  const originalPlatform = process.platform;
+  Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+
+  try {
+    assert.doesNotThrow(() => closeMacWindow(42, 99));
+  } finally {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+  }
+});
+
+test('closeMacWindow ignores non-numeric arguments', () => {
+  assert.doesNotThrow(() => closeMacWindow('abc', 99));
+  assert.doesNotThrow(() => closeMacWindow(42, 'xyz'));
+  assert.doesNotThrow(() => closeMacWindow(undefined, 99));
+});
+
+test('findPidByOwnerName returns null when no windows match the owner name', () => {
+  const originalPlatform = process.platform;
+  Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+
+  try {
+    assert.equal(findPidByOwnerName('NonexistentApp'), null);
+  } finally {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+  }
 });

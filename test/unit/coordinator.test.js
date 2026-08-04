@@ -494,6 +494,54 @@ test('coordinator clears runtime window binding overrides and republishes bootst
   });
 });
 
+test('coordinator ignores observer window bindings for non-browser sources', async () => {
+  const logger = createLogger();
+  const hub = createFakeHub();
+  const obs = createFakeObs();
+  const executor = createFakeExecutor();
+  const config = createConfig();
+  config.sources.TerminalA = { id: 'TerminalA', kind: 'iterm2' };
+  config.layouts['full-terminal-a'] = {
+    id: 'full-terminal-a',
+    audienceScene: 'Full Terminal A',
+    slots: [{ source: 'TerminalA', position: 'full' }],
+    sources: ['TerminalA'],
+  };
+  config.slides.terminal = {
+    layoutId: 'full-terminal-a',
+    focus: 'TerminalA',
+    script: null,
+    commands: [],
+  };
+
+  const coordinator = createCoordinator({ config, obs, hub, executor, logger });
+
+  await coordinator.start();
+  await hub.emit('driverPositionChanged', { id: 'terminal', index: { h: 2, v: 0 }, meta: {} });
+
+  const initialPublishes = hub.state.stickyPublishes.length;
+  assert.equal(initialPublishes, 1);
+
+  await hub.emit('observerWindowBindings', {
+    bindings: {
+      TerminalA: {
+        app: 'iTerm',
+        pid: 626,
+        macWindowId: 99999,
+        strict: true,
+      },
+    },
+    cleared: [],
+    sender: { role: 'observer', sessionId: 'observer-1' },
+  });
+
+  assert.equal(hub.state.stickyPublishes.length, initialPublishes);
+  assert.equal(
+    obs.state.inputSettings.some((entry) => entry.inputName === 'Deckhand_TerminalA' && entry.inputSettings.window === 99999),
+    false,
+  );
+});
+
 test('coordinator continues after partial executor failures', async () => {
   const logger = createLogger();
   const obs = createFakeObs();

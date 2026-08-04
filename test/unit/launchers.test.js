@@ -35,6 +35,7 @@ test('buildIterm2AppleScript creates a window and writes the session text', () =
 
   assert.ok(script.includes('create window with default profile'));
   assert.ok(script.includes("write text \"cd '/repos/demo' && npm run dev\""));
+  assert.ok(script.includes('return id of (current session of'));
 });
 
 test('buildIterm2AppleScript creates a bare window when no command or cwd is configured', () => {
@@ -42,18 +43,19 @@ test('buildIterm2AppleScript creates a bare window when no command or cwd is con
 
   assert.ok(script.includes('create window with default profile'));
   assert.ok(!script.includes('write text'));
+  assert.ok(script.includes('return id of (current session of'));
 });
 
-test('buildOpenArgs builds an open -a invocation with launch args', () => {
+test('buildOpenArgs builds an open -n -a invocation with launch args', () => {
   assert.deepEqual(
     buildOpenArgs({ app: 'Visual Studio Code', args: ['--new-window', '/repos/demo'] }),
-    ['-a', 'Visual Studio Code', '--args', '--new-window', '/repos/demo'],
+    ['-n', '-a', 'Visual Studio Code', '--args', '--new-window', '/repos/demo'],
   );
 });
 
 test('buildOpenArgs omits --args when no launch args are configured', () => {
   assert.deepEqual(
     buildOpenArgs({ app: 'Visual Studio Code' }),
-    ['-a', 'Visual Studio Code'],
+    ['-n', '-a', 'Visual Studio Code'],
   );
 });

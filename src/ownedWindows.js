@@ -39,7 +39,27 @@ export async function resolveOwnedWindowBindings(options) {
         const newWindows = diffNewWindows(before, after, entry.confirm);
 
         if (newWindows.length > 0) {
-          resolved = { macWindowId: newWindows[0].windowId };
+          // When an app launch creates multiple CGWindowID entries (Electron
+          // apps create helper/toolbar windows alongside the main window),
+          // pick the one with the largest bounds area — that is the real
+          // editor/application window, not a 1800×39 toolbar strip.
+          // For single-window results (iTerm2), newWindows[0] is sufficient.
+          const best = newWindows.length === 1
+            ? newWindows[0]
+            : newWindows.reduce((a, b) => {
+              const areaA = (a.width ?? 0) * (a.height ?? 0);
+              const areaB = (b.width ?? 0) * (b.height ?? 0);
+              return areaB > areaA ? b : a;
+            });
+          resolved = { macWindowId: best.windowId };
+
+          if (typeof best.pid === 'number') {
+            resolved.pid = best.pid;
+          }
+
+          if (typeof best.ownerName === 'string') {
+            resolved.ownerName = best.ownerName;
+          }
           break;
         }
 
@@ -53,8 +73,12 @@ export async function resolveOwnedWindowBindings(options) {
         continue;
       }
 
-      if (typeof launchResult?.pid === 'number') {
+      if (resolved.pid === undefined && typeof launchResult?.pid === 'number') {
         resolved.pid = launchResult.pid;
+      }
+
+      if (resolved.sessionId === undefined && typeof launchResult?.sessionId === 'string') {
+        resolved.sessionId = launchResult.sessionId;
       }
 
       results[entry.sourceId] = resolved;

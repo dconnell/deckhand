@@ -134,7 +134,7 @@ test('obs client applies window capture settings for managed sources', async () 
           owner_pid: 47213,
           window: 12345,
         },
-        overlay: true,
+        overlay: false,
       },
     },
   ]);

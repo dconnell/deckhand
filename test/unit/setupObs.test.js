@@ -4,7 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 
-import { setupObs } from '../../src/setupObs.js';
+import { reconcileObsPresentation, setupObs } from '../../src/setupObs.js';
 
 function createLogger() {
   return {
@@ -49,6 +49,26 @@ function createConfig() {
         Slide: { app: 'Google Chrome', titleIncludes: 'Deckhand Deck' },
         BrowserA: { app: 'Google Chrome', titleIncludes: 'Deckhand Demo Primary' },
         BrowserB: { app: 'Google Chrome', titleIncludes: 'Deckhand Demo Secondary' },
+      },
+    },
+  };
+}
+
+function createStrictBindingConfig() {
+  return {
+    obs: { url: 'ws://127.0.0.1:4455', password: '' },
+    layouts: {
+      'full-slide': {
+        id: 'full-slide',
+        audienceScene: 'Full Slide',
+        slots: [{ source: 'Slide', position: 'full' }],
+        sources: ['Slide'],
+      },
+    },
+    presenter: {
+      stage: { x: 0, y: 0, width: 1800, height: 1168 },
+      windows: {
+        Slide: { app: 'Google Chrome', titleIncludes: 'Deckhand Deck' },
       },
     },
   };
@@ -372,6 +392,94 @@ test('setupObs recreates stale managed inputs with bootstrap capture settings', 
       },
     ],
   );
+});
+
+test('reconcileObsPresentation applies strict bindings with a two-step window reset before exact id', async () => {
+  const logger = createLogger();
+  const FakeObsSocket = createFakeObsSocket();
+
+  const bootstrapExitCode = await setupObs({
+    config: createStrictBindingConfig(),
+    logger,
+    OBSWebSocketClass: FakeObsSocket,
+  });
+
+  assert.equal(bootstrapExitCode, 0);
+
+  const client = FakeObsSocket.getLatestInstance();
+  client.calls.length = 0;
+  client.sceneItemsByScene.set('Deckhand_Full Slide', []);
+
+  await reconcileObsPresentation({
+    config: createStrictBindingConfig(),
+    logger,
+    obs: client,
+    windowBindings: {
+      Slide: {
+        app: 'Google Chrome',
+        macWindowId: 12345,
+        pid: 47213,
+        strict: true,
+      },
+    },
+  });
+
+  assert.equal(client.calls.some((entry) => entry.method === 'RemoveInput' && entry.payload.inputName === 'Deckhand_Slide'), false);
+
+  const slideSettingCalls = client.calls.filter(
+    (entry) => entry.method === 'SetInputSettings' && entry.payload.inputName === 'Deckhand_Slide',
+  );
+
+  assert.ok(slideSettingCalls.length >= 2);
+  const resetCall = slideSettingCalls.find((entry) => entry.payload.inputSettings?.window === 0);
+  const strictCall = slideSettingCalls.find((entry) => entry.payload.inputSettings?.window === 12345);
+  assert.ok(resetCall);
+  assert.ok(strictCall);
+});
+
+test('reconcileObsPresentation rebuilds a managed scene when OBS rejects CreateSceneItem', async () => {
+  const logger = createLogger();
+  const FakeObsSocket = createFakeObsSocket();
+
+  const bootstrapExitCode = await setupObs({
+    config: createConfig(),
+    logger,
+    OBSWebSocketClass: FakeObsSocket,
+  });
+
+  assert.equal(bootstrapExitCode, 0);
+
+  const client = FakeObsSocket.getLatestInstance();
+  client.calls.length = 0;
+  for (const sceneName of client.scenes) {
+    client.sceneItemsByScene.set(sceneName, []);
+  }
+
+  let injectedFailure = false;
+  const originalCall = client.call.bind(client);
+  client.call = async (method, payload = {}) => {
+    if (!injectedFailure && method === 'CreateSceneItem') {
+      injectedFailure = true;
+      const error = new Error('Failed to create the scene item.');
+      error.code = 700;
+      throw error;
+    }
+
+    return originalCall(method, payload);
+  };
+
+  await reconcileObsPresentation({
+    config: createConfig(),
+    logger,
+    obs: client,
+    windowBindings: {},
+  });
+
+  assert.equal(injectedFailure, true);
+  assert.ok(client.calls.some((entry) => entry.method === 'RemoveScene' && entry.payload.sceneName.startsWith('Deckhand_')));
+  assert.ok(client.calls.some((entry) => entry.method === 'CreateScene' && entry.payload.sceneName.startsWith('Deckhand_')));
+  const fullSlideItems = client.sceneItemsByScene.get('Deckhand_Full Slide') ?? [];
+  assert.ok(fullSlideItems.some((item) => item.sourceName === 'Deckhand_Slide'));
 });
 
 test('setupObs removes stale scene items that are not part of the layout model', async () => {

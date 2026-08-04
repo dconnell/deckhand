@@ -3,15 +3,17 @@ import { spawn } from 'node:child_process';
 /**
  * Build the argv for launching an app via macOS `open`.
  *
- * Produces `['-a', appName]`, appending `--args` plus any launch arguments
- * when supplied. The array is intended to follow `open` on the command line
- * (e.g. `spawn('open', buildOpenArgs({...}))`).
+ * Produces `['-n', '-a', appName]`, appending `--args` plus any launch arguments
+ * when supplied. The `-n` flag forces a **new instance** so the diff resolver
+ * can find a newly-appeared CGWindowID — without it, Electron single-instance
+ * apps (VS Code, Slack) silently hand off to the already-running process and
+ * reuse the existing window, producing no new CGWindowID to bind.
  *
  * @param {{ app: string, args?: string[] }} options Launch options.
  * @returns {string[]}
  */
 export function buildOpenArgs({ app, args }) {
-  const openArgs = ['-a', app];
+  const openArgs = ['-n', '-a', app];
 
   if (Array.isArray(args) && args.length > 0) {
     openArgs.push('--args', ...args);

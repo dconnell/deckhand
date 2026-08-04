@@ -11,6 +11,7 @@ import {
   computeDesiredManagedNames,
   computeManagedPruneSet,
   deckhandInputName,
+  isDeckhandManagedName,
 } from './obsNames.js';
 import { resolvePresentationPaths } from './presentations.js';
 import { loadPresentationConfig } from './presentations.js';
@@ -109,6 +110,132 @@ export function kindForPlatform(platform) {
   return 'window_capture';
 }
 
+function isInputNameConflictError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /already exists by that input name/i.test(message);
+}
+
+function isSceneItemCreateFailure(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = (typeof error === 'object' && error !== null && 'code' in error)
+    ? error.code
+    : null;
+  return code === 700 || /failed to create the scene item/i.test(message);
+}
+
+async function createInputWithRetry(obs, payload, logger, { retries = 5, retryDelayMs = 100 } = {}) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      return await obs.call('CreateInput', payload);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      if (!isInputNameConflictError(error) || attempt >= retries) {
+        throw lastError;
+      }
+
+      logger.warn('OBS input name still reserved after removal; retrying CreateInput', {
+        attempt,
+        input: payload.inputName,
+        retries,
+      });
+
+      await new Promise((resolve) => {
+        setTimeout(resolve, retryDelayMs);
+      });
+    }
+  }
+
+  throw lastError ?? new Error('CreateInput failed after retries');
+}
+
+async function resetManagedObsState(obs, logger) {
+  const sceneList = await obs.call('GetSceneList');
+  const managedScenes = sceneList.scenes
+    .map((scene) => scene.sceneName)
+    .filter((sceneName) => isDeckhandManagedName(sceneName));
+
+  for (const sceneName of managedScenes) {
+    try {
+      await obs.call('RemoveScene', { sceneName });
+      logger.warn('Removed Deckhand OBS scene during recovery reset', { scene: sceneName });
+    } catch (error) {
+      logger.warn('Failed to remove Deckhand OBS scene during recovery reset', {
+        error: error instanceof Error ? error.message : String(error),
+        scene: sceneName,
+      });
+    }
+  }
+
+  async function removeManagedInput(entry) {
+    const removePayload = entry.inputUuid === undefined
+      ? { inputName: entry.inputName }
+      : { inputUuid: entry.inputUuid };
+
+    try {
+      await obs.call('RemoveInput', removePayload);
+    } catch (error) {
+      logger.warn('Failed to remove Deckhand OBS input during recovery reset', {
+        error: error instanceof Error ? error.message : String(error),
+        input: entry.inputName,
+      });
+    }
+  }
+
+  let inputList = await obs.call('GetInputList');
+  let managedInputs = inputList.inputs.filter((entry) => isDeckhandManagedName(entry.inputName));
+
+  for (const entry of managedInputs) {
+    await removeManagedInput(entry);
+  }
+
+  const maxRemovalPollAttempts = 20;
+  const pollDelayMs = 250;
+  for (let attempt = 1; attempt <= maxRemovalPollAttempts; attempt += 1) {
+    inputList = await obs.call('GetInputList');
+    managedInputs = inputList.inputs.filter((entry) => isDeckhandManagedName(entry.inputName));
+
+    if (managedInputs.length === 0) {
+      return;
+    }
+
+    if (attempt < maxRemovalPollAttempts) {
+      for (const entry of managedInputs) {
+        await removeManagedInput(entry);
+      }
+
+      await new Promise((resolve) => {
+        setTimeout(resolve, pollDelayMs);
+      });
+    }
+  }
+
+  logger.warn('Deckhand OBS inputs remained after reset; renaming stale inputs to unblock reconcile', {
+    inputs: managedInputs.map((entry) => entry.inputName),
+  });
+
+  const suffix = Date.now();
+  for (const [index, entry] of managedInputs.entries()) {
+    const renamePayload = entry.inputUuid === undefined
+      ? { inputName: entry.inputName }
+      : { inputUuid: entry.inputUuid };
+
+    try {
+      await obs.call('SetInputName', {
+        ...renamePayload,
+        newInputName: `${entry.inputName}__orphan_${suffix}_${index}`,
+      });
+    } catch (error) {
+      logger.warn('Failed to rename stale Deckhand OBS input during recovery reset', {
+        error: error instanceof Error ? error.message : String(error),
+        input: entry.inputName,
+      });
+    }
+  }
+}
+
 async function createSceneReferences(obs, scene, existingInputs) {
   const sceneItemList = await obs.call('GetSceneItemList', { sceneName: scene.sceneName });
   const itemsBySource = new Map();
@@ -153,17 +280,27 @@ async function pruneSceneItems(obs, scene, logger) {
   }
 }
 
-async function ensureManagedInput(obs, scene, item, existingInputs, kind, inputKindByName, inputSettings, logger) {
+async function ensureManagedInput(
+  obs,
+  scene,
+  item,
+  existingInputs,
+  kind,
+  inputKindByName,
+  inputSettings,
+  logger,
+  { strictWindowBinding = false } = {},
+) {
   const existingKind = inputKindByName.get(item.sourceName) ?? null;
 
   if (!existingInputs.has(item.sourceName)) {
-    const created = await obs.call('CreateInput', {
+    const created = await createInputWithRetry(obs, {
       sceneItemEnabled: true,
       sceneName: scene.sceneName,
       inputKind: kind,
       inputName: item.sourceName,
       inputSettings,
-    });
+    }, logger);
     existingInputs.add(item.sourceName);
     inputKindByName.set(item.sourceName, kind);
     logger.info('Created OBS input', { kind, source: item.sourceName });
@@ -178,28 +315,46 @@ async function ensureManagedInput(obs, scene, item, existingInputs, kind, inputK
       source: item.sourceName,
     });
 
-    const recreated = await obs.call('CreateInput', {
+    const recreated = await createInputWithRetry(obs, {
       sceneItemEnabled: true,
       sceneName: scene.sceneName,
       inputKind: kind,
       inputName: item.sourceName,
       inputSettings,
-    });
+    }, logger);
     inputKindByName.set(item.sourceName, kind);
     logger.info('Recreated OBS input', { kind, source: item.sourceName });
     return recreated.sceneItemId;
   }
 
+  if (strictWindowBinding && typeof inputSettings.window === 'number' && inputSettings.window > 0) {
+    await obs.call('SetInputSettings', {
+      inputName: item.sourceName,
+      inputSettings: {
+        ...inputSettings,
+        window: 0,
+      },
+      overlay: false,
+    });
+  }
+
   await obs.call('SetInputSettings', {
     inputName: item.sourceName,
     inputSettings,
-    overlay: true,
+    overlay: false,
   });
 
   return null;
 }
 
-export async function reconcileObsPresentation({ config, logger, obs, canvasOptions = { check: false, setCanvas: false }, windowBindings = {} }) {
+export async function reconcileObsPresentation({
+  config,
+  logger,
+  obs,
+  canvasOptions = { check: false, setCanvas: false },
+  windowBindings = {},
+  _recovery = { resetAttempted: false },
+}) {
   const version = await obs.call('GetVersion');
   const kind = kindForPlatform(version.platform);
   const video = await obs.call('GetVideoSettings');
@@ -249,98 +404,130 @@ export async function reconcileObsPresentation({ config, logger, obs, canvasOpti
   const existingInputs = new Set(inputList.inputs.map((entry) => entry.inputName));
   const inputKindByName = new Map(inputList.inputs.map((entry) => [entry.inputName, entry.inputKind]));
 
-  if (config.obs?.prune !== false) {
-    const desired = computeDesiredManagedNames(config);
-    const prune = computeManagedPruneSet({
-      existingInputs: [...existingInputs],
-      existingScenes: [...existingScenes],
-      desired,
-    });
+  try {
+    if (config.obs?.prune !== false) {
+      const desired = computeDesiredManagedNames(config);
+      const prune = computeManagedPruneSet({
+        existingInputs: [...existingInputs],
+        existingScenes: [...existingScenes],
+        desired,
+      });
 
-    for (const sceneName of prune.scenes) {
-      try {
-        await obs.call('RemoveScene', { sceneName });
-        existingScenes.delete(sceneName);
-        logger.info('Pruned stale Deckhand OBS scene', { scene: sceneName });
-      } catch (error) {
-        logger.warn('Failed to prune stale Deckhand OBS scene', {
-          error: error instanceof Error ? error.message : String(error),
-          scene: sceneName,
-        });
-      }
-    }
-
-    for (const inputName of prune.inputs) {
-      try {
-        await obs.call('RemoveInput', { inputName });
-        existingInputs.delete(inputName);
-        inputKindByName.delete(inputName);
-        logger.info('Pruned stale Deckhand OBS input', { input: inputName });
-      } catch (error) {
-        logger.warn('Failed to prune stale Deckhand OBS input', {
-          error: error instanceof Error ? error.message : String(error),
-          input: inputName,
-        });
-      }
-    }
-  }
-
-  for (const scene of sceneDefinitions.scenes) {
-    if (!existingScenes.has(scene.sceneName)) {
-      await obs.call('CreateScene', { sceneName: scene.sceneName });
-      existingScenes.add(scene.sceneName);
-      logger.info('Created OBS scene', { scene: scene.sceneName });
-    }
-
-    await pruneSceneItems(obs, scene, logger);
-    const sceneRefs = await createSceneReferences(obs, scene, existingInputs);
-
-    for (const item of scene.items) {
-      const inputSettings = buildPresenterWindowSettings(config, item.source, windowBindings);
-      let sceneItemId = await ensureManagedInput(obs, scene, item, sceneRefs.existingInputs, kind, inputKindByName, inputSettings, logger);
-
-      if (sceneItemId === null) {
-        const queue = sceneRefs.itemsBySource.get(item.sourceName);
-
-        if (queue && queue.length > 0) {
-          sceneItemId = queue.shift();
-        } else {
-          const referenced = await obs.call('CreateSceneItem', {
-            sceneItemEnabled: true,
-            sceneName: scene.sceneName,
-            sourceName: item.sourceName,
+      for (const sceneName of prune.scenes) {
+        try {
+          await obs.call('RemoveScene', { sceneName });
+          existingScenes.delete(sceneName);
+          logger.info('Pruned stale Deckhand OBS scene', { scene: sceneName });
+        } catch (error) {
+          logger.warn('Failed to prune stale Deckhand OBS scene', {
+            error: error instanceof Error ? error.message : String(error),
+            scene: sceneName,
           });
-          sceneItemId = referenced.sceneItemId;
         }
       }
 
-      await obs.call('SetSceneItemTransform', {
-        sceneItemId,
-        sceneName: scene.sceneName,
-        sceneItemTransform: item.transform,
+      for (const inputName of prune.inputs) {
+        try {
+          await obs.call('RemoveInput', { inputName });
+          existingInputs.delete(inputName);
+          inputKindByName.delete(inputName);
+          logger.info('Pruned stale Deckhand OBS input', { input: inputName });
+        } catch (error) {
+          logger.warn('Failed to prune stale Deckhand OBS input', {
+            error: error instanceof Error ? error.message : String(error),
+            input: inputName,
+          });
+        }
+      }
+    }
+
+    for (const scene of sceneDefinitions.scenes) {
+      if (!existingScenes.has(scene.sceneName)) {
+        await obs.call('CreateScene', { sceneName: scene.sceneName });
+        existingScenes.add(scene.sceneName);
+        logger.info('Created OBS scene', { scene: scene.sceneName });
+      }
+
+      await pruneSceneItems(obs, scene, logger);
+      const sceneRefs = await createSceneReferences(obs, scene, existingInputs);
+
+      for (const item of scene.items) {
+        const inputSettings = buildPresenterWindowSettings(config, item.source, windowBindings);
+        const strictWindowBinding = windowBindings[item.source]?.strict === true
+          && windowBindings[item.source]?.macWindowId !== undefined;
+        let sceneItemId = await ensureManagedInput(
+          obs,
+          scene,
+          item,
+          sceneRefs.existingInputs,
+          kind,
+          inputKindByName,
+          inputSettings,
+          logger,
+          { strictWindowBinding },
+        );
+
+        if (sceneItemId === null) {
+          const queue = sceneRefs.itemsBySource.get(item.sourceName);
+
+          if (queue && queue.length > 0) {
+            sceneItemId = queue.shift();
+          } else {
+            const referenced = await obs.call('CreateSceneItem', {
+              sceneItemEnabled: true,
+              sceneName: scene.sceneName,
+              sourceName: item.sourceName,
+            });
+            sceneItemId = referenced.sceneItemId;
+          }
+        }
+
+        await obs.call('SetSceneItemTransform', {
+          sceneItemId,
+          sceneName: scene.sceneName,
+          sceneItemTransform: item.transform,
+        });
+      }
+    }
+
+    const allBrowserSettings = buildAllBrowserSourceSettings(config, windowBindings);
+    for (const [sourceId, inputSettings] of Object.entries(allBrowserSettings)) {
+      const inputName = deckhandInputName(sourceId);
+      if (existingInputs.has(inputName)) {
+        await obs.call('SetInputSettings', {
+          inputName,
+          inputSettings,
+          overlay: false,
+        });
+      }
+    }
+
+    logger.info('OBS setup complete', {
+      canvas: canvasPolicy.usesCanvas,
+      scenes: sceneDefinitions.scenes.map((scene) => scene.sceneName),
+      sources: sceneDefinitions.sources,
+    });
+
+    return { canvasPolicy };
+  } catch (error) {
+    if (!_recovery.resetAttempted && isSceneItemCreateFailure(error)) {
+      logger.warn('OBS rejected scene item creation; resetting Deckhand OBS state and retrying once', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      await resetManagedObsState(obs, logger);
+      return reconcileObsPresentation({
+        config,
+        logger,
+        obs,
+        canvasOptions,
+        windowBindings,
+        _recovery: { resetAttempted: true },
       });
     }
+
+    throw error;
   }
-
-  const allBrowserSettings = buildAllBrowserSourceSettings(config, windowBindings);
-  for (const [sourceId, inputSettings] of Object.entries(allBrowserSettings)) {
-    const inputName = deckhandInputName(sourceId);
-    if (existingInputs.has(inputName)) {
-      await obs.call('SetInputSettings', {
-        inputName,
-        inputSettings,
-        overlay: true,
-      });
-    }
-  }
-
-  logger.info('OBS setup complete', {
-    canvas: canvasPolicy.usesCanvas,
-    scenes: sceneDefinitions.scenes.map((scene) => scene.sceneName),
-    sources: sceneDefinitions.sources,
-  });
-
-  return { canvasPolicy };
 }
 
 /**

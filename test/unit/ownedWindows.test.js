@@ -177,3 +177,76 @@ test('resolveOwnedWindowBindings launch errors are logged and the source is skip
   assert.equal(errors.length, 1);
   assert.ok(/Boom/.test(JSON.stringify(errors[0])));
 });
+
+test('resolveOwnedWindowBindings extracts pid from diff-result windows', async () => {
+  let launched = false;
+  const entry = {
+    sourceId: 'Terminal',
+    snapshot() {
+      return launched
+        ? [{ windowId: 7, title: 'launch terminal', pid: 4321 }, { windowId: 42, title: 'demo', pid: 4321 }]
+        : [{ windowId: 7, title: 'launch terminal', pid: 4321 }];
+    },
+    async launch() {
+      launched = true;
+      return {};
+    },
+  };
+
+  const result = await resolveOwnedWindowBindings({
+    entries: [entry],
+    delay: async () => {},
+    logger: createNoopLogger(),
+  });
+
+  assert.deepEqual(result, { Terminal: { macWindowId: 42, pid: 4321 } });
+});
+
+test('resolveOwnedWindowBindings falls back to launchResult pid when diff windows lack one', async () => {
+  let launched = false;
+  const entry = {
+    sourceId: 'Editor',
+    snapshot() {
+      return launched
+        ? [{ windowId: 1, title: 'old' }, { windowId: 2, title: 'new' }]
+        : [{ windowId: 1, title: 'old' }];
+    },
+    async launch() {
+      launched = true;
+      return { pid: 9999 };
+    },
+  };
+
+  const result = await resolveOwnedWindowBindings({
+    entries: [entry],
+    delay: async () => {},
+    logger: createNoopLogger(),
+  });
+
+  assert.deepEqual(result, { Editor: { macWindowId: 2, pid: 9999 } });
+});
+
+test('resolveOwnedWindowBindings carries sessionId from launchResult for iTerm2 closing', async () => {
+  let launched = false;
+  const entry = {
+    sourceId: 'Terminal',
+    snapshot() {
+      return launched
+        ? [{ windowId: 10, title: 'launch' }, { windowId: 42, title: 'new' }]
+        : [{ windowId: 10, title: 'launch' }];
+    },
+    async launch() {
+      launched = true;
+      return { sessionId: 'ABCD-1234-EF56' };
+    },
+  };
+
+  const result = await resolveOwnedWindowBindings({
+    entries: [entry],
+    delay: async () => {},
+    logger: createNoopLogger(),
+  });
+
+  assert.equal(result.Terminal.macWindowId, 42);
+  assert.equal(result.Terminal.sessionId, 'ABCD-1234-EF56');
+});
