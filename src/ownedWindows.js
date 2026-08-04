@@ -53,6 +53,9 @@ export async function resolveOwnedWindowBindings(options) {
             : newWindows.reduce((a, b) => {
               const areaA = (a.width ?? 0) * (a.height ?? 0);
               const areaB = (b.width ?? 0) * (b.height ?? 0);
+              if (areaB === areaA) {
+                return b.windowId > a.windowId ? b : a;
+              }
               return areaB > areaA ? b : a;
             });
           const nextStableCount = (stableCounts.get(best.windowId) ?? 0) + 1;

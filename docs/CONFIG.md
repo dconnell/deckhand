@@ -204,8 +204,8 @@ process).
 
 At shutdown, Deckhand closes only the tracked window for each `app` source by
 exact `macWindowId` (not the whole app process). If the app shows an
-unsaved-changes sheet, Deckhand attempts to press Don't Save/Discard so
-shutdown can complete without manual prompts.
+unsaved-changes sheet, Deckhand attempts to press Don't Save/Discard for that
+tracked window so shutdown can complete without manual prompts.
 
 ```json
 "Editor": {

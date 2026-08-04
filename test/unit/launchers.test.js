@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { buildIterm2WriteText, buildIterm2AppleScript } from '../../src/launchers/iterm2.js';
-import { buildOpenArgs } from '../../src/launchers/app.js';
+import { buildOpenArgs, buildVsCodeLaunchArgs, isVisualStudioCodeApp } from '../../src/launchers/app.js';
 
 test('buildIterm2WriteText composes cd and command for the new session', () => {
   assert.equal(
@@ -57,5 +57,35 @@ test('buildOpenArgs omits --args when no launch args are configured', () => {
   assert.deepEqual(
     buildOpenArgs({ app: 'Visual Studio Code' }),
     ['-n', '-a', 'Visual Studio Code'],
+  );
+});
+
+test('isVisualStudioCodeApp matches Visual Studio Code aliases', () => {
+  assert.equal(isVisualStudioCodeApp('Visual Studio Code'), true);
+  assert.equal(isVisualStudioCodeApp('Code'), true);
+  assert.equal(isVisualStudioCodeApp('visual studio code'), true);
+  assert.equal(isVisualStudioCodeApp('Visual Studio'), false);
+});
+
+test('buildVsCodeLaunchArgs injects --new-window and --user-data-dir when absent', () => {
+  assert.deepEqual(
+    buildVsCodeLaunchArgs({ args: ['/repos/demo'] }),
+    ['--new-window', '/repos/demo'],
+  );
+});
+
+test('buildVsCodeLaunchArgs preserves an explicit --new-window', () => {
+  assert.deepEqual(
+    buildVsCodeLaunchArgs({
+      args: ['--new-window', '/repos/demo'],
+    }),
+    ['--new-window', '/repos/demo'],
+  );
+});
+
+test('buildVsCodeLaunchArgs tolerates non-array args input', () => {
+  assert.deepEqual(
+    buildVsCodeLaunchArgs({ args: undefined }),
+    ['--new-window'],
   );
 });

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  buildCloseWindowByBoundsSwiftScript,
   buildCloseWindowSwiftScript,
   closeMacWindow,
   diffNewWindows,
@@ -115,7 +116,7 @@ test('diffNewWindows combines rejectEmptyTitle and titleIncludes confirmation', 
 test('buildCloseWindowSwiftScript emits the plain close flow by default', () => {
   const script = buildCloseWindowSwiftScript();
 
-  assert.match(script, /kAXCloseAction/);
+  assert.match(script, /"AXClose" as CFString/);
   assert.match(script, /kAXCloseButtonAttribute/);
   assert.doesNotMatch(script, /kAXSheetsAttribute/);
   assert.doesNotMatch(script, /don't save/i);
@@ -124,9 +125,42 @@ test('buildCloseWindowSwiftScript emits the plain close flow by default', () => 
 test('buildCloseWindowSwiftScript adds discard-without-saving handling when requested', () => {
   const script = buildCloseWindowSwiftScript({ discardUnsavedChanges: true });
 
-  assert.match(script, /kAXSheetsAttribute/);
+  assert.match(script, /"AXSheets" as CFString/);
   assert.match(script, /don't save/i);
   assert.match(script, /discard/i);
+});
+
+test('buildCloseWindowSwiftScript discard helpers recurse through collectChildElements', () => {
+  const script = buildCloseWindowSwiftScript({ discardUnsavedChanges: true });
+
+  assert.match(script, /for child in collectChildElements\(element\)/);
+});
+
+test('buildCloseWindowByBoundsSwiftScript closes with literal AX action names for SDK compatibility', () => {
+  const script = buildCloseWindowByBoundsSwiftScript();
+
+  assert.match(script, /"AXClose" as CFString/);
+  assert.doesNotMatch(script, /kAXCloseAction/);
+});
+
+test('buildCloseWindowByBoundsSwiftScript traverses AX descendants to resolve real AXWindow elements', () => {
+  const script = buildCloseWindowByBoundsSwiftScript();
+
+  assert.match(script, /func collectWindows\(/);
+  assert.match(script, /kAXWindowRole/);
+});
+
+test('buildCloseWindowByBoundsSwiftScript keeps a strict score threshold to avoid closing the wrong window', () => {
+  const script = buildCloseWindowByBoundsSwiftScript();
+
+  assert.match(script, /bestScore <= 12/);
+});
+
+test('buildCloseWindowByBoundsSwiftScript uses literal AX sheet attribute in discard mode', () => {
+  const script = buildCloseWindowByBoundsSwiftScript({ discardUnsavedChanges: true });
+
+  assert.match(script, /"AXSheets" as CFString/);
+  assert.doesNotMatch(script, /kAXSheetsAttribute/);
 });
 
 test('buildCloseWindowSwiftScript includes close-button action in discard mode', () => {
@@ -150,6 +184,14 @@ test('closeMacWindow ignores non-numeric arguments', () => {
   assert.equal(closeMacWindow('abc', 99), false);
   assert.equal(closeMacWindow(42, 'xyz'), false);
   assert.equal(closeMacWindow(undefined, 99), false);
+});
+
+test('buildCloseWindowSwiftScript targets windows by exact CGWindowID', () => {
+  const script = buildCloseWindowSwiftScript();
+
+  assert.match(script, /targetWindowId = UInt32\(CommandLine\.arguments\[1\]\)!/);
+  assert.match(script, /_AXUIElementGetWindow/);
+  assert.match(script, /if windowId != targetWindowId/);
 });
 
 test('findPidByOwnerName returns null when no windows match the owner name', () => {

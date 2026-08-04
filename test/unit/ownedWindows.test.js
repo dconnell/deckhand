@@ -291,3 +291,33 @@ test('resolveOwnedWindowBindings can require stable repeated sightings before bi
     Editor: { macWindowId: 21, pid: 9000 },
   });
 });
+
+test('resolveOwnedWindowBindings prefers the newest window when competing windows have equal area', async () => {
+  let launched = false;
+  const entry = {
+    sourceId: 'Editor',
+    snapshot() {
+      return launched
+        ? [
+            { windowId: 10, title: 'existing', width: 1200, height: 800 },
+            { windowId: 11, title: 'new-a', width: 1200, height: 800, pid: 7777 },
+            { windowId: 12, title: 'new-b', width: 1200, height: 800, pid: 7777 },
+          ]
+        : [{ windowId: 10, title: 'existing', width: 1200, height: 800 }];
+    },
+    async launch() {
+      launched = true;
+      return {};
+    },
+  };
+
+  const result = await resolveOwnedWindowBindings({
+    entries: [entry],
+    delay: async () => {},
+    logger: createNoopLogger(),
+  });
+
+  assert.deepEqual(result, {
+    Editor: { macWindowId: 12, pid: 7777 },
+  });
+});

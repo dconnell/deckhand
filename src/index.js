@@ -20,7 +20,7 @@ import { createWsTransport, discoverCdpEndpoint, launchChromeSession } from './c
 import { closeMacWindow, enumerateWindowsByOwnerName, enumerateWindowsByPid } from './macWindows.js';
 import { resolveOwnedWindowBindings } from './ownedWindows.js';
 import { closeIterm2OwnedWindow, launchIterm2Window } from './launchers/iterm2.js';
-import { launchAppWindow } from './launchers/app.js';
+import { isVisualStudioCodeApp, launchAppWindow } from './launchers/app.js';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 
@@ -196,6 +196,14 @@ function buildObsWindowBindings(config, resolvedMacWindowBindings) {
  * @returns {Promise<Record<string, { macWindowId: number, pid?: number }>>}
  */
 async function defaultResolveOwnedWindowBindings({ config, logger }) {
+  function ownerPrefixForApp(appName) {
+    if (isVisualStudioCodeApp(appName)) {
+      return 'Code';
+    }
+
+    return appName;
+  }
+
   const entries = [];
 
   for (const [sourceId, source] of listOwnedAppSourceEntries(config)) {
@@ -208,7 +216,7 @@ async function defaultResolveOwnedWindowBindings({ config, logger }) {
     } else if (source.kind === 'app') {
       entries.push({
         sourceId,
-        snapshot: () => enumerateWindowsByOwnerName(''),
+        snapshot: () => enumerateWindowsByOwnerName(ownerPrefixForApp(source.app)),
         launch: () => launchAppWindow({ app: source.app, args: source.args, cwd: source.cwd, logger }),
         confirm: { stableSamples: 2 },
       });
@@ -222,6 +230,7 @@ async function defaultResolveOwnedWindowBindings({ config, logger }) {
     delay: (ms) => new Promise((resolve) => {
       setTimeout(resolve, ms);
     }),
+    maxAttempts: 30,
     logger,
   });
 }
@@ -456,7 +465,7 @@ function isMainModule(metaUrl) {
 /**
  * Load config, compose adapters, and start the coordinator process.
  *
- * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, createPresentationServerFn?: typeof createPresentationServer, createBrowserSessionFn?: typeof createBrowserSession, createBrowserCommandExecutorFn?: typeof createBrowserCommandExecutor, createCdpClientFn?: typeof createCdpClient, launchChromeSessionFn?: typeof launchChromeSession, discoverCdpEndpointFn?: typeof discoverCdpEndpoint, reconcileObsFn?: typeof reconcileObsPresentation, waitForDriverPositionFn?: typeof waitForFirstDriverPosition, waitForPresentationObserverFn?: typeof waitForPresentationObserver, installSignalHandlers?: boolean, presenterAssetsPath?: string }} [options] Startup options.
+ * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, createPresentationServerFn?: typeof createPresentationServer, createBrowserSessionFn?: typeof createBrowserSession, createBrowserCommandExecutorFn?: typeof createBrowserCommandExecutor, createCdpClientFn?: typeof createCdpClient, launchChromeSessionFn?: typeof launchChromeSession, discoverCdpEndpointFn?: typeof discoverCdpEndpoint, reconcileObsFn?: typeof reconcileObsPresentation, waitForDriverPositionFn?: typeof waitForFirstDriverPosition, waitForPresentationObserverFn?: typeof waitForPresentationObserver, installSignalHandlers?: boolean, presenterAssetsPath?: string, closeMacWindowFn?: typeof closeMacWindow, terminateProcessGroupFn?: typeof terminateProcessGroup }} [options] Startup options.
  * @returns {Promise<number>}
  */
 export async function run(options = {}) {
@@ -467,6 +476,8 @@ export async function run(options = {}) {
   const consoleLike = options.consoleLike ?? console;
   const installSignalHandlers = options.installSignalHandlers ?? true;
   const presenterAssetsPath = options.presenterAssetsPath ?? path.join(cwd, 'presenter-web');
+  const closeMacWindowFn = options.closeMacWindowFn ?? closeMacWindow;
+  const terminateProcessGroupFn = options.terminateProcessGroupFn ?? terminateProcessGroup;
 
   try {
     await access(configPath);
@@ -547,13 +558,24 @@ export async function run(options = {}) {
       } of bindings) {
         if (kind === 'iterm2') {
           closeIterm2OwnedWindow(sessionId);
+        } else if (kind === 'app') {
+          if (typeof macWindowId === 'number' && typeof pid === 'number') {
+            const closed = closeMacWindowFn(macWindowId, pid, { discardUnsavedChanges });
+            if (!closed) {
+              logger.warn('Owned app window close did not confirm closure; leaving app process running', {
+                source: sourceId,
+                macWindowId,
+                pid,
+              });
+            }
+          }
         } else if (typeof macWindowId === 'number' && typeof pid === 'number') {
-          const closed = closeMacWindow(macWindowId, pid, { discardUnsavedChanges });
+          const closed = closeMacWindowFn(macWindowId, pid, { discardUnsavedChanges });
           if (!closed) {
-            await terminateProcessGroup(pid, logger, sourceId ?? 'app');
+            await terminateProcessGroupFn(pid, logger, sourceId ?? 'app');
           }
         } else {
-          await terminateProcessGroup(pid, logger, sourceId ?? 'app');
+          await terminateProcessGroupFn(pid, logger, sourceId ?? 'app');
         }
       }
     });
