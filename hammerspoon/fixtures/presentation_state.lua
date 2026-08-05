@@ -25,6 +25,13 @@ return {
     Slide = { app = "Safari", titleIncludes = "Deckhand Deck" },
     BrowserA = { app = "Google Chrome", titleIncludes = "Deckhand BrowserA", pid = 47213 },
     BrowserB = { app = "Google Chrome", titleIncludes = "Deckhand BrowserB", pid = 47213 },
+    Presenter = { app = "Google Chrome", titleIncludes = "Deckhand Presenter" },
+  },
+  overlays = {
+    {
+      source = "Presenter",
+      rect = { x = 0, y = 1120, w = 1800, h = 48 },
+    },
   },
   focus = "Terminal",
   script = "Walk through the init flow.\nEmphasize line 42.",

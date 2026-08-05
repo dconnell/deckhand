@@ -219,6 +219,10 @@ export function createPresentationStateMessage(state) {
     payload.managedWindowBindings = state.managedWindowBindings;
   }
 
+  if (state.overlays !== undefined) {
+    payload.overlays = state.overlays;
+  }
+
   return payload;
 }
 

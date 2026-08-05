@@ -220,7 +220,11 @@
       "language": "en"
     },
     "teleprompter": {
-      "followEnabledByDefault": true
+      "followEnabledByDefault": true,
+      "window": {
+        "app": "Google Chrome",
+        "titleIncludes": "Deckhand Presenter"
+      }
     },
     "http": {
       "host": "127.0.0.1",

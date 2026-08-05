@@ -935,7 +935,7 @@ function createBrowserSessionMock(chromePid) {
   return {
     async start() {},
     async stop() {},
-    async openWindow() {},
+    async openWindow() { return { windowId: 999 }; },
     getStatus() {
       return { connected: true, chromePid, sources: {} };
     },
@@ -1063,6 +1063,7 @@ test('run caches startup window resolution and returns macWindowId from getManag
       reconcileObsFn: async () => {},
       waitForDriverPositionFn: async () => {},
       waitForPresentationObserverFn: async () => {},
+      resolvePresenterTeleprompterBindingFn: async () => null,
       resolveMacWindowBindingsFn: async () => ({
         Slide: { macWindowId: 11111, pid: 47213 },
         BrowserA: { macWindowId: 12345, pid: 47213 },
@@ -1082,6 +1083,116 @@ test('run caches startup window resolution and returns macWindowId from getManag
     assert.equal(bindings.BrowserA.app, 'Google Chrome');
     assert.equal(bindings.BrowserA.pid, 47213);
     assert.equal(bindings.BrowserA.titleIncludes, 'Deckhand Demo Primary');
+    assert.deepEqual(bindings.Presenter, {
+      app: 'Google Chrome',
+      titleIncludes: 'Deckhand Presenter',
+      pid: 47213,
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('run resolves and caches the presenter teleprompter window binding without sending it to OBS', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-presenter-binding-'));
+  let capturedGetManagedWindowBindings = null;
+  const reconcileCalls = [];
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      installSignalHandlers: false,
+      consoleLike: createSilentConsole(),
+      createHubFn() {
+        const handlers = new Map();
+        return {
+          on(eventName, handler) { handlers.set(eventName, handler); },
+          async start() {},
+          async stop() {},
+          getAddress() { return { host: '127.0.0.1', port: 8765 }; },
+          getSnapshot() {
+            return { activeDriver: null, observers: [{ role: 'observer', subscriptions: ['presentationState'] }], sticky: {}, targets: [] };
+          },
+          emit(eventName, payload) { return handlers.get(eventName)?.(payload); },
+        };
+      },
+      createObsClientFn() {
+        return {
+          async connect() {}, async disconnect() {}, async setScene() {}, async applyInputSettings() {},
+          getClient() { return this; }, isConnected() { return false; },
+        };
+      },
+      launchChromeSessionFn: async () => ({
+        chromePid: 47213,
+        debugPort: 9222,
+        profileDir: '/tmp/deckhand-presenter-binding',
+        async stop() {},
+      }),
+      discoverCdpEndpointFn: async () => ({
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc',
+        chromePid: null,
+      }),
+      createCdpClientFn() {
+        return createCdpClientMock(47213);
+      },
+      createBrowserSessionFn() {
+        return {
+          async start() {},
+          async stop() {},
+          async openWindow() { return { windowId: 777 }; },
+          getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
+          getRegistry() {
+            return {
+              sources: {
+                Slide: { title: 'Deckhand Deck' },
+                BrowserA: { title: 'Deckhand Demo Primary' },
+                BrowserB: { title: 'Deckhand Demo Secondary' },
+              },
+            };
+          },
+          async activateTab() {},
+          async navigateTab() {},
+        };
+      },
+      createCoordinatorFn(options) {
+        capturedGetManagedWindowBindings = options.getManagedWindowBindings;
+        return {
+          async start() {},
+          async stop() {},
+          getCurrentPresentationState() { return null; },
+        };
+      },
+      createPresenterHttpFn() { return { async start() {}, async stop() {} }; },
+      createPresentationServerFn() {
+        return { async start() {}, async stop() {}, getAddress() { return { host: '127.0.0.1', port: 3000 }; } };
+      },
+      reconcileObsFn: async ({ windowBindings }) => {
+        reconcileCalls.push({ ...windowBindings });
+      },
+      waitForDriverPositionFn: async () => {},
+      waitForPresentationObserverFn: async () => {},
+      resolvePresenterTeleprompterBindingFn: async () => ({ macWindowId: 22222, pid: 47213 }),
+      resolveMacWindowBindingsFn: async () => ({
+        Slide: { macWindowId: 11111, pid: 47213 },
+        BrowserA: { macWindowId: 12345, pid: 47213 },
+        BrowserB: { macWindowId: 67890, pid: 47213 },
+      }),
+      resolveOwnedWindowBindingsFn: async () => ({}),
+    });
+
+    assert.equal(exitCode, 0);
+    const bindings = capturedGetManagedWindowBindings();
+    assert.deepEqual(bindings.Presenter, {
+      app: 'Google Chrome',
+      titleIncludes: 'Deckhand Presenter',
+      pid: 47213,
+      macWindowId: 22222,
+    });
+    assert.equal(reconcileCalls.some((call) => Object.prototype.hasOwnProperty.call(call, 'Presenter')), false);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

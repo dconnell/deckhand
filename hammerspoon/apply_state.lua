@@ -26,6 +26,15 @@ function M.apply(state, dependencies)
   local make_rect = deps.makeRect or function(rect)
     return hs.geometry.rect(rect.x, rect.y, rect.w, rect.h)
   end
+
+  -- hs.window:setFrame() mis-positions windows placed flush against the bottom
+  -- or Dock edge (documented Hammerspoon quirk). setFrameCorrectness makes it
+  -- use the reliable three-step resize. Guarded so the Lua contract tests,
+  -- which mock `hs` minimally, still run.
+  if hs and hs.window and hs.window.setFrameCorrectness ~= nil then
+    hs.window.setFrameCorrectness = true
+  end
+
   local resolved = {}
   local applied = {}
   local missing = {}
@@ -78,6 +87,39 @@ function M.apply(state, dependencies)
     if target then
       target:focus()
       focused = focus_source
+    end
+  end
+
+  for _, overlay in ipairs(state.overlays or {}) do
+    local binding = binding_catalog[overlay.source]
+    if binding then
+      local window = resolved[overlay.source]
+      if window then
+        if overlay.hidden == true then
+          if window.minimize then
+            window:minimize()
+          end
+        elseif overlay.rect then
+          if window.unminimize then
+            window:unminimize()
+          end
+          window:setFrame(make_rect(overlay.rect))
+          -- Chrome enforces a minimum window width above the configured overlay
+          -- width, and setFrame can mis-position windows flush to an edge; pull
+          -- the actual frame fully on-screen so the teleprompter is always
+          -- visible regardless. (Overlay windows are presenter-only, never OBS
+          -- sources, so clamping them is safe.)
+          if window.setFrameInScreenBounds then
+            window:setFrameInScreenBounds()
+          end
+          table.insert(applied, overlay.source)
+          if window.raise then
+            window:raise()
+          end
+        end
+      else
+        table.insert(missing, overlay.source)
+      end
     end
   end
 

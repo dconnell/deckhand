@@ -17,7 +17,7 @@ import { buildRuntimeStatus } from './runtimeStatus.js';
 import { createCdpClient } from './cdpClient.js';
 import { createBrowserSession, createBrowserCommandExecutor } from './browserSession.js';
 import { createWsTransport, discoverCdpEndpoint, launchChromeSession } from './chromeLauncher.js';
-import { closeMacWindow, enumerateWindowsByOwnerName, enumerateWindowsByPid } from './macWindows.js';
+import { closeMacWindow, diffNewWindows, enumerateWindowsByOwnerName, enumerateWindowsByPid } from './macWindows.js';
 import { resolveOwnedWindowBindings } from './ownedWindows.js';
 import { closeIterm2OwnedWindow, launchIterm2Window } from './launchers/iterm2.js';
 import { isVisualStudioCodeApp, launchAppWindow } from './launchers/app.js';
@@ -30,6 +30,7 @@ const DRIVER_READY_TIMEOUT_MS = 10000;
 const PRESENTER_OBSERVER_TIMEOUT_MS = 5000;
 const WINDOW_BINDINGS_TIMEOUT_MS = 15000;
 const APP_SHUTDOWN_GRACE_MS = 2000;
+const PRESENTER_SOURCE_ID = 'Presenter';
 
 function delay(ms) {
   return new Promise((resolve) => {
@@ -168,6 +169,10 @@ function buildObsWindowBindings(config, resolvedMacWindowBindings) {
   const bindings = {};
 
   for (const [sourceId, binding] of Object.entries(resolvedMacWindowBindings)) {
+    if (!Object.prototype.hasOwnProperty.call(config.sources, sourceId)) {
+      continue;
+    }
+
     const obsBinding = {
       app: binding.ownerName ?? getSourceOwnerName(config, sourceId),
       macWindowId: binding.macWindowId,
@@ -233,6 +238,34 @@ async function defaultResolveOwnedWindowBindings({ config, logger }) {
     maxAttempts: 30,
     logger,
   });
+}
+
+async function resolvePresenterTeleprompterBinding({ browserSession, config, logger }) {
+  const chromePid = browserSession?.getStatus().chromePid ?? null;
+  const selector = config.presenter?.teleprompter?.window ?? null;
+
+  if (selector === null || !Number.isInteger(chromePid) || chromePid <= 0) {
+    return null;
+  }
+
+  const before = enumerateWindowsByPid(chromePid);
+  await browserSession.openWindow(`http://${config.presenter.http.host}:${config.presenter.http.port}/presenter/`);
+  const after = enumerateWindowsByPid(chromePid);
+  const matches = diffNewWindows(before, after, {
+    rejectEmptyTitle: true,
+    titleIncludes: selector.titleIncludes,
+  });
+
+  if (matches.length === 0) {
+    logger.warn('Failed to resolve presenter teleprompter window binding at launch');
+    return null;
+  }
+
+  const match = matches[0];
+  return {
+    macWindowId: match.windowId,
+    pid: chromePid,
+  };
 }
 
 async function defaultResolveMacWindowBindings({ browserSession, browserSourceIds, config, logger }) {
@@ -773,6 +806,23 @@ export async function run(options = {}) {
           result[sourceId] = binding;
         }
 
+        if (config.presenter.teleprompter.window !== null) {
+          result[PRESENTER_SOURCE_ID] = {
+            ...config.presenter.teleprompter.window,
+          };
+
+          const cached = resolvedMacWindowBindings[PRESENTER_SOURCE_ID];
+          if (typeof chromePid === 'number') {
+            result[PRESENTER_SOURCE_ID].pid = chromePid;
+          }
+          if (cached?.pid !== undefined) {
+            result[PRESENTER_SOURCE_ID].pid = cached.pid;
+          }
+          if (cached?.macWindowId !== undefined) {
+            result[PRESENTER_SOURCE_ID].macWindowId = cached.macWindowId;
+          }
+        }
+
         return result;
       },
       getManagedBrowserPid() {
@@ -824,8 +874,17 @@ export async function run(options = {}) {
       await presenterHttp.start();
 
       if (browserSession !== null) {
-        const presenterUrl = `http://${config.presenter.http.host}:${config.presenter.http.port}/presenter/`;
-        await browserSession.openWindow(presenterUrl).catch((error) => {
+        const resolvePresenterTeleprompterBindingFn = options.resolvePresenterTeleprompterBindingFn ?? resolvePresenterTeleprompterBinding;
+
+        await resolvePresenterTeleprompterBindingFn({
+          browserSession,
+          config,
+          logger,
+        }).then((binding) => {
+          if (binding !== null) {
+            resolvedMacWindowBindings[PRESENTER_SOURCE_ID] = binding;
+          }
+        }).catch((error) => {
           logger.warn('Failed to open presenter window', {
             error: error instanceof Error ? error.message : String(error),
           });

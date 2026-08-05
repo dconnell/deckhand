@@ -38,6 +38,12 @@ end
 
 local function create_window(name, calls, id, app)
   return {
+    minimize = function(_)
+      table.insert(calls, "minimize:" .. name)
+    end,
+    unminimize = function(_)
+      table.insert(calls, "unminimize:" .. name)
+    end,
     raise = function(_)
       table.insert(calls, "raise:" .. name)
     end,
@@ -46,6 +52,9 @@ local function create_window(name, calls, id, app)
     end,
     setFrame = function(_, rect)
       table.insert(calls, string.format("frame:%s:%d:%d:%d:%d", name, rect.x, rect.y, rect.w, rect.h))
+    end,
+    setFrameInScreenBounds = function(_)
+      table.insert(calls, "inbounds:" .. name)
     end,
     focus = function(_)
       table.insert(calls, "focus:" .. name)
@@ -62,9 +71,11 @@ end
 local calls = {}
 local terminal_app = create_app("iTerm2", 2001)
 local slide_app = create_app("Safari", 2002)
+local presenter_app = create_app("Google Chrome", 2003)
 local windows = {
   Terminal = create_window("Terminal", calls, 4001, terminal_app),
   Slide = create_window("Slide", calls, 4002, slide_app),
+  Presenter = create_window("Presenter", calls, 4003, presenter_app),
 }
 
 local result = apply_state.apply(fixture, {
@@ -73,20 +84,30 @@ local result = apply_state.apply(fixture, {
       return windows.Terminal
     end
 
+    if binding.titleIncludes == "Deckhand Presenter" then
+      return windows.Presenter
+    end
+
     return windows.Slide
   end,
 })
 
-assert_equal(#result.applied, 2, "expected both slots to apply")
+assert_equal(#result.applied, 3, "expected both slots and one overlay to apply")
 assert_equal(calls[1], "frame:Terminal:0:0:900:1168", "expected terminal frame first")
 assert_equal(calls[2], "frame:Slide:900:0:900:1168", "expected slide frame second")
 assert_equal(calls[3], "raise:Terminal", "expected terminal raise after frame")
 assert_equal(calls[4], "raise:Slide", "expected slide raise after frame")
-assert_equal(calls[5], "focus:Terminal", "expected terminal focus after layout")
+assert_equal(calls[5], "focus:Terminal", "expected stage focus before overlay raise")
+assert_equal(calls[6], "unminimize:Presenter", "expected presenter restore before frame")
+assert_equal(calls[7], "frame:Presenter:0:1120:1800:48", "expected presenter overlay frame after stage focus")
+assert_equal(calls[8], "inbounds:Presenter", "expected overlay frame clamped into screen bounds")
+assert_equal(calls[9], "raise:Presenter", "expected presenter overlay to raise on top of focused stage")
 assert_equal(result.resolvedBindings.Terminal.macWindowId, 4001, "expected exact terminal window id")
 assert_equal(result.resolvedBindings.Terminal.pid, 2001, "expected exact terminal pid")
 assert_equal(result.resolvedBindings.Slide.macWindowId, 4002, "expected exact slide window id")
 assert_equal(result.resolvedBindings.Slide.pid, 2002, "expected exact slide pid")
+assert_equal(result.resolvedBindings.Presenter.macWindowId, 4003, "expected exact presenter window id")
+assert_equal(result.resolvedBindings.Presenter.pid, 2003, "expected exact presenter pid")
 
 while #calls > 0 do
   table.remove(calls)
@@ -109,6 +130,10 @@ local full_slide = apply_state.apply({
       return windows.Terminal
     end
 
+    if binding.titleIncludes == "Deckhand Presenter" then
+      return windows.Presenter
+    end
+
     return windows.Slide
   end,
 })
@@ -117,6 +142,38 @@ assert_equal(#full_slide.applied, 1, "expected slide-only layout to apply one so
 assert_equal(calls[1], "frame:Slide:0:0:1800:1168", "expected full-slide frame")
 assert_equal(calls[2], "raise:Slide", "expected active slide to be raised")
 assert_equal(calls[3], "focus:Slide", "expected full-slide layout to focus the slide window")
+
+while #calls > 0 do
+  table.remove(calls)
+end
+local hidden_overlay = apply_state.apply({
+  slots = fixture.slots,
+  overlays = {
+    {
+      source = "Presenter",
+      hidden = true,
+    },
+  },
+  windowBindings = fixture.windowBindings,
+  managedWindowBindings = fixture.managedWindowBindings,
+  focus = fixture.focus,
+}, {
+  findWindow = function(binding)
+    if binding.app == "iTerm2" then
+      return windows.Terminal
+    end
+
+    if binding.titleIncludes == "Deckhand Presenter" then
+      return windows.Presenter
+    end
+
+    return windows.Slide
+  end,
+})
+
+assert_equal(calls[5], "focus:Terminal", "expected stage focus before hidden overlay")
+assert_equal(calls[6], "minimize:Presenter", "expected hidden overlay to minimize after stage focus")
+assert_equal(hidden_overlay.focused, "Terminal", "expected overlays not to steal focus")
 
 local missing = apply_state.apply(fixture, {
   findWindow = function(binding)
@@ -128,8 +185,9 @@ local missing = apply_state.apply(fixture, {
   end,
 })
 
-assert_equal(#missing.missing, 1, "expected one missing window")
+assert_equal(#missing.missing, 2, "expected slide and presenter overlay to be missing")
 assert_equal(missing.missing[1], "Slide", "expected missing slide source")
+assert_equal(missing.missing[2], "Presenter", "expected missing presenter overlay source")
 
 local strict_missing = apply_state.apply({
   slots = {

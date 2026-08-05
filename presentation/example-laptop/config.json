@@ -20,7 +20,7 @@
         "window": { "label": "slide" },
         "tabs": {
           "deck": {
-            "url": "http://127.0.0.1:3000/presentation/example/deck/index.html",
+            "url": "http://127.0.0.1:3000/presentation/example-laptop/deck/index.html",
             "initial": true
           }
         }
@@ -63,6 +63,9 @@
           "source": "Slide",
           "position": "full"
         }
+      ],
+      "overlays": [
+        { "source": "Presenter", "rect": { "x": 1650, "y": 0, "w": 150, "h": 584 } }
       ]
     },
     "full-terminal": {
@@ -72,6 +75,9 @@
           "source": "Terminal",
           "position": "full"
         }
+      ],
+      "overlays": [
+        { "source": "Presenter", "rect": { "x": 1650, "y": 0, "w": 150, "h": 584 } }
       ]
     },
     "full-browser": {
@@ -81,6 +87,9 @@
           "source": "BrowserA",
           "position": "full"
         }
+      ],
+      "overlays": [
+        { "source": "Presenter", "rect": { "x": 1650, "y": 0, "w": 150, "h": 584 } }
       ]
     },
     "left-terminal-right-slide": {
@@ -94,6 +103,9 @@
           "source": "Slide",
           "position": "right"
         }
+      ],
+      "overlays": [
+        { "source": "Presenter", "rect": { "x": 1650, "y": 0, "w": 150, "h": 584 } }
       ]
     },
     "right-terminal-left-slide": {
@@ -107,6 +119,9 @@
           "source": "Terminal",
           "position": "right"
         }
+      ],
+      "overlays": [
+        { "source": "Presenter", "rect": { "x": 0, "y": 0, "w": 150, "h": 584 } }
       ]
     },
     "left-terminal-right-browser": {
@@ -120,6 +135,9 @@
           "source": "BrowserA",
           "position": "right"
         }
+      ],
+      "overlays": [
+        { "source": "Presenter", "rect": { "x": 1650, "y": 0, "w": 150, "h": 584 } }
       ]
     },
     "left-browser-right-terminal": {
@@ -133,6 +151,9 @@
           "source": "Terminal",
           "position": "right"
         }
+      ],
+      "overlays": [
+        { "source": "Presenter", "rect": { "x": 0, "y": 0, "w": 150, "h": 584 } }
       ]
     },
     "dual-browser": {
@@ -146,6 +167,9 @@
           "source": "BrowserB",
           "position": "right"
         }
+      ],
+      "overlays": [
+        { "source": "Presenter", "rect": { "x": 1650, "y": 0, "w": 150, "h": 584 } }
       ]
     }
   },
@@ -197,6 +221,13 @@
       "browser": [
         { "source": "BrowserA", "action": "activateTab", "tab": "checkout" },
         { "source": "BrowserB", "action": "activateTab", "tab": "main" }
+      ]
+    },
+    "closing": {
+      "layout": "full-slide",
+      "script": "Wrap up and invite questions.\nThis slide overrides the full-slide default: the teleprompter parks in the lower left instead of the upper right.",
+      "overlays": [
+        { "source": "Presenter", "rect": { "x": 0, "y": 584, "w": 150, "h": 584 } }
       ]
     }
   },

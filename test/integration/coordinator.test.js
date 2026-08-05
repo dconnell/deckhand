@@ -92,9 +92,13 @@ function createConfig(port) {
         Slide: { app: 'Google Chrome' },
         BrowserA: { app: 'Google Chrome', titleIncludes: 'Primary' },
         BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
+        Presenter: { app: 'Google Chrome', titleIncludes: 'Deckhand Presenter' },
       },
       stt: null,
-      teleprompter: { followEnabledByDefault: true },
+      teleprompter: {
+        followEnabledByDefault: true,
+        window: { app: 'Google Chrome', titleIncludes: 'Deckhand Presenter' },
+      },
       http: { host: '127.0.0.1', port: 3001 },
     },
   };
@@ -211,6 +215,7 @@ test('coordinator integration publishes presentation state and dispatches browse
           Slide: { app: 'Google Chrome' },
           BrowserA: { app: 'Google Chrome', titleIncludes: 'Primary' },
           BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
+          Presenter: { app: 'Google Chrome', titleIncludes: 'Deckhand Presenter' },
         },
         focus: 'BrowserB',
         script: 'BrowserA goes left. BrowserB goes right.',

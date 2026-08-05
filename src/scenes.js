@@ -14,6 +14,35 @@
  * @type {'OBS_BOUNDS_SCALE_INNER' | 'OBS_BOUNDS_STRETCH' | 'OBS_BOUNDS_SCALE_OUTER'}
  */
 export const BOUNDS_TYPE = 'OBS_BOUNDS_SCALE_INNER';
+const PRESENTER_OVERLAY_SOURCE = 'Presenter';
+
+function cloneOverlay(overlay) {
+  if (overlay.rect !== undefined) {
+    return {
+      source: overlay.source,
+      rect: { ...overlay.rect },
+    };
+  }
+
+  return {
+    source: overlay.source,
+    hidden: true,
+  };
+}
+
+function mergeOverlays(layoutOverlays = [], slideOverlays = []) {
+  const bySource = new Map();
+
+  for (const overlay of layoutOverlays) {
+    bySource.set(overlay.source, cloneOverlay(overlay));
+  }
+
+  for (const overlay of slideOverlays) {
+    bySource.set(overlay.source, cloneOverlay(overlay));
+  }
+
+  return [...bySource.values()];
+}
 
 /**
  * Compute the OBS scene-item transform for a region position.
@@ -178,6 +207,13 @@ export function buildPresentationState(slideId, config, seq, runtime = {}) {
     };
   }
 
+  if (config.presenter.teleprompter?.window !== null && config.presenter.teleprompter?.window !== undefined) {
+    managedWindowBindings[PRESENTER_OVERLAY_SOURCE] = {
+      ...config.presenter.teleprompter.window,
+      ...(runtime.windowBindings?.[PRESENTER_OVERLAY_SOURCE] ?? {}),
+    };
+  }
+
   // Owned source kinds (iterm2, app) may omit a presenter.windows selector:
   // their owner name and exact macWindowId are derived from the runtime
   // binding rather than committed config. Surface those bindings too so they
@@ -187,6 +223,8 @@ export function buildPresentationState(slideId, config, seq, runtime = {}) {
       managedWindowBindings[sourceId] = { ...binding };
     }
   }
+
+  const overlays = mergeOverlays(layout.overlays, slide.overlays);
   const windowBindings = {};
   state.slots = layout.slots.map((slot) => {
     windowBindings[slot.source] = managedWindowBindings[slot.source];
@@ -197,8 +235,19 @@ export function buildPresentationState(slideId, config, seq, runtime = {}) {
       rect: screenRect(slot.position, config.presenter.stage),
     };
   });
+
+  for (const overlay of overlays) {
+    if (managedWindowBindings[overlay.source] !== undefined) {
+      windowBindings[overlay.source] = managedWindowBindings[overlay.source];
+    }
+  }
+
   state.windowBindings = windowBindings;
   state.managedWindowBindings = managedWindowBindings;
+
+  if (overlays.length > 0) {
+    state.overlays = overlays;
+  }
 
   return state;
 }

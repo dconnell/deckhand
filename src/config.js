@@ -3,6 +3,7 @@ import path from 'node:path';
 
 const BUILTIN_DRIVER_TYPES = ['revealjs'];
 const VALID_SLOT_POSITIONS = new Set(['full', 'left', 'right']);
+const PRESENTER_OVERLAY_SOURCE = 'Presenter';
 const BROWSER_SOURCE_KIND = 'browser';
 const ITERM2_SOURCE_KIND = 'iterm2';
 const APP_SOURCE_KIND = 'app';
@@ -346,11 +347,82 @@ function normalizeLayoutSlot(layoutId, slot, index, sources) {
   };
 }
 
+function normalizeOverlayRect(rect, pathName) {
+  const value = assertPlainObject(rect, pathName);
+
+  return {
+    x: normalizeInteger(value.x, `${pathName}.x`),
+    y: normalizeInteger(value.y, `${pathName}.y`),
+    w: normalizePositiveInteger(value.w, `${pathName}.w`),
+    h: normalizePositiveInteger(value.h, `${pathName}.h`),
+  };
+}
+
+function normalizeOverlay(overlay, pathName) {
+  const value = assertPlainObject(overlay, pathName);
+  const source = assertNonEmptyString(value.source, `${pathName}.source`);
+
+  if (source !== PRESENTER_OVERLAY_SOURCE) {
+    throw new ConfigError(`${pathName}.source`, `must be ${PRESENTER_OVERLAY_SOURCE} in v1`);
+  }
+
+  const hasRect = value.rect !== undefined;
+  const hasHidden = value.hidden !== undefined;
+
+  if (hasRect && hasHidden) {
+    throw new ConfigError(pathName, 'must declare exactly one of rect or hidden');
+  }
+
+  if (!hasRect && !hasHidden) {
+    throw new ConfigError(pathName, 'must declare rect or hidden');
+  }
+
+  if (hasHidden && value.hidden !== true) {
+    throw new ConfigError(`${pathName}.hidden`, 'must be true when provided');
+  }
+
+  if (hasRect) {
+    return {
+      source,
+      rect: normalizeOverlayRect(value.rect, `${pathName}.rect`),
+    };
+  }
+
+  return {
+    source,
+    hidden: true,
+  };
+}
+
+function normalizeOverlays(value, pathName) {
+  if (value === undefined) {
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    throw new ConfigError(`${pathName}.overlays`, 'must be an array');
+  }
+
+  const seenSources = new Set();
+
+  return value.map((overlay, index) => {
+    const normalized = normalizeOverlay(overlay, `${pathName}.overlays[${index}]`);
+
+    if (seenSources.has(normalized.source)) {
+      throw new ConfigError(`${pathName}.overlays[${index}].source`, 'must be unique within overlays');
+    }
+
+    seenSources.add(normalized.source);
+    return normalized;
+  });
+}
+
 function normalizeLayout(layoutId, layout, sources) {
   const pathName = `layouts.${layoutId}`;
   const value = assertPlainObject(layout, pathName);
   const audienceScene = assertNonEmptyString(value.audienceScene, `${pathName}.audienceScene`);
   const slots = value.slots;
+  const overlays = normalizeOverlays(value.overlays, pathName);
 
   if (!Array.isArray(slots)) {
     throw new ConfigError(`${pathName}.slots`, 'must be an array');
@@ -380,6 +452,7 @@ function normalizeLayout(layoutId, layout, sources) {
     audienceScene,
     slots: normalizedSlots,
     sources: layoutSources,
+    overlays,
   };
 }
 
@@ -435,6 +508,7 @@ function normalizeSlideEntry(slideId, entry, layouts, sources) {
   const pathName = `slides.${slideId}`;
   const value = assertPlainObject(entry, pathName);
   const layoutId = assertNonEmptyString(value.layout, `${pathName}.layout`);
+  const overlays = normalizeOverlays(value.overlays, pathName);
 
   if (!Object.prototype.hasOwnProperty.call(layouts, layoutId)) {
     throw new ConfigError(`${pathName}.layout`, 'must reference a known layout');
@@ -473,6 +547,7 @@ function normalizeSlideEntry(slideId, entry, layouts, sources) {
     focus,
     script,
     commands: browser.map((item, index) => normalizeBrowserActionEntry(item, `${pathName}.browser[${index}]`, sources)),
+    overlays,
   };
 }
 
@@ -539,18 +614,34 @@ function normalizePresenterStt(stt) {
   return normalized;
 }
 
-function normalizePresenterTeleprompter(teleprompter) {
+function normalizePresenterTeleprompter(teleprompter, { requireWindow = false } = {}) {
+  let normalized;
+
   if (teleprompter === undefined) {
-    return { followEnabledByDefault: true };
+    normalized = { followEnabledByDefault: true, window: null };
+  } else {
+    const value = assertPlainObject(teleprompter, 'presenter.teleprompter');
+
+    normalized = {
+      followEnabledByDefault: value.followEnabledByDefault === undefined
+        ? true
+        : assertBoolean(value.followEnabledByDefault, 'presenter.teleprompter.followEnabledByDefault'),
+      window: value.window === undefined
+        ? null
+        : normalizeWindowSelector(value.window, 'presenter.teleprompter.window'),
+    };
   }
 
-  const value = assertPlainObject(teleprompter, 'presenter.teleprompter');
+  if (requireWindow && normalized.window === null) {
+    throw new ConfigError('presenter.teleprompter.window', 'is required when overlays reference Presenter');
+  }
 
-  return {
-    followEnabledByDefault: value.followEnabledByDefault === undefined
-      ? true
-      : assertBoolean(value.followEnabledByDefault, 'presenter.teleprompter.followEnabledByDefault'),
-  };
+  return normalized;
+}
+
+function usesPresenterOverlays(layouts, slides) {
+  return Object.values(layouts).some((layout) => layout.overlays.length > 0)
+    || Object.values(slides).some((slide) => slide.overlays.length > 0);
 }
 
 function normalizePresenterHttp(http) {
@@ -603,7 +694,7 @@ function normalizeChrome(chrome) {
   return normalized;
 }
 
-function normalizePresenter(presenter, layouts, sources) {
+function normalizePresenter(presenter, layouts, slides, sources) {
   if (presenter === undefined) {
     return null;
   }
@@ -646,7 +737,9 @@ function normalizePresenter(presenter, layouts, sources) {
     stage,
     windows,
     stt: normalizePresenterStt(value.stt),
-    teleprompter: normalizePresenterTeleprompter(value.teleprompter),
+    teleprompter: normalizePresenterTeleprompter(value.teleprompter, {
+      requireWindow: usesPresenterOverlays(layouts, slides),
+    }),
     http: normalizePresenterHttp(value.http),
   };
 }
@@ -678,6 +771,10 @@ export function normalizeConfig(rawConfig) {
   const layouts = normalizeLayouts(root.layouts, sources);
   const slides = normalizeSlides(root.slides, layouts, sources);
 
+  if (root.presenter === undefined && usesPresenterOverlays(layouts, slides)) {
+    throw new ConfigError('presenter', 'must be configured when overlays are used');
+  }
+
   return {
     driver: normalizeDriver(root.driver),
     obs: normalizeObs(root.obs),
@@ -686,7 +783,7 @@ export function normalizeConfig(rawConfig) {
     layouts,
     slides,
     chrome: normalizeChrome(root.chrome),
-    presenter: normalizePresenter(root.presenter, layouts, sources),
+    presenter: normalizePresenter(root.presenter, layouts, slides, sources),
   };
 }
 

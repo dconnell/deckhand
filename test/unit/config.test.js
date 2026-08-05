@@ -10,6 +10,7 @@ import { assertDriverAdapterContract } from '../../src/protocol.js';
 import { revealjsDriver } from '../../src/drivers/revealjs.js';
 
 const exampleConfigPath = fileURLToPath(new URL('../../presentation/example/config.json', import.meta.url));
+const laptopConfigPath = fileURLToPath(new URL('../../presentation/example-laptop/config.json', import.meta.url));
 
 function createValidConfig() {
   return {
@@ -51,6 +52,7 @@ function createValidConfig() {
       'full-slide': {
         audienceScene: 'Full Slide',
         slots: [{ source: 'Slide', position: 'full' }],
+        overlays: [{ source: 'Presenter', rect: { x: 1600, y: 50, w: 250, h: 400 } }],
       },
       'left-terminal-right-slide': {
         audienceScene: 'Left Terminal Right Slide',
@@ -73,6 +75,7 @@ function createValidConfig() {
         layout: 'left-terminal-right-slide',
         focus: 'Terminal',
         script: 'Walk through the init flow.\nEmphasize line 42.',
+        overlays: [{ source: 'Presenter', hidden: true }],
       },
       'dual-demo': {
         layout: 'dual-browser',
@@ -106,6 +109,7 @@ function createValidConfig() {
       },
       teleprompter: {
         followEnabledByDefault: true,
+        window: { app: 'Google Chrome', titleIncludes: 'Deckhand Presenter' },
       },
     },
   };
@@ -153,19 +157,48 @@ test('normalizeConfig accepts the greenfield presenter-mode model', () => {
     focus: 'Terminal',
     script: 'Walk through the init flow.\nEmphasize line 42.',
     commands: [],
+    overlays: [{ source: 'Presenter', hidden: true }],
   });
   assert.deepEqual(config.presenter.stage, { x: 100, y: 50, width: 1800, height: 1168 });
   assert.equal(config.presenter.teleprompter.followEnabledByDefault, true);
+  assert.deepEqual(config.presenter.teleprompter.window, {
+    app: 'Google Chrome',
+    titleIncludes: 'Deckhand Presenter',
+  });
 });
 
 test('normalizeConfig accepts audience-only mode when presenter is omitted', () => {
   const config = createValidConfig();
   delete config.presenter;
+  delete config.layouts['full-slide'].overlays;
+  delete config.slides['code-walkthrough'].overlays;
 
   const normalized = normalizeConfig(config);
 
   assert.equal(normalized.presenter, null);
   assert.equal(normalized.slides.welcome.layoutId, 'full-slide');
+});
+
+test('normalizeConfig accepts teleprompter overlays on layouts and slides', () => {
+  const config = normalizeConfig(createValidConfig());
+
+  assert.deepEqual(config.layouts['full-slide'].overlays, [
+    { source: 'Presenter', rect: { x: 1600, y: 50, w: 250, h: 400 } },
+  ]);
+  assert.deepEqual(config.slides['code-walkthrough'].overlays, [
+    { source: 'Presenter', hidden: true },
+  ]);
+});
+
+test('normalizeConfig allows omitting presenter.teleprompter.window when overlays are unused', () => {
+  const config = createValidConfig();
+  delete config.presenter.teleprompter.window;
+  delete config.layouts['full-slide'].overlays;
+  delete config.slides['code-walkthrough'].overlays;
+
+  const normalized = normalizeConfig(config);
+
+  assert.equal(normalized.presenter.teleprompter.window, null);
 });
 
 test('normalizeConfig leaves obs.transitions null when slide transitions are not configured', () => {
@@ -505,6 +538,55 @@ test('normalizeConfig rejects invalid slot positions', () => {
   assertConfigError(() => normalizeConfig(config), 'layouts.full-slide.slots[0].position', /full, left, right/i);
 });
 
+test('normalizeConfig rejects overlays that reference non-Presenter sources', () => {
+  const config = createValidConfig();
+  config.layouts['full-slide'].overlays[0].source = 'Slide';
+
+  assertConfigError(() => normalizeConfig(config), 'layouts.full-slide.overlays[0].source', /Presenter/i);
+});
+
+test('normalizeConfig rejects overlays without rect or hidden', () => {
+  const config = createValidConfig();
+  config.layouts['full-slide'].overlays = [{ source: 'Presenter' }];
+
+  assertConfigError(() => normalizeConfig(config), 'layouts.full-slide.overlays[0]', /rect or hidden/i);
+});
+
+test('normalizeConfig rejects overlays with both rect and hidden', () => {
+  const config = createValidConfig();
+  config.layouts['full-slide'].overlays = [{ source: 'Presenter', rect: { x: 1, y: 2, w: 3, h: 4 }, hidden: true }];
+
+  assertConfigError(() => normalizeConfig(config), 'layouts.full-slide.overlays[0]', /exactly one/i);
+});
+
+test('normalizeConfig rejects malformed overlay rects', () => {
+  const config = createValidConfig();
+  config.layouts['full-slide'].overlays = [{ source: 'Presenter', rect: { x: 1, y: 2, w: 0, h: 4 } }];
+
+  assertConfigError(() => normalizeConfig(config), 'layouts.full-slide.overlays[0].rect.w', /positive integer/i);
+});
+
+test('normalizeConfig rejects Presenter as a layout slot source', () => {
+  const config = createValidConfig();
+  config.layouts['full-slide'].slots[0].source = 'Presenter';
+
+  assertConfigError(() => normalizeConfig(config), 'layouts.full-slide.slots[0].source', /Presenter.*reserved|known source/i);
+});
+
+test('normalizeConfig requires presenter.teleprompter.window when overlays reference Presenter', () => {
+  const config = createValidConfig();
+  delete config.presenter.teleprompter.window;
+
+  assertConfigError(() => normalizeConfig(config), 'presenter.teleprompter.window', /required/i);
+});
+
+test('normalizeConfig rejects focus on Presenter because overlays are never focus targets', () => {
+  const config = createValidConfig();
+  config.slides.welcome.focus = 'Presenter';
+
+  assertConfigError(() => normalizeConfig(config), 'slides.welcome.focus', /known source|present in layout/i);
+});
+
 test('normalizeConfig rejects focus values not present in the selected layout', () => {
   const config = createValidConfig();
   config.slides.welcome.focus = 'Terminal';
@@ -610,4 +692,34 @@ test('presentation/example/config.json loads as the shipped sample presentation'
 
   assert.ok(config.presenter);
   assert.ok(config.layouts['dual-browser']);
+});
+
+test('presentation/example-laptop/config.json ships per-layout teleprompter overlays with one slide override', async () => {
+  const { buildPresentationState } = await import('../../src/scenes.js');
+  const config = await loadConfig({ filePath: laptopConfigPath });
+
+  assert.deepEqual(config.presenter.stage, { x: 0, y: 0, width: 1800, height: 1168 });
+  assert.ok(config.presenter.teleprompter.window, 'laptop sample requires a teleprompter selector');
+
+  for (const layout of Object.values(config.layouts)) {
+    assert.equal(layout.overlays.length, 1, `layout ${layout.id} should declare a default teleprompter overlay`);
+    assert.equal(layout.overlays[0].source, 'Presenter');
+    assert.equal(layout.overlays[0].rect.h, 584, 'laptop overlays should be half-screen-height columns');
+    assert.equal(layout.overlays[0].rect.w, 150);
+  }
+
+  const welcome = buildPresentationState('welcome', config, 1);
+  const closing = buildPresentationState('closing', config, 2);
+
+  assert.equal(welcome.layoutId, 'full-slide');
+  assert.equal(closing.layoutId, 'full-slide');
+
+  assert.deepEqual(welcome.overlays, [
+    { source: 'Presenter', rect: { x: 1650, y: 0, w: 150, h: 584 } },
+  ]);
+  assert.deepEqual(closing.overlays, [
+    { source: 'Presenter', rect: { x: 0, y: 584, w: 150, h: 584 } },
+  ]);
+
+  assert.notDeepEqual(welcome.overlays, closing.overlays, 'closing must override the full-slide default');
 });

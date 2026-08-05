@@ -42,6 +42,7 @@ test('createPresentationStateMessage wraps a resolved state payload', () => {
     managedWindowBindings: {
       Slide: { app: 'Google Chrome', titleIncludes: 'Deckhand Example Deck' },
     },
+    overlays: [{ source: 'Presenter', hidden: true }],
     focus: null,
     script: null,
     commands: [],
@@ -55,6 +56,7 @@ test('createPresentationStateMessage wraps a resolved state payload', () => {
     managedWindowBindings: {
       Slide: { app: 'Google Chrome', titleIncludes: 'Deckhand Example Deck' },
     },
+    overlays: [{ source: 'Presenter', hidden: true }],
     focus: null,
     script: null,
   });

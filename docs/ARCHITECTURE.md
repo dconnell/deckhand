@@ -120,16 +120,27 @@ Presenter-state payload shape:
       pid: 47213,
       macWindowId: 12345,
       strict: true
+    },
+    Presenter: {
+      app: 'Google Chrome',
+      titleIncludes: 'Deckhand Presenter',
+      pid: 47213,
+      macWindowId: 45678
     }
   },
+  overlays: [
+    { source: 'Presenter', hidden: true }
+  ],
   focus: 'Terminal',
   script: 'Walk through the init flow.\nEmphasize line 42.'
 }
 ```
 
 `windowBindings` may begin as bootstrap app/title selectors and then be
-republished with exact runtime bindings once a presenter observer resolves the
-managed windows.
+republished with exact runtime bindings once managed windows are resolved.
+
+`Presenter` is a reserved presenter-only binding. It never appears in OBS
+layouts or the source catalog.
 
 ## Hub Protocol
 

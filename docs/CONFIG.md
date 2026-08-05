@@ -49,7 +49,10 @@ model for OBS, presenter stage, and slide actions.
   "layouts": {
     "full-slide": {
       "audienceScene": "Full Slide",
-      "slots": [{ "source": "Slide", "position": "full" }]
+      "slots": [{ "source": "Slide", "position": "full" }],
+      "overlays": [
+        { "source": "Presenter", "rect": { "x": 1600, "y": 50, "w": 250, "h": 400 } }
+      ]
     },
     "dual-browser": {
       "audienceScene": "Dual Browser",
@@ -67,6 +70,9 @@ model for OBS, presenter stage, and slide actions.
       "layout": "dual-browser",
       "focus": "BrowserB",
       "script": "Walk through the demo.\nCall out BrowserB.",
+      "overlays": [
+        { "source": "Presenter", "hidden": true }
+      ],
       "browser": [
         { "source": "BrowserA", "action": "activateTab", "tab": "checkout" },
         { "source": "BrowserB", "action": "navigate", "tab": "main", "url": "https://example.com/demo/v2" }
@@ -94,7 +100,8 @@ model for OBS, presenter stage, and slide actions.
       "language": "en"
     },
     "teleprompter": {
-      "followEnabledByDefault": true
+      "followEnabledByDefault": true,
+      "window": { "app": "Google Chrome", "titleIncludes": "Deckhand Presenter" }
     },
     "http": {
       "host": "127.0.0.1",
@@ -250,6 +257,7 @@ Each layout contains:
 
 - `audienceScene`: OBS scene name
 - `slots`: array of logical window positions
+- `overlays`: optional array of presenter-only overlays
 
 Each slot contains:
 
@@ -261,7 +269,16 @@ Rules:
 - each layout must define at least one slot
 - slot source names must be unique within a layout
 - every slot source must exist in `sources`
+- overlay source names must be unique within a layout
+- `Presenter` is reserved for presenter-only overlays and is not allowed in
+  `slots`
 - `audienceScene` should be unique across layouts
+
+Overlay entries currently support only the reserved source `Presenter` and must
+declare exactly one of:
+
+- `rect`: absolute macOS desktop rect `{ x, y, w, h }`
+- `hidden: true`: minimize the teleprompter for that layout or slide
 
 ## Slides
 
@@ -270,6 +287,8 @@ Each slide entry supports:
 - `layout`: required layout ID
 - `focus`: optional logical source to focus after presenter layout is applied
 - `script`: optional teleprompter text; absent means clear the presenter script
+- `overlays`: optional presenter-only overlay overrides merged by source on top
+  of the layout's `overlays`
 - `browser`: optional array of browser actions executed against Deckhand-owned
   tabs
 
@@ -374,6 +393,9 @@ When present:
   required
 - `stt` configures the local whisper.cpp observer
 - `teleprompter.followEnabledByDefault` controls initial follow mode
+- `teleprompter.window` is the presenter-window selector used to bind the
+  teleprompter window; it is required when any layout or slide uses
+  `overlays` for `Presenter`
 - `http` configures the presenter web app/status surface
 
 Window selectors contain:
@@ -389,6 +411,9 @@ Deckhand. Those exact fields are runtime state, not part of committed config.
 Deckhand uses these bootstrap selectors to seed OBS `window_capture` settings,
 then upgrades them in place to exact managed bindings when runtime window
 handles are available.
+
+The teleprompter window is not an OBS source. Its selector is used only for the
+local presenter window-management path.
 
 ## Slide ID Scheme
 
@@ -414,7 +439,9 @@ The config loader returns path-based errors for invalid input, including:
 - `navigate`/`browser` actions that reference unknown sources, tabs, or
   non-browser-capable sources
 - invalid `focus` source for the chosen layout
+- invalid overlay source or overlay shape
 - `presenter.windows` entries that reference unknown sources
+- missing `presenter.teleprompter.window` when overlays are configured
 - malformed browser action selectors or URLs
 - browser sources that omit a tab catalog
 - browser catalogs with zero or multiple initial tabs

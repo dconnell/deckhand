@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Deckhand Example Deck</title>
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/theme/black.css" />
+
+    <style>
+      .reveal section { text-align: left; }
+      .reveal h1, .reveal h2, .reveal h3 { text-transform: none; }
+      .deckhand-tag {
+        display: block;
+        margin-top: 1.2em;
+        font-size: 0.55em;
+        opacity: 0.6;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .reveal pre { width: 100%; font-size: 0.5em; }
+    </style>
+  </head>
+  <body>
+    <div class="reveal">
+      <div class="slides">
+        <section data-deckhand-id="welcome">
+          <h2>Deckhand</h2>
+          <p>Slides + OBS + presenter state + browser targets, in sync.</p>
+          <span class="deckhand-tag">data-deckhand-id="welcome" → layout: full-slide</span>
+        </section>
+
+        <section data-deckhand-id="code-walkthrough">
+          <h3>Code Walkthrough</h3>
+          <pre><code data-trim>$ npm install
+$ npm run setup:obs -- my-talk
+$ node ./src/index.js my-talk
+[deckhand] Connected to OBS
+[deckhand] Hub listening</code></pre>
+          <span class="deckhand-tag">data-deckhand-id="code-walkthrough" → layout: left-terminal-right-slide · focus: Terminal · script: yes</span>
+        </section>
+
+        <section data-deckhand-id="architecture">
+          <h3>Architecture</h3>
+          <p>Driver → sticky presentationState → OBS + presenter clients + target commands.</p>
+          <span class="deckhand-tag">data-deckhand-id="architecture" → layout: right-terminal-left-slide · script: yes</span>
+        </section>
+
+        <section data-deckhand-id="terminal-deep-dive">
+          <h3>Terminal Deep Dive</h3>
+          <p>Full-screen terminal for a live walkthrough.</p>
+          <span class="deckhand-tag">data-deckhand-id="terminal-deep-dive" → layout: full-terminal · focus: Terminal</span>
+        </section>
+
+        <section data-deckhand-id="live-demo">
+          <h3>Live Demo</h3>
+          <p>Reaching this slide switches OBS and navigates
+            <code>BrowserA</code> to the start URL.</p>
+          <span class="deckhand-tag">data-deckhand-id="live-demo" → layout: left-terminal-right-browser · focus: Terminal · script: yes · navigate BrowserA</span>
+        </section>
+
+        <section data-deckhand-id="api-demo">
+          <h3>API Demo</h3>
+          <p>Browser on the left; Deckhand navigates
+            <code>BrowserA</code> to the API page.</p>
+          <span class="deckhand-tag">data-deckhand-id="api-demo" → layout: left-browser-right-terminal · focus: Terminal · script: yes · navigate BrowserA</span>
+        </section>
+
+        <section data-deckhand-id="browser-fullscreen">
+          <h3>Fullscreen Browser Demo</h3>
+          <p>Full-screen browser; Deckhand navigates
+            <code>BrowserA</code> to the showcase page.</p>
+          <span class="deckhand-tag">data-deckhand-id="browser-fullscreen" → layout: full-browser · script: yes · navigate BrowserA</span>
+        </section>
+
+        <section data-deckhand-id="dual-demo">
+          <h3>Dual Browser Demo</h3>
+          <p>Two targets at once:</p>
+          <ul>
+            <li><code>BrowserA</code> (tab <code>tabA</code>) → primary</li>
+            <li><code>BrowserB</code> → secondary</li>
+          </ul>
+          <span class="deckhand-tag">data-deckhand-id="dual-demo" → layout: dual-browser · BrowserA + BrowserB · navigate BrowserA:tabA + BrowserB</span>
+        </section>
+
+        <section data-deckhand-id="closing">
+          <h2>Thanks</h2>
+          <p>Questions?</p>
+          <span class="deckhand-tag">data-deckhand-id="closing" → layout: full-slide · overlay override: lower left (full-slide default is upper right)</span>
+        </section>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.js"></script>
+    <script src="/reveal/deckhand-plugin.js"></script>
+    <script>
+      Reveal.initialize({
+        controls: true,
+        progress: true,
+        hash: true,
+        transition: 'none',
+        plugins: [DeckhandRevealPlugin({ hubUrl: 'ws://127.0.0.1:8765' })]
+      });
+    </script>
+  </body>
+</html>
