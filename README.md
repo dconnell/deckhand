@@ -1,13 +1,27 @@
 ## Deckhand
 
-Deckhand is a local presentation coordinator that keeps four outputs in sync:
+Deckhand exists to easily mix slides, a terminal for live input, VS Code if
+desired, or other apps — and seamlessly switch back and forth between them,
+including split views. It is macOS-only and focused on remote presentations:
+the audience sees a single composed OBS feed rather than a shared screen, so
+captures stay crisp and the operator never has to share their whole desktop.
+
+Deckhand is a local presentation coordinator that keeps these outputs in sync:
 
 - slide position from a driver
 - OBS audience scenes
 - presenter-side state on macOS
-- Deckhand-owned Chrome windows and tabs (activation and navigation)
+- Deckhand-owned Chrome windows and tabs (activation and navigation), plus
+  terminals and apps it launches (e.g. iTerm2, VS Code)
 
-Deckhand is macOS-only. Presentations are self-contained under
+Browser and terminal sources are reliable. Generic `app` sources (anything
+launched via `open -a`, such as VS Code or other editors) are best-effort:
+Deckhand tracks the launched window and closes only that window on shutdown,
+but app-specific behavior — unsaved-changes sheets, single-instance handoffs,
+custom shutdown prompts — can break clean launch or close for untested apps.
+Expect to need small code tweaks in `src/` for apps that do not behave.
+
+Presentations are self-contained under
 `presentation/<name>/` while shared runtime integrations live at the repo root.
 
 ## Quick Start
@@ -157,6 +171,8 @@ configured target commands.
 - [Config](docs/CONFIG.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Adapters](docs/ADAPTERS.md)
+- [Presenter runbook (pre-talk checklist)](docs/RUNBOOK.md)
+- [Troubleshooting / known issues](docs/TROUBLESHOOTING.md)
 
 ## Verification Status
 
