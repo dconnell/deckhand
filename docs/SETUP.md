@@ -14,7 +14,7 @@ Advancing a local deck coordinates:
 
 ## Prerequisites
 
-- Node 24+
+- Node 22+
 - OBS Studio 28+
 - Hammerspoon
 - `ffmpeg` with macOS `avfoundation` support
