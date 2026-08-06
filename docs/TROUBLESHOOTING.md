@@ -115,6 +115,32 @@ two-step is not applied: `coordinator.applyObsWindowBindings` issues a single
 where the capture target is stuck on the wrong window mid-session, the only
 reliable recovery is to re-run `obs:setup` or restart Deckhand.
 
+## Zoom / Share Screen
+
+Not Deckhand failures, but the most common "audience sees the wrong thing"
+causes during a remote talk.
+
+### OBS program view is correct but audience sees black or stale content
+
+The Zoom Share Screen target is wrong, or the OBS Projector window was closed
+or lost fullscreen. The most common cause is pressing **Esc** while the
+fullscreen Projector has focus — Esc closes it. Switch Spaces with
+**Ctrl+Left-arrow** or a **three-finger swipe up** instead of Esc to leave the
+Projector without closing it.
+
+**Recovery**:
+1. In OBS, confirm the Projector window is still open. If not, reopen it via
+   right-click the canvas → **Projector** (in Studio Mode, project **Program**).
+2. In Zoom, stop sharing and re-share. Select the specific **Projector window**
+   (under Windows, not Screens) — sharing a display follows whichever Space is
+   visible and breaks when you switch Spaces to work.
+
+### Audience sees the feed but it looks soft or low-resolution
+
+You are sharing via OBS Virtual Camera instead of the Projector. Virtual camera
+re-encodes and caps the feed around 1080p. Switch Zoom's share target to the
+Projector window.
+
 ## Chrome Session
 
 ### Chrome profile seeding failures (`chrome.profileName`)

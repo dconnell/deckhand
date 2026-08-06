@@ -130,12 +130,22 @@ back arrow) so you are positioned on your opening slide.
 
 ## T-0: Final Pre-Stage
 
-1. Hide the presenter app and the Hammerspoon console from your active
+1. Open OBS's Projector for the live program output (in non-Studio Mode,
+   right-click the canvas → **Projector** → a window or display; in Studio
+   Mode, project **Program**, not **Preview**). In Zoom, **Share Screen** and
+   select the specific **Projector window** (under Windows, not Screens) —
+   never share the display, which follows whichever Space is visible. Verify
+   the audience sees the current OBS scene. Do **not** use OBS Virtual Camera
+   — it re-encodes and caps resolution. If you fullscreened the Projector to
+   its own Space, do **not** press Esc to leave it (Esc closes the Projector)
+   — switch Spaces with **Ctrl+Left-arrow** or a **three-finger swipe up**
+   instead; Zoom keeps capturing the window by id.
+2. Hide the presenter app and the Hammerspoon console from your active
    Screen / Stage Manager layout (or move them to a different Space).
-2. Put the deck window and the managed Chrome windows in the Space you will
+3. Put the deck window and the managed Chrome windows in the Space you will
    present from.
-3. Confirm laptop volume, exhibit output, and any in-room mic are routed.
-4. Close every app you do not need during the talk — fewer windows means fewer
+4. Confirm laptop volume, exhibit output, and any in-room mic are routed.
+5. Close every app you do not need during the talk — fewer windows means fewer
    accidental focus steals.
 
 ## Smoke Command (Optional, T-2)

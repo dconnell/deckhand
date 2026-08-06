@@ -3,8 +3,9 @@
 Deckhand exists to easily mix slides, a terminal for live input, VS Code if
 desired, or other apps — and seamlessly switch back and forth between them,
 including split views. It is macOS-only and focused on remote presentations:
-the audience sees a single composed OBS feed rather than a shared screen, so
-captures stay crisp and the operator never has to share their whole desktop.
+the audience sees a single composed OBS feed, shared into the meeting via
+OBS's Projector window and Zoom's Share Screen, so captures stay crisp and
+the operator never has to expose their whole desktop.
 
 Deckhand is a local presentation coordinator that keeps these outputs in sync:
 
@@ -134,6 +135,32 @@ If an unsaved-changes sheet appears, it attempts Don't Save/Discard for that
 tracked window.
 
 If you are using Hammerspoon, it also owns the macOS global slide hotkeys.
+
+### Sharing to the Meeting
+
+The OBS program output is shared into the meeting via OBS's **Projector**
+feature, not as a virtual camera:
+
+1. In OBS (non-Studio Mode), right-click the canvas and pick **Projector**
+   → a window or display. In non-Studio Mode the single canvas is the live
+   program output, so the Projector tracks every scene Deckhand switches to.
+   If you use Studio Mode, project **Program** instead of **Preview** —
+   Preview is the not-yet-live surface there and will not track Deckhand's
+   scene switches.
+2. In Zoom (or equivalent), **Share Screen** and select the specific
+   **Projector window** (under Windows, not Screens). Always share the window,
+   never the display: sharing a display follows whichever Space is visible,
+   which breaks the moment you switch Spaces back to your work.
+
+If you fullscreened the Projector to its own Space, do **not** press Esc to
+navigate away afterward — Esc closes the Projector window and breaks the
+share. Switch Spaces with **Ctrl+Left-arrow** or a **three-finger swipe up**
+to get back to your work. Zoom keeps capturing the Projector by window id
+regardless of which Space is visible.
+
+Use the Projector path rather than OBS Virtual Camera: the Projector preserves
+the native canvas resolution, while a virtual camera re-encodes and caps the
+feed around 1080p, which defeats Deckhand's crisp-capture goal.
 
 ### Navigating Slides
 
