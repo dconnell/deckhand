@@ -220,35 +220,41 @@ This checks:
 - `GET /presenter/bootstrap.json`
 - `GET /status.json`
 - websocket observer registration against the local hub
-
 ## Hammerspoon
 
-1. Create `~/.hammerspoon/deckhand/`.
-2. Copy the Deckhand Lua files and fixtures into it:
+```bash
+npm run hammerspoon:setup
+```
+
+This copies `deckhand.lua`, `apply_state.lua`, and `window_match.lua` into
+`~/.hammerspoon/deckhand/` and patches `~/.hammerspoon/init.lua` to load them
+on startup. The patch is non-destructive:
+
+- existing init.lua content is preserved verbatim
+- the Deckhand section is wrapped in `-- >>> deckhand >>>` /
+  `-- <<< deckhand <<<` sentinels
+- re-runs replace that section in place (so config changes propagate cleanly)
+- a fresh install appends the section with a single blank-line separator
+- a pre-installer manual block (the bare `dofile(...deckhand.lua...)` from
+  earlier READMEs) is migrated to the sentinel form automatically
+
+Optional overrides:
 
 ```bash
-mkdir -p ~/.hammerspoon/deckhand
-cp hammerspoon/deckhand.lua hammerspoon/apply_state.lua hammerspoon/window_match.lua ~/.hammerspoon/deckhand/
-```
-3. If you already have `~/.hammerspoon/init.lua`, keep it and append:
-
-```lua
-package.path = package.path .. ";" .. hs.configdir .. "/deckhand/?.lua"
-
-require("deckhand").start({
-  hubUrl = "ws://127.0.0.1:8765",
-})
+npm run hammerspoon:setup -- --hub-url ws://127.0.0.1:9000
+npm run hammerspoon:setup -- --hammerspoon-dir /path/to/alt/hammerspoon
 ```
 
-4. If you do not already have `~/.hammerspoon/init.lua`, copy `hammerspoon/init.lua` there.
-5. Open Hammerspoon and grant macOS Accessibility permission when prompted.
-6. Reload Hammerspoon.
-7. Confirm the coordinator log shows another observer registration after Hammerspoon connects.
+After installing:
 
-Whenever you update Deckhand, copy those Lua files again and reload Hammerspoon.
-The exact-window-id handshake depends on the current versions of all three
-files.
+1. Open Hammerspoon and grant macOS Accessibility permission when prompted.
+2. Reload Hammerspoon.
+3. Confirm the coordinator log shows another observer registration after
+   Hammerspoon connects.
 
+Whenever you update Deckhand, re-run `npm run hammerspoon:setup` and reload
+Hammerspoon. The exact-window-id handshake depends on the current versions of
+all three Lua files.
 Hammerspoon subscribes to sticky `presentationState` and applies the resolved
 window rectangles plus optional focus. It reconnects after hub restarts and
 accepts lower `seq` values after reconnect so sticky state can recover cleanly.

@@ -60,28 +60,33 @@ See [docs/SETUP.md](docs/SETUP.md#whole-frame-slide-transitions-optional).
 5. Install Hammerspoon for window management:
 
 ```bash
-mkdir -p ~/.hammerspoon/deckhand
-cp hammerspoon/deckhand.lua hammerspoon/apply_state.lua hammerspoon/window_match.lua ~/.hammerspoon/deckhand/
+npm run hammerspoon:setup
 ```
 
-Then add the following lines to your `~/.hammerspoon/init.lua` (create the file
-if it doesn't exist; don't overwrite an existing one):
+This copies `deckhand.lua`, `apply_state.lua`, and `window_match.lua` into
+`~/.hammerspoon/deckhand/` and patches `~/.hammerspoon/init.lua` to load them
+on startup. The init.lua patch is non-destructive: it preserves your existing
+config, identifies the Deckhand section with `-- >>> deckhand >>>` /
+`-- <<< deckhand <<<` sentinels, replaces the section in place on re-runs, and
+appends cleanly when no prior section exists. Re-run the same command whenever
+you update Deckhand.
 
-```lua
-package.path = package.path .. ";" .. hs.configdir .. "/deckhand/?.lua"
+Optional overrides:
 
-dofile(hs.configdir .. "/deckhand/deckhand.lua").start({
-  hubUrl = "ws://127.0.0.1:8765",
-})
+```bash
+# point Hammerspoon at a non-default hub port
+npm run hammerspoon:setup -- --hub-url ws://127.0.0.1:9000
 ```
 
 Open Hammerspoon, grant Accessibility permission when prompted, then reload
 its config. Hammerspoon connects to the hub and automatically resizes/focuses
 windows when slides change.
 
-When you update Deckhand, copy the Lua files again and reload Hammerspoon.
-The exact-window-id flow depends on the current `hammerspoon/deckhand.lua`,
-`hammerspoon/apply_state.lua`, and `hammerspoon/window_match.lua` files.
+When you update Deckhand, re-run `npm run hammerspoon:setup` and reload
+Hammerspoon. The exact-window-id flow depends on the current
+`hammerspoon/deckhand.lua`, `hammerspoon/apply_state.lua`, and
+`hammerspoon/window_match.lua` files; run `npm run hammerspoon:setup` again
+after updating Deckhand so the copies stay in sync.
 
 ### Running A Presentation
 

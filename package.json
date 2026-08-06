@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "obs:setup": "node ./src/setupObs.js",
+    "hammerspoon:setup": "node ./src/setupHammerspoon.js",
     "presenter:stt": "node ./src/presenter/stt/cli.js",
     "presenter:smoke": "node ./src/presenterSmoke.js",
     "presenter:doctor": "node ./src/presenterDoctor.js",
