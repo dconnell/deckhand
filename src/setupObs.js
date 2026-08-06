@@ -554,7 +554,7 @@ export async function setupObs(input = {}) {
     try {
       cliOptions = parseSetupObsOptions(process.argv.slice(2));
     } catch (error) {
-      logger.error('Invalid setup:obs options', {
+      logger.error('Invalid obs:setup options', {
         error: error instanceof Error ? error.message : String(error),
       });
       return 1;

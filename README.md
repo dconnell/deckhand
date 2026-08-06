@@ -46,10 +46,10 @@ attaching to your normal Chrome process.
 4. Build the OBS scenes from the presentation's `layouts` catalog:
 
 ```bash
-npm run setup:obs -- my-talk
+npm run obs:setup -- my-talk
 ```
 
-`setup:obs` provisions the scenes and named inputs. During runtime, Deckhand
+`obs:setup` provisions the scenes and named inputs. During runtime, Deckhand
 pushes macOS `window_capture` settings into those inputs and upgrades them from
 bootstrap app/title selectors to exact managed window bindings when available.
 
@@ -154,7 +154,7 @@ configured target commands.
 ## Verification Status
 
 - Automated unit and integration tests pass with `npm test`.
-- `npm run setup:obs -- <presentation-name>` connects to OBS and applies
+- `npm run obs:setup -- <presentation-name>` connects to OBS and applies
   layout-derived scenes from that presentation config.
 - `node ./src/index.js <presentation-name>` starts the managed runtime session, including
   the deck HTTP server and presenter HTTP surface.

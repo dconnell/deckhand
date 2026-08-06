@@ -359,7 +359,7 @@ example the `BrowserA` source becomes the `Deckhand_BrowserA` input, and the
 the ownership marker that lets Deckhand reconcile safely against the operator's
 own OBS content.
 
-On `setup:obs` and at runtime (controlled by `obs.prune`, default `true`),
+On `obs:setup` and at runtime (controlled by `obs.prune`, default `true`),
 Deckhand reconciles OBS to the current presentation:
 
 - inputs and scenes for every source/scene in the current layouts are created

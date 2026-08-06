@@ -3,7 +3,7 @@ import { deckhandInputName, deckhandSceneName } from './obsNames.js';
 import { parsePresentationCliArgs } from './presentations.js';
 
 /**
- * Parse `setup:obs` CLI flags.
+ * Parse `obs:setup` CLI flags.
  *
  * @param {string[]} argv CLI args.
  * @returns {{ check: boolean, presentationName: string, setCanvas: boolean }}

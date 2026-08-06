@@ -66,14 +66,14 @@ http://127.0.0.1:3001/presenter/
 Create or validate the OBS scenes from the same `layouts` model:
 
 ```bash
-npm run setup:obs -- example2
-npm run setup:obs -- --check example2
+npm run obs:setup -- example2
+npm run obs:setup -- --check example2
 ```
 
 If you want OBS canvas alignment to match the configured presenter stage:
 
 ```bash
-npm run setup:obs -- --set-canvas example2
+npm run obs:setup -- --set-canvas example2
 ```
 
 ## Presenter Add-Ons

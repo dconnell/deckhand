@@ -69,24 +69,24 @@ Deckhand derives OBS scenes from the presentation's `layouts` catalog.
 Apply the scene setup:
 
 ```bash
-npm run setup:obs -- my-talk
+npm run obs:setup -- my-talk
 ```
 
 Read-only validation mode:
 
 ```bash
-npm run setup:obs -- --check my-talk
+npm run obs:setup -- --check my-talk
 ```
 
 If you want Deckhand to align the OBS canvas to the configured presenter stage:
 
 ```bash
-npm run setup:obs -- --set-canvas my-talk
+npm run obs:setup -- --set-canvas my-talk
 ```
 
 `--set-canvas` mutates a global OBS setting. Default behavior is warn-only.
 
-`setup:obs` provisions the scenes and stable input names only. During runtime,
+`obs:setup` provisions the scenes and stable input names only. During runtime,
 Deckhand pushes macOS `window_capture` settings into those inputs and upgrades
 them from bootstrap title matching to exact managed window bindings when
 Hammerspoon reports them. For strict `macWindowId` updates, Deckhand applies a
