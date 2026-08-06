@@ -4,7 +4,6 @@
   "description": "OBS scene and target coordinator for presentations.",
   "type": "module",
   "scripts": {
-    "presentation:serve": "node ./src/presentationServe.js",
     "obs:setup": "node ./src/setupObs.js",
     "presenter:stt": "node ./src/presenter/stt/cli.js",
     "presenter:smoke": "node ./src/presenterSmoke.js",
