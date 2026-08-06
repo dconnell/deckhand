@@ -142,6 +142,8 @@ configured target commands.
 
 - `src/`: coordinator, config, protocol, hub, OBS setup, presenter HTTP, STT,
   CDP transport, and browser session runtime
+- `presentation/`: self-contained presentations; see
+  [`presentation/README.md`](presentation/README.md) for the sample index
 - `presentation/<name>/`: self-contained presentation config, deck, and docs
 - `presenter-web/`: first-class presenter app served at `/presenter/`
 - `hammerspoon/`: macOS window-layout integration

@@ -1,11 +1,31 @@
 # Example
 
+The reference Deckhand sample. A browser-heavy live-coding talk with a single
+terminal and dual browser targets, plus optional whole-frame OBS slide
+transitions. If you are copying a starting point, start here.
+
 This example demonstrates the full Deckhand flow:
 
 - layout-driven OBS audience scenes
 - presenter script updates
 - per-slide focus hints
 - Deckhand-owned Chrome windows and tabs with preloaded, switchable tabs
+
+## How It Differs From The Other Examples
+
+| Concern                    | `example`                            | `example2`                                      | `example-laptop`                                |
+| -------------------------- | ------------------------------------ | ----------------------------------------------- | ----------------------------------------------- |
+| Editor (VS Code)           | not present                          | `Editor` source (`kind: "app"`)                 | not present                                     |
+| Terminals                  | single `Terminal` window             | three: `TerminalA`, `TerminalB`, `TerminalC`    | single `Terminal` window                        |
+| Terminal cwds              | one (`/repos/demo`)                  | one per terminal (`app`, `infra`, `docs`)       | one (`/repos/demo`)                             |
+| Browser targets            | `BrowserA` + `BrowserB` (dual)       | only the `Slide` deck browser                   | `BrowserA` + `BrowserB` (dual)                  |
+| Dual-browser layout        | `dual-browser`                       | none                                            | `dual-browser`                                  |
+| Deck theme                 | `black.css`                          | `white.css`                                     | `black.css`                                     |
+| Teleprompter overlays      | none                                 | none                                            | per-layout + one per-slide override             |
+| OBS slide transitions      | configured (`Slide Right` / `Left`)  | not configured (instant cut)                    | configured (`Slide Right` / `Left`)             |
+| Intended display           | multi-monitor presenter stage        | multi-monitor presenter stage                   | single-screen laptop                            |
+
+See [`../README.md`](../README.md) for the side-by-side index of all examples.
 
 ## What's Here
 

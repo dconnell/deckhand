@@ -1,7 +1,7 @@
 {
   "name": "deckhand",
   "version": "0.1.0",
-  "description": "OBS scene and target coordinator for presentations.",
+  "description": "Local presentation coordinator that keeps four outputs in sync: slide position, OBS scenes, presenter-side state on macOS, and Deckhand-owned Chrome windows and tabs.",
   "type": "module",
   "scripts": {
     "obs:setup": "node ./src/setupObs.js",

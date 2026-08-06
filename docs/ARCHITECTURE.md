@@ -1,5 +1,77 @@
 # Architecture
 
+## System Diagram
+
+The diagram below shows every runtime component and the connections between
+them. There are two kinds of edges:
+
+- **Hub protocol edges** — JSON messages over the localhost WebSocket bus
+  (`ws://127.0.0.1:8765`). Driver and observer clients use this bus.
+- **Direct control edges** — in-process calls or dedicated protocols (OBS
+  WebSocket, Chrome DevTools Protocol, macOS window APIs) that bypass the hub.
+
+```mermaid
+flowchart TB
+    subgraph node["Deckhand Node process (node ./src/index.js)"]
+        direction TB
+        COORD["Coordinator\n(coordinator.js)"]
+        HUB["Hub — localhost WS bus\n(hub.js)\nws://127.0.0.1:8765"]
+        OBSAD["OBS adapter\n(obsClient.js)"]
+        EXEC["Browser command executor\n(injected seam)"]
+        BSESS["Browser session\n(browserSession.js)"]
+        DECKHTTP["Presentation HTTP\n:3000 — serves the deck"]
+        PRESHTTP["Presenter HTTP\n:3001 — app + /status.json"]
+    end
+
+    REVEAL["reveal.js driver bridge (reveal/)\nruns inside the deck tab"]
+    OBSST["OBS Studio"]
+    CHROME["Deckhand Chrome session\nowned, separate profile"]
+    MACW["macOS windows\n(Chrome, iTerm2, apps)"]
+
+    subgraph observers["Observer clients (connect to the hub)"]
+        HS["Hammerspoon (macOS)\nwindow layout, focus, hotkeys"]
+        PWA["Presenter web app\n(teleprompter, in a browser tab)"]
+        STT["whisper.cpp STT runner\n(separate process)"]
+    end
+
+    %% --- Hub protocol ---
+    REVEAL -- "positionChanged" --> HUB
+    HUB -- "command (next / prev / goTo)" --> REVEAL
+    HUB -- "driverPositionChanged" --> COORD
+    COORD -- "publishSticky(presentationState)" --> HUB
+    HUB -- "presentationState (sticky)" --> HS
+    HUB -- "presentationState (sticky) / transcript (live)" --> PWA
+    HS -- "driverCommand (hotkeys)\nwindowBindings (exact macWindowId)" --> HUB
+    STT -- "transcript (live)" --> HUB
+
+    %% --- Coordinator direct control (non-hub) ---
+    COORD -- "switchScene / applyInputSettings" --> OBSAD
+    OBSAD -- "obs-websocket" --> OBSST
+    COORD -- "browser commands" --> EXEC
+    EXEC -- "activateTab / navigate" --> BSESS
+    BSESS -- "Chrome DevTools Protocol" --> CHROME
+
+    %% --- HTTP / assets ---
+    DECKHTTP -- "deck HTML" --> CHROME
+    PRESHTTP -- "bootstrap.json + assets" --> PWA
+
+    %% --- macOS window surface ---
+    CHROME --> MACW
+    HS -. "setFrame / focus" .-> MACW
+    OBSST -. "window_capture (by macWindowId)" .-> MACW
+```
+
+Key things to read from the diagram:
+
+- The **hub** is the only path between the coordinator and the driver/observer
+  clients. Nothing else tunnels through it.
+- The **coordinator** reaches OBS and the browser session directly, not over the
+  hub. Each of those steps is isolated so a failure in one does not suppress the
+  others (see [Flow](#flow) and [Error Handling](#error-handling)).
+- **Window identity** flows in a loop: Deckhand launches the windows, Hammerspoon
+  resolves the exact `macWindowId` for each, reports it back over the hub, and
+  Deckhand pushes it into OBS `window_capture` settings.
+
 ## Model
 
 Deckhand has these runtime boundaries:
