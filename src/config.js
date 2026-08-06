@@ -304,6 +304,7 @@ function normalizeObsTransitions(value) {
     durationMs: Number.isFinite(t.durationMs) ? t.durationMs : 300,
     settleMs: Number.isFinite(t.settleMs) ? t.settleMs : 200,
     navigationWaitMs: Number.isFinite(t.navigationWaitMs) ? t.navigationWaitMs : 1000,
+    windowSettleMs: Number.isFinite(t.windowSettleMs) ? t.windowSettleMs : 2000,
   };
 }
 

@@ -649,6 +649,7 @@ function createTransitionsConfig(overrides = {}) {
     freezeImage: 'Freeze Frame',
     settleMs: 1,
     navigationWaitMs: 1,
+    windowSettleMs: 1,
     durationMs: 50,
     ...overrides,
   };
@@ -705,6 +706,9 @@ function createTracingObs(trace, { failCapture = false } = {}) {
     },
     async switchProgramScene(name) {
       trace.push(`switchProgramScene:${name}`);
+    },
+    async waitForSceneTransitionEnd() {
+      trace.push('waitForSceneTransitionEnd');
     },
     async ensureFreezeAssets() {
       trace.push('ensureFreezeAssets');
@@ -768,6 +772,13 @@ test('coordinator runs freeze -> mutate -> directional reveal for a forward jump
   const cutIndex = trace.indexOf('setCurrentTransition:Cut');
   const forwardIndex = trace.indexOf('setCurrentTransition:Slide Right');
   assert.ok(cutIndex < forwardIndex, 'cut happens before the directional reveal');
+
+  // The freeze re-arm must capture AFTER the slide animation settles, otherwise
+  // the next freeze frame is a half-slid composite.
+  const transitionEndIndex = trace.indexOf('waitForSceneTransitionEnd');
+  const rearmCaptureIndex = trace.lastIndexOf('captureProgramScreenshot');
+  assert.ok(transitionEndIndex > revealIndex, 'waits for the transition to end after the reveal');
+  assert.ok(rearmCaptureIndex > transitionEndIndex, 're-arms the freeze only after the transition settles');
 });
 
 test('coordinator picks the backward transition for a prev jump and restores the operator transition', async () => {
@@ -792,46 +803,97 @@ test('coordinator picks the backward transition for a prev jump and restores the
   assert.ok(restoreIndex > revealIndex, 'transition is restored after the reveal');
 });
 
-test('coordinator waits the navigation cap behind the freeze for slides with navigate commands', async () => {
-  let observedWait = 0;
-  const config = createTransitionsConfig({ navigationWaitMs: 7, settleMs: 1 });
-  const obs = {
-    async connect() {},
-    async disconnect() {},
-    isConnected() {
-      return true;
-    },
-    async applyInputSettings() {},
-    async getCurrentTransitionName() {
-      return 'Fade';
-    },
-    async captureProgramScreenshot() {},
-    async setCurrentTransition() {},
-    async switchProgramScene() {},
-    async ensureFreezeAssets() {},
-  };
-  const realSetTimeout = setTimeout;
-  const original = globalThis.setTimeout;
-  globalThis.setTimeout = (fn, ms) => {
-    observedWait = Math.max(observedWait, ms);
-    return realSetTimeout(fn, ms);
-  };
-  try {
-    const coordinator = createCoordinator({
-      config,
-      obs,
-      hub: createTracingHub([]),
-      executor: createTracingExecutor([]),
-      logger: createLogger(),
-    });
+test('coordinator gates the reveal on the presenter window-settle ack', async () => {
+  const trace = [];
+  const config = createTransitionsConfig({ windowSettleMs: 2000 });
 
-    await coordinator.start();
-    await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+  // Hub that records handlers so the test can drive the windowSettled ack, and
+  // remembers the seq each publishSticky carried.
+  let publishedSeq = null;
+  const handlers = new Map();
+  const hub = {
+    on(eventName, handler) {
+      handlers.set(eventName, handler);
+    },
+    emit(eventName, payload) {
+      return handlers.get(eventName)?.(payload);
+    },
+    async start() {},
+    async stop() {},
+    async sendCommand() {},
+    async publishSticky(channel, payload) {
+      publishedSeq = payload.seq;
+      trace.push('publishSticky');
+    },
+    getSnapshot() {
+      return { activeDriver: null, observers: [], sticky: {} };
+    },
+  };
 
-    assert.ok(observedWait >= 7, 'uses the navigation wait for slides that navigate');
-  } finally {
-    globalThis.setTimeout = original;
-  }
+  const coordinator = createCoordinator({
+    config,
+    obs: createTracingObs(trace),
+    hub,
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+
+  // 'demo' is the first position change -> seq 1. The mutate publishes then
+  // blocks awaiting the windowSettle ack for seq 1.
+  const pending = coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(publishedSeq, 1, 'presentation state is published before the reveal');
+  assert.equal(trace.includes('switchProgramScene:Deckhand_Dual Browser'), false, 'reveal must wait for the settle ack');
+
+  hub.emit('observerWindowSettled', { seq: 1 });
+  await pending;
+
+  assert.equal(trace.includes('switchProgramScene:Deckhand_Dual Browser'), true, 'reveal proceeds once the ack arrives');
+});
+
+test('coordinator reveals via the window-settle timeout fallback when no ack arrives', async () => {
+  const trace = [];
+  const config = createTransitionsConfig({ windowSettleMs: 5 });
+
+  const coordinator = createCoordinator({
+    config,
+    obs: createTracingObs(trace),
+    hub: createTracingHub(trace),
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+
+  assert.equal(trace.includes('switchProgramScene:Deckhand_Dual Browser'), true, 'reveal proceeds after the fallback timeout');
+});
+
+test('coordinator skips the window-settle wait when no presenter is configured', async () => {
+  const trace = [];
+  const config = createTransitionsConfig({ windowSettleMs: 2000 });
+  config.presenter = null;
+
+  const coordinator = createCoordinator({
+    config,
+    obs: createTracingObs(trace),
+    hub: createTracingHub(trace),
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+  // With no presenter the settle wait is skipped, so this resolves promptly
+  // even though windowSettleMs is large and no ack is ever emitted.
+  const start = Date.now();
+  await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+  const elapsed = Date.now() - start;
+
+  assert.ok(elapsed < 500, 'does not block on the settle timeout when there is no presenter');
+  assert.equal(trace.includes('switchProgramScene:Deckhand_Dual Browser'), true, 'still reveals the target scene');
 });
 
 test('coordinator treats a freeze capture failure as best-effort and still reveals the target', async () => {

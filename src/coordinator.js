@@ -16,6 +16,9 @@ function createNoopLogger() {
 const DEFAULT_FREEZE_FILENAME = 'deckhand-freeze-frame.png';
 const DEFAULT_TRANSITION_DURATION_MS = 300;
 const FREEZE_CUT_TRANSITION = 'Cut';
+// Buffer added to the configured transition duration when waiting for the OBS
+// slide animation to finish before re-arming the freeze frame.
+const TRANSITION_END_BUFFER_MS = 300;
 
 function delay(ms) {
   return new Promise((resolve) => {
@@ -97,7 +100,7 @@ function isBrowserSource(config, sourceId) {
  * directly; the executor seam keeps slide-event orchestration decoupled from the
  * Deckhand browser session runtime.
  *
- * @param {{ config: { driver: { type: string }, obs: { url: string, password: string, transitions: null | { forward: string, backward: string, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number } }, layouts: Record<string, unknown>, slides: Record<string, { layoutId: string, commands: Array<{ type: string, source: string, tab?: string, url?: string, [key: string]: unknown }> }> }, obs: { connect(): Promise<unknown>, disconnect(): Promise<unknown>, setScene(sceneName: string): Promise<unknown>, isConnected?(): boolean, applyInputSettings?(inputName: string, inputSettings: Record<string, unknown>): Promise<void>, getCurrentTransitionName?(): Promise<string>, captureProgramScreenshot?(filePath: string): Promise<void>, switchProgramScene?(sceneName: string, options?: { waitForEvent?: boolean, timeoutMs?: number }): Promise<void>, setCurrentTransition?(name: string, durationMs?: number): Promise<void>, ensureFreezeAssets?(options: { sceneName: string, inputName: string, imagePath: string }): Promise<void> }, hub: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown>, sendCommand(target: { role?: 'driver' }, command: Record<string, unknown>): Promise<unknown>, publishSticky(channel: string, payload: Record<string, unknown>): Promise<unknown>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown> } }, executor?: { start(): Promise<void>, stop(): Promise<void>, execute(command: Record<string, unknown>): Promise<void> } | null, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Coordinator dependencies.
+ * @param {{ config: { driver: { type: string }, obs: { url: string, password: string, transitions: null | { forward: string, backward: string, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number, windowSettleMs: number } }, layouts: Record<string, unknown>, slides: Record<string, { layoutId: string, commands: Array<{ type: string, source: string, tab?: string, url?: string, [key: string]: unknown }> }> }, obs: { connect(): Promise<unknown>, disconnect(): Promise<unknown>, setScene(sceneName: string): Promise<unknown>, isConnected?(): boolean, applyInputSettings?(inputName: string, inputSettings: Record<string, unknown>): Promise<void>, getCurrentTransitionName?(): Promise<string>, captureProgramScreenshot?(filePath: string): Promise<void>, switchProgramScene?(sceneName: string, options?: { waitForEvent?: boolean, timeoutMs?: number }): Promise<void>, waitForSceneTransitionEnd?(options?: { timeoutMs?: number }): Promise<void>, setCurrentTransition?(name: string, durationMs?: number): Promise<void>, ensureFreezeAssets?(options: { sceneName: string, inputName: string, imagePath: string }): Promise<void> }, hub: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown>, sendCommand(target: { role?: 'driver' }, command: Record<string, unknown>): Promise<unknown>, publishSticky(channel: string, payload: Record<string, unknown>): Promise<unknown>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown> } }, executor?: { start(): Promise<void>, stop(): Promise<void>, execute(command: Record<string, unknown>): Promise<void> } | null, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Coordinator dependencies.
  * @returns {{ start(): Promise<void>, stop(): Promise<void>, handleDriverPositionChanged(position: { id: string, index?: Record<string, unknown>, meta?: Record<string, unknown> }): Promise<void>, getCurrentPresentationState(): Record<string, unknown> | null }}
  */
 export function createCoordinator(options) {
@@ -113,6 +116,10 @@ export function createCoordinator(options) {
   let freezeArmed = false;
   let defaultTransitionName = FREEZE_CUT_TRANSITION;
   const runtimeWindowBindings = {};
+  // Seq-keyed deferreds awaiting the presenter's `windowSettled` ack, so a slide
+  // change reveals only after the physical windows have actually moved/resized
+  // instead of after a guessed fixed delay.
+  const windowSettleWaiters = new Map();
 
   function buildResolvedPresentationState(slideId, seq) {
     const bootstrapWindowBindings = options.getManagedWindowBindings?.() ?? {};
@@ -299,14 +306,13 @@ export function createCoordinator(options) {
    * navigation) happens inside `mutate`, which only runs once the Freeze scene
    * is confirmed on screen. The reveal direction comes from `direction`.
    *
-   * @param {{ forward: string, backward: string, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number }} transitions Normalized transition config.
+   * @param {{ forward: string, backward: string, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, windowSettleMs: number }} transitions Normalized transition config.
    * @param {{ audienceScene: string }} presentationState The resolved target state.
    * @param {'forward' | 'backward' | 'none'} direction Perceived slide direction.
    * @param {string} slideId The active slide id, for logging.
    * @param {() => Promise<void>} mutate The dirty work to hide behind the freeze.
-   * @param {boolean} requiresNavigationWait Whether to wait the navigation cap.
    */
-  async function runSlideTransition(transitions, presentationState, direction, slideId, mutate, requiresNavigationWait) {
+  async function runSlideTransition(transitions, presentationState, direction, slideId, mutate) {
     const targetScene = deckhandSceneName(presentationState.audienceScene);
 
     try {
@@ -324,7 +330,9 @@ export function createCoordinator(options) {
 
       await mutate();
 
-      await delay(requiresNavigationWait ? transitions.navigationWaitMs : transitions.settleMs);
+      // Small additional breathe so OBS finishes re-rendering the settled
+      // window-capture sources before the reveal slides them into view.
+      await delay(transitions.settleMs);
 
       const directionalTransition = direction === 'forward'
         ? transitions.forward
@@ -337,6 +345,11 @@ export function createCoordinator(options) {
       }
 
       await options.obs.switchProgramScene(targetScene, { waitForEvent: true });
+
+      // Wait for the slide animation itself to finish before re-arming, so the
+      // next freeze frame is captured from the fully settled target frame
+      // instead of a half-slid composite.
+      await waitForSceneTransitionToSettle(transitions);
 
       // Re-arm the freeze with the now-current frame so the *next* change
       // hides behind this one. Best-effort: a failure here only leaves a stale
@@ -401,12 +414,19 @@ export function createCoordinator(options) {
       return;
     }
 
-    const requiresNavigationWait = slideConfig.commands.some((command) => command.type === 'navigate');
-
     await runSlideTransition(transitions, presentationState, direction, position.id, async () => {
+      // Register the settle waiter before publishing so a fast presenter ack
+      // can never beat the listener.
+      const windowSettled = expectWindowSettle(presentationState.seq, transitions.windowSettleMs);
       await publishAndApplyBindings(presentationState, position.id);
-      await dispatchBrowserCommands(slideConfig, position.id);
-    }, requiresNavigationWait);
+      // The window move (Hammerspoon ack) and the browser navigation (CDP load
+      // event) are independent; await both concurrently so the reveal never
+      // exposes a half-settled source.
+      await Promise.all([
+        dispatchBrowserCommands(slideConfig, position.id),
+        windowSettled,
+      ]);
+    });
   }
 
   async function handleObserverWindowBindings(payload) {
@@ -433,6 +453,73 @@ export function createCoordinator(options) {
 
   function resolveFreezeImagePath(transitions) {
     return transitions.freezeImagePath ?? path.join(os.tmpdir(), DEFAULT_FREEZE_FILENAME);
+  }
+
+  /**
+   * Register a deferred that resolves when the presenter acks that it has
+   * applied the window geometry for `seq` (the `windowSettled` hub message), or
+   * after `timeoutMs` as a safety fallback. Resolves immediately when no
+   * presenter is configured, since there are no physical windows to settle.
+   *
+   * The waiter is registered before the matching presentation state is
+   * published, so a fast ack can never arrive before the listener exists.
+   */
+  function expectWindowSettle(seq, timeoutMs) {
+    if (options.config.presenter === null) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+      const previous = windowSettleWaiters.get(seq);
+
+      if (previous !== undefined) {
+        clearTimeout(previous.timer);
+        previous.resolve();
+      }
+
+      const timer = setTimeout(() => {
+        windowSettleWaiters.delete(seq);
+        logger.warn('Timed out waiting for presenter window-settle ack', { seq });
+        resolve();
+      }, timeoutMs);
+
+      windowSettleWaiters.set(seq, {
+        resolve: () => {
+          clearTimeout(timer);
+          windowSettleWaiters.delete(seq);
+          resolve();
+        },
+        timer,
+      });
+    });
+  }
+
+  function handleObserverWindowSettled(payload) {
+    const seq = payload?.seq;
+
+    if (typeof seq !== 'number') {
+      return;
+    }
+
+    windowSettleWaiters.get(seq)?.resolve();
+  }
+
+  /**
+   * Wait for the OBS slide transition to finish. Prefers the
+   * `CurrentSceneTransitionEnded` event (via the obs client); falls back to a
+   * duration-based wait when the client cannot observe the event. This ensures
+   * the freeze frame is re-captured from a fully settled frame rather than a
+   * mid-transition composite.
+   */
+  async function waitForSceneTransitionToSettle(transitions) {
+    const timeoutMs = (transitions.durationMs ?? DEFAULT_TRANSITION_DURATION_MS) + TRANSITION_END_BUFFER_MS;
+
+    if (typeof options.obs.waitForSceneTransitionEnd !== 'function') {
+      await delay(timeoutMs);
+      return;
+    }
+
+    await options.obs.waitForSceneTransitionEnd({ timeoutMs });
   }
 
   async function armFreezeFrame(transitions) {
@@ -490,6 +577,7 @@ export function createCoordinator(options) {
   options.hub.on('driverRegistered', () => logSnapshot('Driver client registered'));
   options.hub.on('observerRegistered', () => logSnapshot('Observer client registered'));
   options.hub.on('observerWindowBindings', handleObserverWindowBindings);
+  options.hub.on('observerWindowSettled', handleObserverWindowSettled);
   options.hub.on('clientDisconnected', () => logSnapshot('Client disconnected'));
 
   return {

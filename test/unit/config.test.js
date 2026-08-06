@@ -222,6 +222,7 @@ test('normalizeConfig normalizes the slide-transitions block with defaults', () 
     durationMs: 300,
     settleMs: 200,
     navigationWaitMs: 1000,
+    windowSettleMs: 2000,
   });
 });
 

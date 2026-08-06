@@ -362,5 +362,12 @@ export function validateClientMessage(message) {
     return normalizeWindowBindingsMessage(message);
   }
 
+  if (type === 'windowSettled') {
+    return {
+      type,
+      seq: normalizePositiveInteger(message.seq, 'seq'),
+    };
+  }
+
   throw new TypeError(`Unsupported message type: ${type}`);
 }

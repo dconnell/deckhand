@@ -13,7 +13,7 @@ function createNoopLogger() {
  * Create a thin OBS v5 wrapper used by the coordinator.
  *
  * @param {{ url: string, password: string, OBSWebSocketClass?: new () => { connect(url: string, password?: string): Promise<unknown>, disconnect(): Promise<unknown>, call(method: string, payload?: Record<string, unknown>): Promise<unknown>, on?(event: string, handler: (data: unknown) => void): void, off?(event: string, handler: (data: unknown) => void): void }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Adapter options.
- * @returns {{ connect(): Promise<unknown>, disconnect(): Promise<void>, setScene(sceneName: string): Promise<void>, applyInputSettings(inputName: string, inputSettings: Record<string, unknown>): Promise<void>, isConnected(): boolean, getClient(): unknown, getCurrentProgramScene(): Promise<string>, getCurrentTransitionName(): Promise<string>, captureProgramScreenshot(filePath: string): Promise<void>, setCurrentTransition(name: string, durationMs?: number): Promise<void>, switchProgramScene(sceneName: string, options?: { waitForEvent?: boolean, timeoutMs?: number }): Promise<void>, ensureFreezeAssets(options: { sceneName: string, inputName: string, imagePath: string }): Promise<void> }}
+ * @returns {{ connect(): Promise<unknown>, disconnect(): Promise<void>, setScene(sceneName: string): Promise<void>, applyInputSettings(inputName: string, inputSettings: Record<string, unknown>): Promise<void>, isConnected(): boolean, getClient(): unknown, getCurrentProgramScene(): Promise<string>, getCurrentTransitionName(): Promise<string>, captureProgramScreenshot(filePath: string): Promise<void>, setCurrentTransition(name: string, durationMs?: number): Promise<void>, switchProgramScene(sceneName: string, options?: { waitForEvent?: boolean, timeoutMs?: number }): Promise<void>, waitForSceneTransitionEnd(options?: { timeoutMs?: number }): Promise<void>, ensureFreezeAssets(options: { sceneName: string, inputName: string, imagePath: string }): Promise<void> }}
  */
 export function createObsClient(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -241,6 +241,49 @@ export function createObsClient(options) {
           });
           reject(error);
         });
+      });
+    },
+
+    async waitForSceneTransitionEnd({ timeoutMs = 2000 } = {}) {
+      if (!connected) {
+        throw new Error('OBS client is not connected');
+      }
+
+      await new Promise((resolve) => {
+        let settled = false;
+
+        const cleanup = () => {
+          clearTimeout(timer);
+
+          if (typeof client.off === 'function') {
+            client.off('CurrentSceneTransitionEnded', handler);
+          }
+        };
+
+        const timer = setTimeout(() => {
+          if (settled) {
+            return;
+          }
+
+          settled = true;
+          cleanup();
+          logger.warn('Timed out waiting for OBS scene transition to end; continuing', { timeoutMs });
+          resolve();
+        }, timeoutMs);
+
+        const handler = () => {
+          if (settled) {
+            return;
+          }
+
+          settled = true;
+          cleanup();
+          resolve();
+        };
+
+        if (typeof client.on === 'function') {
+          client.on('CurrentSceneTransitionEnded', handler);
+        }
       });
     },
 

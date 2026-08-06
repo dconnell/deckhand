@@ -317,8 +317,8 @@ transitions in the OBS UI and reference them by name here (see
 ```json
 "obs": {
   "transitions": {
-    "forward": "Slide Right",
-    "backward": "Slide Left"
+    "forward": "Slide Left",
+    "backward": "Slide Right"
   }
 }
 ```

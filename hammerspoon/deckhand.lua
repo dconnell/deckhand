@@ -123,6 +123,15 @@ function M.start(options)
             cleared = cleared,
           }), false)
         end
+
+        -- Ack that this presentation state's window geometry has been applied.
+        -- The coordinator awaits this (by seq) so a slide change never reveals
+        -- the audience scene until the physical windows have actually settled,
+        -- instead of guessing with a fixed delay.
+        socket:send(encode_json({
+          type = "windowSettled",
+          seq = seq,
+        }), false)
         return
       end
 

@@ -139,8 +139,8 @@ Add an `obs.transitions` block to your config (base or local override):
   "url": "ws://127.0.0.1:4455",
   "password": "<your OBS password>",
   "transitions": {
-    "forward": "Slide Right",
-    "backward": "Slide Left"
+    "forward": "Slide Left",
+    "backward": "Slide Right"
   }
 }
 ```

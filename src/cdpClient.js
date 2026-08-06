@@ -6,6 +6,8 @@ function createNoopLogger() {
   };
 }
 
+const DEFAULT_NAVIGATION_LOAD_TIMEOUT_MS = 10000;
+
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -17,12 +19,14 @@ function isPlainObject(value) {
  * mocked WebSocket traffic without a real Chrome process.
  *
  * @param {{ discover(): Promise<{ webSocketDebuggerUrl: string, chromePid?: number | null }>, createTransport(url: string): { send(raw: string): void, close(): void, on(event: 'message' | 'close' | 'error', handler: (payload?: string) => void): void, waitUntilReady?(): Promise<void> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Client dependencies.
- * @returns {{ connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string }): Promise<void>, setWindowTitle(details: { targetId: string, title: string }): Promise<void>, closeTarget(details: { targetId: string }): Promise<void>, getTargets(): Promise<Array<Record<string, unknown>>> }}
+ * @returns {{ connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string, loadTimeoutMs?: number }): Promise<void>, setWindowTitle(details: { targetId: string, title: string }): Promise<void>, closeTarget(details: { targetId: string }): Promise<void>, getTargets(): Promise<Array<Record<string, unknown>>> }}
  */
 export function createCdpClient(options) {
   const logger = options.logger ?? createNoopLogger();
   const pending = new Map();
   const sessions = new Map();
+  const pageEnabledSessions = new Set();
+  const loadWaiters = new Map();
   const lifecycleHandlers = new Set();
   let transport = null;
   let connected = false;
@@ -38,6 +42,14 @@ export function createCdpClient(options) {
 
     pending.clear();
     sessions.clear();
+    pageEnabledSessions.clear();
+
+    for (const waiter of loadWaiters.values()) {
+      clearTimeout(waiter.timer);
+      waiter.resolve();
+    }
+
+    loadWaiters.clear();
   }
 
   function handleTransportClosed() {
@@ -63,6 +75,13 @@ export function createCdpClient(options) {
     }
 
     if (parsed?.id === undefined) {
+      // CDP events (no id). Only the page-load event is meaningful today: it
+      // unblocks navigateTab so a slide change never reveals until the page has
+      // settled (replacing the old fixed-delay guess).
+      if (parsed?.method === 'Page.loadEventFired') {
+        loadWaiters.get(parsed?.sessionId)?.resolve();
+      }
+
       return;
     }
 
@@ -106,6 +125,36 @@ export function createCdpClient(options) {
         pending.delete(id);
         reject(error instanceof Error ? error : new Error(String(error)));
       }
+    });
+  }
+
+  /**
+   * Resolve once the target's `Page.loadEventFired` arrives, or after a safety
+   * timeout. A prior in-flight waiter for the same session is resolved early so
+   * a rapid re-navigate supersedes it without leaking a dangling promise.
+   */
+  function waitForPageLoad(sessionId, timeoutMs) {
+    return new Promise((resolve) => {
+      const previous = loadWaiters.get(sessionId);
+
+      if (previous !== undefined) {
+        clearTimeout(previous.timer);
+        previous.resolve();
+      }
+
+      const timer = setTimeout(() => {
+        loadWaiters.delete(sessionId);
+        resolve();
+      }, timeoutMs);
+
+      loadWaiters.set(sessionId, {
+        resolve: () => {
+          clearTimeout(timer);
+          loadWaiters.delete(sessionId);
+          resolve();
+        },
+        timer,
+      });
     });
   }
 
@@ -215,7 +264,7 @@ export function createCdpClient(options) {
       await send('Target.activateTarget', { targetId });
     },
 
-    async navigateTab({ targetId, url }) {
+    async navigateTab({ targetId, url, loadTimeoutMs = DEFAULT_NAVIGATION_LOAD_TIMEOUT_MS }) {
       let sessionId = sessions.get(targetId);
 
       if (sessionId === undefined) {
@@ -224,7 +273,21 @@ export function createCdpClient(options) {
         sessions.set(targetId, sessionId);
       }
 
-      await send('Page.navigate', { url }, sessionId);
+      // Page.enable must be on for Chrome to emit Page.loadEventFired. Called
+      // once per session; later navigations reuse it.
+      if (!pageEnabledSessions.has(sessionId)) {
+        await send('Page.enable', {}, sessionId);
+        pageEnabledSessions.add(sessionId);
+      }
+
+      const result = await send('Page.navigate', { url }, sessionId);
+
+      if (result?.errorText !== undefined) {
+        logger.warn('CDP navigation reported an error', { targetId, url, errorText: result.errorText });
+        return;
+      }
+
+      await waitForPageLoad(sessionId, loadTimeoutMs);
     },
 
     async setWindowTitle({ targetId, title }) {

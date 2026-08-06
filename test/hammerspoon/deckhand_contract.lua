@@ -157,7 +157,11 @@ assert_equal(sockets[1].sent[4].type, "windowBindings", "expected exact window b
 assert_equal(sockets[1].sent[4].bindings.Slide.macWindowId, 4002, "expected slide macWindowId in report")
 assert_equal(sockets[1].sent[4].bindings.Slide.pid, 2002, "expected slide pid in report")
 assert_equal(sockets[1].sent[4].cleared[1], nil, "expected no cleared bindings in initial report")
-assert_equal(sockets[1].sent[5].type, "windowBindings", "expected a second report when other managed bindings are first resolved")
+assert_equal(sockets[1].sent[5].type, "windowSettled", "expected window-settled ack after applying state")
+assert_equal(sockets[1].sent[5].seq, 7, "expected window-settled ack to echo the applied seq")
+assert_equal(sockets[1].sent[6].type, "windowBindings", "expected a second report when other managed bindings are first resolved")
+assert_equal(sockets[1].sent[7].type, "windowSettled", "expected window-settled ack for the second applied state")
+assert_equal(sockets[1].sent[7].seq, 8, "expected second window-settled ack to echo the applied seq")
 
 sockets[1].callback("closed", "server restart")
 assert_equal(connect_count, 2, "expected reconnect after close")

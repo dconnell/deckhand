@@ -217,7 +217,7 @@ test('activateTab sends Target.activateTarget for the named handle', async () =>
   await pending;
 });
 
-test('navigateTab attaches once per target then sends Page.navigate on the session', async () => {
+test('navigateTab enables Page then awaits the load event before resolving', async () => {
   const transport = createFakeTransport();
   const client = createCdpClient({
     discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://browser', chromePid: 1 }),
@@ -242,27 +242,95 @@ test('navigateTab attaches once per target then sends Page.navigate on the sessi
 
   assert.deepEqual(transport.sent[1], {
     id: 2,
+    method: 'Page.enable',
+    params: {},
+    sessionId: 'SESSION_HOME',
+  });
+
+  respondTo(transport, 2, {});
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(transport.sent[2], {
+    id: 3,
     method: 'Page.navigate',
     params: { url: 'https://example.com/a' },
     sessionId: 'SESSION_HOME',
   });
 
-  respondTo(transport, 2, { frameId: 'FRAME_HOME' });
+  let resolved = false;
+  first.then(() => {
+    resolved = true;
+  });
+  respondTo(transport, 3, { frameId: 'FRAME_HOME' });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(resolved, false, 'navigateTab must not resolve until Page.loadEventFired arrives');
+
+  transport.emit({ method: 'Page.loadEventFired', sessionId: 'SESSION_HOME', params: {} });
+  await first;
+
+  assert.equal(resolved, true);
+});
+
+test('navigateTab reuses the cached session and skips Page.enable on subsequent calls', async () => {
+  const transport = createFakeTransport();
+  const client = createCdpClient({
+    discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://browser', chromePid: 1 }),
+    createTransport() {
+      return transport;
+    },
+  });
+
+  await client.connect();
+
+  const first = client.navigateTab({ targetId: 'TARGET_TAB_HOME', url: 'https://example.com/a' });
+  await new Promise((resolve) => setImmediate(resolve));
+  respondTo(transport, 1, { sessionId: 'SESSION_HOME' });
+  await new Promise((resolve) => setImmediate(resolve));
+  respondTo(transport, 2, {});
+  await new Promise((resolve) => setImmediate(resolve));
+  respondTo(transport, 3, { frameId: 'FRAME_HOME' });
+  await new Promise((resolve) => setImmediate(resolve));
+  transport.emit({ method: 'Page.loadEventFired', sessionId: 'SESSION_HOME', params: {} });
   await first;
 
   const second = client.navigateTab({ targetId: 'TARGET_TAB_HOME', url: 'https://example.com/b' });
   await new Promise((resolve) => setImmediate(resolve));
 
-  // Second navigation reuses the cached session and does not attach again.
-  assert.deepEqual(transport.sent[2], {
-    id: 3,
+  // No attach, no Page.enable: straight to Page.navigate on the cached session.
+  assert.deepEqual(transport.sent[3], {
+    id: 4,
     method: 'Page.navigate',
     params: { url: 'https://example.com/b' },
     sessionId: 'SESSION_HOME',
   });
 
-  respondTo(transport, 3, { frameId: 'FRAME_HOME' });
+  respondTo(transport, 4, { frameId: 'FRAME_HOME' });
+  await new Promise((resolve) => setImmediate(resolve));
+  transport.emit({ method: 'Page.loadEventFired', sessionId: 'SESSION_HOME', params: {} });
   await second;
+});
+
+test('navigateTab resolves via the timeout fallback when no load event arrives', async () => {
+  const transport = createFakeTransport();
+  const client = createCdpClient({
+    discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://browser', chromePid: 1 }),
+    createTransport() {
+      return transport;
+    },
+  });
+
+  await client.connect();
+
+  const pending = client.navigateTab({ targetId: 'TARGET_TAB_HOME', url: 'https://example.com/a', loadTimeoutMs: 20 });
+  await new Promise((resolve) => setImmediate(resolve));
+  respondTo(transport, 1, { sessionId: 'SESSION_HOME' });
+  await new Promise((resolve) => setImmediate(resolve));
+  respondTo(transport, 2, {});
+  await new Promise((resolve) => setImmediate(resolve));
+  respondTo(transport, 3, { frameId: 'FRAME_HOME' });
+
+  await assert.doesNotReject(pending);
 });
 
 test('setWindowTitle attaches once per target then applies the persistent title script on the session', async () => {

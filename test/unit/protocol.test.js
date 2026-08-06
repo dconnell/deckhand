@@ -186,6 +186,18 @@ test('validateClientMessage accepts observer window binding updates', () => {
   );
 });
 
+test('validateClientMessage accepts observer window-settled acks', () => {
+  assert.deepEqual(
+    validateClientMessage({ type: 'windowSettled', seq: 7 }),
+    { type: 'windowSettled', seq: 7 },
+  );
+});
+
+test('validateClientMessage rejects window-settled acks without a positive seq', () => {
+  assert.throws(() => validateClientMessage({ type: 'windowSettled' }), /seq/i);
+  assert.throws(() => validateClientMessage({ type: 'windowSettled', seq: 0 }), /seq/i);
+});
+
 test('validateClientMessage rejects observer subscriptions with unknown message types', () => {
   assert.throws(
     () => validateClientMessage({ type: 'register', role: 'observer', subscriptions: ['unknown'] }),

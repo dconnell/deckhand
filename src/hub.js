@@ -335,6 +335,19 @@ export function createHub(options) {
         return;
       }
 
+      if (message.type === 'windowSettled') {
+        if (client.role !== 'observer') {
+          await sendProtocolError(socket, 'invalid_message', 'Only observer clients can send windowSettled messages');
+          return;
+        }
+
+        await events.emit('observerWindowSettled', {
+          seq: message.seq,
+          sender: serializeClient(client),
+        });
+        return;
+      }
+
       await sendProtocolError(socket, 'unsupported_type', `Unsupported message type: ${message.type}`);
     }
 

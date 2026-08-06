@@ -325,6 +325,49 @@ test('obs client ensureFreezeAssets creates a missing freeze scene and image sou
   });
 });
 
+test('obs client waitForSceneTransitionEnd awaits the CurrentSceneTransitionEnded event', async () => {
+  const Fake = createEventedFakeObsWebSocket();
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+  const instance = obs.getClient();
+
+  let resolved = false;
+  const pending = obs.waitForSceneTransitionEnd({ timeoutMs: 1000 });
+  pending.then(() => {
+    resolved = true;
+  });
+
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(resolved, false, 'must not resolve before the transition ends');
+
+  instance.emit('CurrentSceneTransitionEnded', {});
+  await pending;
+
+  assert.equal(resolved, true);
+});
+
+test('obs client waitForSceneTransitionEnd falls back to the timeout when no event arrives', async () => {
+  const Fake = createEventedFakeObsWebSocket();
+  const logger = { info() {}, error() {}, warn() {} };
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger,
+  });
+
+  await obs.connect();
+
+  await assert.doesNotReject(obs.waitForSceneTransitionEnd({ timeoutMs: 15 }));
+});
+
 test('obs client ensureFreezeAssets re-points an existing image source at the freeze path', async () => {
   const Fake = createEventedFakeObsWebSocket((method) => {
     if (method === 'GetSceneList') {
