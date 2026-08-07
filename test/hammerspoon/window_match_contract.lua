@@ -113,3 +113,62 @@ assert_equal(window_match.findWindow({ app = "Google Chrome" }):id(), 4001, "exp
 assert_equal(window_match.findWindow({ app = "Google Chrome", macWindowId = 9999, pid = 47213, strict = true }), nil, "expected strict stale id to fail closed")
 assert_equal(window_match.findWindow({ app = "iTerm2", macWindowId = 5001, pid = 4321, strict = true }):id(), 5001, "expected exact match for owned terminal source")
 assert_equal(window_match.findWindow({ app = "iTerm2", macWindowId = 9999, strict = true }), nil, "expected owned source to fail closed on stale id")
+
+-- hs.window.get is a single-shot lookup against Hammerspoon's internal window
+-- cache (driven by hs.window.filter), which can transiently miss a window that
+-- genuinely exists — most often during Space switches, app focus transitions,
+-- or right after a window is created/activated. Without retries the resolver
+-- falls through to the frontmost window of the app and resizes the wrong one
+-- (e.g. the operator's OpenCode iTerm window). Mirrors the poll-until-stable
+-- patience the Deckhand side already applies when resolving owned windows at
+-- launch (src/ownedWindows.js).
+do
+  local transient_nil_count = 3
+  local get_calls = 0
+  local function counting_get(_)
+    get_calls = get_calls + 1
+    if get_calls <= transient_nil_count then
+      return nil
+    end
+    return terminal
+  end
+
+  local delay_calls = 0
+  local function counting_delay(_)
+    delay_calls = delay_calls + 1
+  end
+
+  local result = window_match.findWindow(
+    { app = "iTerm2", macWindowId = 5001, pid = 4321, strict = true },
+    { get_window_fn = counting_get, delay_fn = counting_delay, max_attempts = 5, delay_ms = 1 }
+  )
+
+  assert_equal(result:id(), 5001, "expected retry to recover transient nil from hs.window.get")
+  assert_equal(get_calls, transient_nil_count + 1, "expected one get call per attempt until success")
+  assert_equal(delay_calls, transient_nil_count, "expected one delay call between each attempt before success")
+end
+
+-- When the window genuinely does not exist (every attempt returns nil), the
+-- resolver must exhaust retries before giving up, and strict callers must still
+-- fail closed rather than fall through to the frontmost-window fallback.
+do
+  local get_calls = 0
+  local function always_nil(_)
+    get_calls = get_calls + 1
+    return nil
+  end
+
+  local delay_calls = 0
+  local function counting_delay(_)
+    delay_calls = delay_calls + 1
+  end
+
+  local result = window_match.findWindow(
+    { app = "iTerm2", macWindowId = 5001, pid = 4321, strict = true },
+    { get_window_fn = always_nil, delay_fn = counting_delay, max_attempts = 4, delay_ms = 1 }
+  )
+
+  assert_equal(result, nil, "expected nil after exhausting retries on a strict binding")
+  assert_equal(get_calls, 4, "expected get to be called once per attempt")
+  assert_equal(delay_calls, 3, "expected delay between attempts but not after the last")
+end
