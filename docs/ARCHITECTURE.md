@@ -1,6 +1,6 @@
 # Architecture
 
-## System Diagram
+## System diagram
 
 The diagram below shows every runtime component and the connections between
 them. There are two kinds of edges:
@@ -57,7 +57,7 @@ flowchart TB
 
     %% --- macOS window surface ---
     CHROME --> MACW
-    HS -. "setFrame / focus" .-> MACW
+    HS -. "set frame / focus" .-> MACW
     OBSST -. "window_capture (by macWindowId)" .-> MACW
 ```
 
@@ -65,12 +65,12 @@ Key things to read from the diagram:
 
 - The **hub** is the only path between the coordinator and the driver/observer
   clients. Nothing else tunnels through it.
-- The **coordinator** reaches OBS and the browser session directly, not over the
-  hub. Each of those steps is isolated so a failure in one does not suppress the
-  others (see [Flow](#flow) and [Error Handling](#error-handling)).
-- **Window identity** flows in a loop: Deckhand launches the windows, Hammerspoon
-  resolves the exact `macWindowId` for each, reports it back over the hub, and
-  Deckhand pushes it into OBS `window_capture` settings.
+- The **coordinator** reaches OBS and the browser session directly, not over
+  the hub. Each step is isolated so a failure in one does not suppress the
+  others (see [Flow](#flow) and [Error handling](#error-handling)).
+- **Window identity** flows in a loop: Deckhand launches the windows,
+  Hammerspoon resolves the exact `macWindowId` for each, reports it back over
+  the hub, and Deckhand pushes it into OBS `window_capture` settings.
 
 ## Model
 
@@ -83,14 +83,10 @@ Deckhand has these runtime boundaries:
 - browser session runtime (CDP-owned Chrome windows and tabs)
 - observer client boundary
 
-Observer clients power presenter mode. Current observer implementations are:
-
-- presenter web app
-- Hammerspoon presenter controller
-- local whisper.cpp STT runner
-
-The coordinator owns the declarative presentation model. Platform-specific
-presenter behavior lives outside the coordinator.
+Observer clients power presenter mode. Current observer implementations are
+the presenter web app, the Hammerspoon presenter controller, and the local
+whisper.cpp STT runner. The coordinator owns the declarative presentation
+model; platform-specific presenter behavior lives outside the coordinator.
 
 ## Responsibilities
 
@@ -111,40 +107,29 @@ Hammerspoon connects as a client.
 | Window layout and focus | compute slot rects | `setFrame`, raise, focus |
 | Presenter app, STT, `/status.json` | served here | — |
 
-Window discovery is the one shared job, and it runs in two phases. Node opens the
-browser windows and makes a best-effort match; Hammerspoon then resolves the
-exact `macWindowId` for each source and reports it back. Startup blocks on that
-handshake before doing the final OBS reconcile.
+Window discovery is the one shared job, and it runs in two phases. Node opens
+the browser windows and makes a best-effort match; Hammerspoon then resolves
+the exact `macWindowId` for each source and reports it back. Startup blocks on
+that handshake before doing the final OBS reconcile.
 
-## Source Of Truth
+## Source of truth
 
 The `sources` catalog is the authoritative registry of logical source IDs.
-Layouts, slide actions, and presenter bindings all build on that catalog.
+Layouts, slide actions, and presenter bindings all build on that catalog. The
+canonical presentation sources are `Slide`, `Terminal`, `BrowserA`, and
+`BrowserB`. These names describe what the operator is coordinating; they do
+not encode position, runtime transport, or OBS implementation details.
 
-The canonical presentation sources are:
+Browser sources declare a catalog of named tabs. Deckhand launches one
+dedicated Chrome session, creates one window per browser source, and preloads
+the declared tabs. Window and tab identity are runtime handles owned by
+Deckhand, never URL or title lookup.
 
-- `Slide`
-- `Terminal`
-- `BrowserA`
-- `BrowserB`
-
-These names describe what the operator is coordinating in the talk. They do not
-encode position, runtime transport, or OBS implementation details.
-
-Browser sources declare a catalog of named tabs. Deckhand launches one dedicated
-Chrome session, creates one window per browser source, and preloads the declared
-tabs. Window and tab identity are runtime handles owned by Deckhand, never URL
-or title lookup.
-
-The `layouts` catalog builds on `sources` and is the single source of truth for:
-
-- audience OBS scene names
-- logical source placement
-- presenter-stage rectangles
-
-Slides reference layouts by stable `layout` IDs rather than hardcoding scene
-names directly. Browser-oriented slide actions target logical `source` IDs and
-source-local tab aliases.
+The `layouts` catalog builds on `sources` and is the single source of truth for
+audience OBS scene names, logical source placement, and presenter-stage
+rectangles. Slides reference layouts by stable `layout` IDs rather than
+hardcoding scene names. Browser-oriented slide actions target logical `source`
+IDs and source-local tab aliases.
 
 ## Flow
 
@@ -154,9 +139,9 @@ source-local tab aliases.
    state.
 4. Hub publishes `presentationState` to subscribed observers.
 5. Coordinator switches OBS to `presentationState.audienceScene`.
-6. Coordinator dispatches typed browser commands (activateTab / navigate) through
-   the injected executor, which routes them to the Deckhand-owned browser
-   session by runtime handle.
+6. Coordinator dispatches typed browser commands (`activateTab` / `navigate`)
+   through the injected executor, which routes them to the Deckhand-owned
+   browser session by runtime handle.
 
 Each step is isolated so OBS failures, observer failures, or browser-session
 failures do not suppress the other work.
@@ -210,14 +195,12 @@ Presenter-state payload shape:
 
 `windowBindings` may begin as bootstrap app/title selectors and then be
 republished with exact runtime bindings once managed windows are resolved.
-
-`Presenter` is a reserved presenter-only binding. It never appears in OBS
+`Presenter` is a reserved presenter-only binding; it never appears in OBS
 layouts or the source catalog.
 
-## Hub Protocol
+## Hub protocol
 
 The local hub binds to localhost only and carries a small JSON protocol.
-
 Messages used in the current design:
 
 - `register` / `registered`
@@ -229,14 +212,9 @@ Messages used in the current design:
 - `transcript`
 - `error`
 
-Roles are generic:
-
-- `driver`
-- `observer`
-
-The earlier `target` role has been removed. Browser windows and tabs are now
-owned directly by Deckhand through the Chrome DevTools Protocol; command routing
-no longer depends on remote target clients.
+Roles are generic: `driver` and `observer`. (The earlier `target` role has
+been removed — browser windows and tabs are owned directly by Deckhand through
+CDP; command routing no longer depends on remote target clients.)
 
 Observer registrations include subscriptions, such as:
 
@@ -271,12 +249,13 @@ Startup order:
 Shutdown order:
 
 1. presenter HTTP stop
-2. browser session stop (closes tracked Deckhand tabs and windows)
-3. hub stop
-4. OBS disconnect
-5. presentation HTTP stop
+2. owned app-window close (closes tracked `app` windows by exact id)
+3. browser session stop (closes tracked Deckhand tabs and windows)
+4. hub stop
+5. OBS disconnect
+6. presentation HTTP stop
 
-## Driver, Browser Session, And Observer Boundaries
+## Driver, browser session, and observer boundaries
 
 Driver responsibilities:
 
@@ -307,36 +286,50 @@ Observer responsibilities:
 - consume sticky `presentationState` safely
 - optionally publish `transcript` events
 
-## Owned App Sources
+## Owned app sources
 
 Non-browser sources Deckhand launches and tracks (editors, terminals) flow
-through a dedicated owned-app seam, kept out of the coordinator and `index.js`:
+through a dedicated owned-app seam that is kept out of the coordinator and
+`index.js`. It is split into three layers by responsibility:
 
-- `src/appRuntime.js` — owned-source resolution, OBS/bootstrap binding builders,
-  and the shutdown close helper. It resolves an adapter per source and never
-  branches on app names.
-- `src/apps/` — a static adapter registry (`index.js`) plus per-app adapters
-  (`default.js`, `vscode.js`, `iterm2.js`). Each adapter owns its app's aliases,
-  CGWindow owner name, presenter bootstrap name, launch/args quirks,
-  window-stability confirmation, and close strategy.
-- `src/launchers/` — generic launch primitives only (`app.js` does the
-  `open -a` plumbing; `iterm2.js` holds the AppleScript primitives). No
-  app-specific knowledge lives here.
+- **`src/appRuntime.js`** — the orchestrator. It resolves an adapter per
+  source (and never branches on app names), drives the launch-and-diff
+  resolution, builds OBS/bootstrap bindings, and closes tracked windows on
+  shutdown.
+- **`src/apps/`** — per-app **adapters**. The registry (`index.js`) picks an
+  adapter by app name; generic apps fall through to `default.js`. Each adapter
+  encodes one app's quirks: aliases, the CGWindow owner name, the
+  presenter/Hammerspoon bootstrap app name, launch args, window-stability
+  confirmation, and the close strategy.
+- **`src/launchers/`** — generic **launch primitives**. `app.js` does the
+  `open -a` spawning (forcing `-n` for a new instance so the diff resolver can
+  find a fresh CGWindowID); `iterm2.js` builds and runs the iTerm2 AppleScript
+  and closes a window by session UUID. No app-specific knowledge lives here.
 
-Adding a new owned app is one file in `src/apps/` plus one line in the registry.
-Two names an adapter must keep distinct: the **CGWindow/OBS owner name**
-(`Code`, `iTerm`) used for window enumeration and OBS `owner_name` fallback, and
-the **presenter/Hammerspoon bootstrap name** (`Visual Studio Code`, `iTerm2`)
-used for application lookup.
+The dependency direction is one-way: **adapters call into launchers, never the
+reverse.** An iTerm2 adapter, for example, composes the iTerm2 launcher
+primitives; a VS Code adapter only shapes launch args and hands them to the
+generic `app.js` launcher.
 
-## Presenter Surfaces
+Adding a new owned app that misbehaves is one adapter file in `src/apps/` plus
+one line in the `APP_ADAPTERS` registry; generic apps need no file. See
+[Adapters: App adapters](ADAPTERS.md#app-adapters).
 
-- `/presenter/`: first-class presenter web app
-- `/status.json`: operator-facing runtime status snapshot
-- `hammerspoon/`: macOS window management integration
-- `src/presenter/stt/`: local STT runner
+Two names an adapter must keep distinct:
 
-## Error Handling
+- the **CGWindow/OBS owner name** (`Code`, `iTerm`) — used for window
+  enumeration and the OBS `owner_name` fallback
+- the **presenter/Hammerspoon bootstrap name** (`Visual Studio Code`, `iTerm2`)
+  — used for application lookup
+
+## Presenter surfaces
+
+- `/presenter/` — first-class presenter web app
+- `/status.json` — operator-facing runtime status snapshot
+- `hammerspoon/` — macOS window management integration
+- `src/presenter/stt/` — local STT runner
+
+## Error handling
 
 - unknown slides warn and do nothing
 - OBS errors are logged and do not crash the coordinator
@@ -344,7 +337,7 @@ used for application lookup.
 - observer publish failures are logged and do not suppress OBS or browser work
 - malformed hub messages return protocol errors instead of crashing the server
 
-## Extensibility Notes
+## Extensibility notes
 
 - browser command routing is based on `command.type` (`activateTab`, `navigate`)
 - the coordinator dispatches through an injected executor seam so new command

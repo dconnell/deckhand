@@ -1,4 +1,4 @@
-# Presenter Runbook
+# Presenter runbook
 
 The literal five-minute pre-talk checklist. Run it in order, top to bottom, on
 the laptop you will present from. Every step has a single observable pass/fail
@@ -14,28 +14,29 @@ permissions).
 
 - You have already done one-time setup: `npm install`,
   `npm run obs:setup -- <name>`, `npm run hammerspoon:setup`, OBS WebSocket
-  enabled, OBS Screen Recording granted, Hammerspoon Accessibility granted.
+  enabled, OBS Screen Recording granted, Hammerspoon Accessibility granted. See
+  [SETUP.md](SETUP.md).
 - `presentation/<name>/config.local.json` has the real `obs.password` and any
   machine-specific selectors for this laptop.
 - The talk is `<name>` below.
 
-## T-5: Hardware And OS
+## T-5: hardware and OS
 
-1. **Power**: laptop on power, not battery. Set the display to never sleep
+1. **Power** — laptop on power, not battery. Set the display to never sleep
    while on power (System Settings → Lock Screen → **Turn display off on power
    adapter when inactive**: Never, or plug in a display that prevents sleep).
-2. **Do Not Disturb**: System Settings → Focus → **Do Not Disturb** on. This
+2. **Do Not Disturb** — System Settings → Focus → **Do Not Disturb** on. This
    suppresses Notification Center banners that would otherwise steal focus
    mid-slide and break Hammerspoon window operations.
-3. **Sound**: confirm the audience-path audio device is selected in OBS
+3. **Sound** — confirm the audience-path audio device is selected in OBS
    (Settings → Audio). If you demo audio, play a sample now.
 
    **Pass**: OBS meter responds.
-4. **Displays**: set the resolution and arrangement you will use on stage
-   **now**, before starting Deckhand. Deckhand's `presenter.stage` rectangle
-   is absolute; changing display layout after startup invalidates it.
+4. **Displays** — set the resolution and arrangement you will use on stage
+   **now**, before starting Deckhand. Deckhand's `presenter.stage` rectangle is
+   absolute; changing display layout after startup invalidates it.
 
-## T-4: macOS Permissions (Quick Re-check)
+## T-4: macOS permissions (quick re-check)
 
 macOS updates reset TCC entries unpredictably. Spend thirty seconds here.
 
@@ -51,22 +52,22 @@ macOS updates reset TCC entries unpredictably. Spend thirty seconds here.
 3. If you use STT, **Microphone** must list your terminal (or `node`) as
    enabled.
 
-## T-3: Source Apps And Profiles
+## T-3: source apps and profiles
 
-1. **If `chrome.profileName` is set**: fully quit Google Chrome (`Cmd+Q`).
-   Chrome must not be running with that profile when Deckhand seeds its
-   working copy. Verify with Activity Monitor or `pgrep -f "Google Chrome"`.
+1. **If `chrome.profileName` is set** — fully quit Google Chrome (`Cmd+Q`).
+   Chrome must not be running with that profile when Deckhand seeds its working
+   copy. Verify with Activity Monitor or `pgrep -f "Google Chrome"`.
 
-   **Pass**: no Chrome process running. (If Chrome won't quit → see
+   **Pass**: no Chrome process running. (If Chrome won't quit →
    [TROUBLESHOOTING: Chrome profile seeding failures](TROUBLESHOOTING.md#chrome-profile-seeding-failures-chromeprofilename).)
-2. **OBS**: open OBS. Confirm the scene collection is the one
-   `obs:setup` populated (you should see `Deckhand_*` inputs in the Sources
-   panel of at least one scene).
-3. **Hammerspoon**: confirm it is running (menu bar icon visible). Open the
+2. **OBS** — open OBS. Confirm the scene collection is the one `obs:setup`
+   populated (you should see `Deckhand_*` inputs in the Sources panel of at
+   least one scene).
+3. **Hammerspoon** — confirm it is running (menu bar icon visible). Open the
    Hammerspoon console now so tracebacks during the talk are visible at a
    glance.
 
-## T-2: Start Deckhand
+## T-2: start Deckhand
 
 In your dedicated terminal:
 
@@ -74,13 +75,13 @@ In your dedicated terminal:
 node ./src/index.js <name>
 ```
 
-Wait for the `phase` to flip to `ready`. The startup banner tells you the
-four URLs. Watch the log for:
+Wait for `phase` to flip to `ready`. The startup banner tells you the four
+URLs. Watch the log for:
 
 - `Connected to OBS` — if missing or `Failed to connect to OBS`, fix OBS
   WebSocket / password before going further.
 - `Browser session ready` (or equivalent) — if missing, see
-  [TROUBLESHOOTING: Chrome](TROUBLESHOOTING.md#chrome-session).
+  [TROUBLESHOOTING: Chrome session](TROUBLESHOOTING.md#chrome-session).
 - `Hub ... listening` — required for Hammerspoon and the presenter app.
 - The first `driverPositionChanged` line — required for `/status.json` to
   report `phase: ready`.
@@ -88,21 +89,21 @@ four URLs. Watch the log for:
 If startup hangs past ~30s, read the most recent log line: it tells you which
 gate is not satisfied (driver, observer, window bindings).
 
-## T-1: Verify The Four Outputs
+## T-1: verify the four outputs
 
 Open these four things and confirm each is alive. Do not skip this; it is the
 only end-to-end check.
 
-1. **Deck**: `http://127.0.0.1:3000/presentation/<name>/deck/index.html`
+1. **Deck** — `http://127.0.0.1:3000/presentation/<name>/deck/index.html`
    - **Pass**: page loads, driver registers (Deckhand terminal logs an
      observer/driver registration; `phase` becomes `ready`).
-2. **Presenter app**: `http://127.0.0.1:3001/presenter/`
-   - **Pass**: teleprompter shows your script for the current slide;
-     follow mode works if you configured it.
-3. **Status**: `http://127.0.0.1:3001/status.json`
+2. **Presenter app** — `http://127.0.0.1:3001/presenter/`
+   - **Pass**: teleprompter shows your script for the current slide; follow
+     mode works if you configured it.
+3. **Status** — `http://127.0.0.1:3001/status.json`
    - **Pass**: `phase: "ready"`, `obs.connected: true`,
      `browserSession.connected: true`, `hub.observerCount >= 1`.
-4. **OBS program view**: visually confirm the current slide's `audienceScene`
+4. **OBS program view** — visually confirm the current slide's `audienceScene`
    is active and the `Deckhand_*` window_capture sources show live content,
    not black.
 
@@ -125,30 +126,31 @@ even if it appears granted — see
 Do **not** assume the doctor or smoke check would have caught this; they do
 not validate Hammerspoon.
 
-If everything passes, **go back one slide** (`Ctrl+Shift+Left` or deck's
+If everything passes, **go back one slide** (`Ctrl+Shift+Left` or the deck's
 back arrow) so you are positioned on your opening slide.
 
-## T-0: Final Pre-Stage
+## T-0: final pre-stage
 
-1. Open OBS's Projector for the live program output (in non-Studio Mode,
-   right-click the canvas → **Projector** → a window or display; in Studio
-   Mode, project **Program**, not **Preview**). In Zoom, **Share Screen** and
-   select the specific **Projector window** (under Windows, not Screens) —
-   never share the display, which follows whichever Space is visible. Verify
-   the audience sees the current OBS scene. Do **not** use OBS Virtual Camera
-   — it re-encodes and caps resolution. If you fullscreened the Projector to
-   its own Space, do **not** press Esc to leave it (Esc closes the Projector)
-   — switch Spaces with **Ctrl+Left-arrow** or a **three-finger swipe up**
-   instead; Zoom keeps capturing the window by id.
-2. Hide the presenter app and the Hammerspoon console from your active
-   Screen / Stage Manager layout (or move them to a different Space).
+1. Open OBS's Projector for the live program output and share it into the
+   meeting. The short version (full rationale in
+   [SETUP.md: Sharing to the meeting](SETUP.md#sharing-to-the-meeting)):
+   - non-Studio Mode: right-click the canvas → **Projector** → a window; in
+     Studio Mode project **Program**, not **Preview**.
+   - in Zoom **Share Screen**, select the specific **Projector window** (under
+     Windows, not Screens) — never the display.
+   - do **not** use OBS Virtual Camera (it re-encodes and caps resolution).
+   - if you fullscreened the Projector to its own Space, do **not** press Esc
+     to leave it (Esc closes the Projector) — switch Spaces with
+     **Ctrl+Left-arrow** or a **three-finger swipe up** instead.
+2. Hide the presenter app and the Hammerspoon console from your active Screen /
+   Stage Manager layout (or move them to a different Space).
 3. Put the deck window and the managed Chrome windows in the Space you will
    present from.
 4. Confirm laptop volume, exhibit output, and any in-room mic are routed.
 5. Close every app you do not need during the talk — fewer windows means fewer
    accidental focus steals.
 
-## Smoke Command (Optional, T-2)
+## Smoke command (optional, T-2)
 
 Right after starting Deckhand, you can run:
 
@@ -159,10 +161,10 @@ npm run presenter:doctor -- <name>
 
 Both should pass. **But note what they do not cover**: neither checks OBS
 Screen Recording permission, Hammerspoon existence / Accessibility, or whether
-managed Chrome windows actually move on a slide advance. The T-1 advance
-test above is the only substitute for that, and it is mandatory.
+managed Chrome windows actually move on a slide advance. The T-1 advance test
+above is the only substitute for that, and it is mandatory.
 
-## Common Last-Minute Failures
+## Common last-minute failures
 
 | Symptom at T-1 | First thing to check |
 | --- | --- |
@@ -174,7 +176,7 @@ test above is the only substitute for that, and it is mandatory.
 | Advance does nothing at all | deck tab lost driver registration — reload the deck tab |
 | `/status.json` shows `obs.connected: true` but OBS does not respond | OBS WebSocket dropped silently — restart Deckhand |
 
-## If You Have To Restart Mid-Talk
+## If you have to restart mid-talk
 
 1. Note the current slide id from `/status.json` (`current.slideId`) or the
    deck URL fragment.
@@ -182,6 +184,6 @@ test above is the only substitute for that, and it is mandatory.
 3. `node ./src/index.js <name>` again.
 4. Once `phase: ready`, navigate the deck to that slide id.
 
-See [TROUBLESHOOTING: Recovering Without Losing Your
-Place](TROUBLESHOOTING.md#recovering-without-losing-your-place) for why this
-is safe.
+See [TROUBLESHOOTING: Recovering without losing your
+place](TROUBLESHOOTING.md#recovering-without-losing-your-place) for why this is
+safe.

@@ -1,23 +1,20 @@
 # Troubleshooting
 
 Operator-facing known issues and recovery steps for the failure modes that
-matter at runtime. This complements the short troubleshooting list at the bottom
-of [SETUP.md](SETUP.md#troubleshooting); it does not repeat it.
+matter at runtime. This is the single home for troubleshooting — for the
+literal pre-talk checklist, see [RUNBOOK.md](RUNBOOK.md).
 
 The scope here is issues whose cause is **outside** Deckhand: macOS permission
 resets, Chrome profile locks, Hammerspoon revocation, and the cases where
 Deckhand's own automation cannot recover (OBS WebSocket drops, Chrome exits,
 tab crashes).
 
-If you want a literal pre-talk checklist instead, see
-[RUNBOOK.md](RUNBOOK.md).
-
-## Quick Reference: What Is Automatic And What Is Not
+## Quick reference: what is automatic and what is not
 
 | Failure | Deckhand auto-recovers? | Operator action |
 | --- | --- | --- |
 | OBS WebSocket drops mid-session | No | restart Deckhand |
-| OBS `Failed to create the scene item` | Yes, one-time reset+retry | if it recurs, re-run `obs:setup` |
+| OBS `Failed to create the scene item` | Yes, one-time reset + retry | if it recurs, re-run `obs:setup` |
 | OBS `CreateInput ... already exists` | Yes, 5×100ms retries | none |
 | macOS Screen Recording revoked from OBS | No | re-grant, restart OBS |
 | Hammerspoon Accessibility revoked mid-talk | No, but next slide recovers | re-grant, reload Hammerspoon |
@@ -43,7 +40,7 @@ transport error and is logged as `Failed to switch OBS scene` /
 `Failed to apply OBS input settings` / similar, and the slide change continues
 without the OBS side landing.
 
-`/status.json` will keep reporting `obs.connected: true` after a drop because
+`/status.json` keeps reporting `obs.connected: true` after a drop because
 nothing flips the flag. Treat that field as "connected at least once," not
 "connected right now."
 
@@ -52,9 +49,9 @@ in-process recovery.
 
 ### `Failed to create the scene item` during reconcile
 
-This is the one OBS error Deckhand does recover from. When OBS returns code
-`700` or a message matching `failed to create the scene item` during
-`obs:setup` or at runtime startup, Deckhand:
+This is the one OBS error Deckhand recovers from. When OBS returns code `700`
+or a message matching `failed to create the scene item` during `obs:setup` or
+at runtime startup, Deckhand:
 
 1. removes every `Deckhand_*` scene and input,
 2. polls up to 20 × 250ms until the inputs are gone (renaming stragglers to
@@ -74,8 +71,8 @@ npm run obs:setup -- my-talk
 macOS major updates (and some minor ones) routinely reset TCC permissions for
 apps that capture the screen. The symptom is unique to OBS:
 
-- OBS still launches, the WebSocket is up, Deckhand's
-  `/status.json` reports `obs.connected: true`,
+- OBS still launches, the WebSocket is up, Deckhand's `/status.json` reports
+  `obs.connected: true`,
 - but every `window_capture` source renders black or shows the previous frame,
 - and Deckhand logs nothing about it (Deckhand does not probe TCC state).
 
@@ -99,8 +96,8 @@ and the process exits 1.
 
 **Recovery**:
 
-- verify OBS is running and `Tools → WebSocket Server Settings` has
-  **Enable WebSocket server** checked,
+- verify OBS is running and `Tools → WebSocket Server Settings` has **Enable
+  WebSocket server** checked,
 - verify `obs.password` in `presentation/<name>/config.local.json`,
 - restart Deckhand.
 
@@ -118,7 +115,8 @@ reliable recovery is to re-run `obs:setup` or restart Deckhand.
 ## Zoom / Share Screen
 
 Not Deckhand failures, but the most common "audience sees the wrong thing"
-causes during a remote talk.
+causes during a remote talk. See [SETUP.md: Sharing to the
+meeting](SETUP.md#sharing-to-the-meeting) for the full setup.
 
 ### OBS program view is correct but audience sees black or stale content
 
@@ -129,8 +127,10 @@ fullscreen Projector has focus — Esc closes it. Switch Spaces with
 Projector without closing it.
 
 **Recovery**:
+
 1. In OBS, confirm the Projector window is still open. If not, reopen it via
-   right-click the canvas → **Projector** (in Studio Mode, project **Program**).
+   right-click the canvas → **Projector** (in Studio Mode, project
+   **Program**).
 2. In Zoom, stop sharing and re-share. Select the specific **Projector window**
    (under Windows, not Screens) — sharing a display follows whichever Space is
    visible and breaks when you switch Spaces to work.
@@ -141,7 +141,7 @@ You are sharing via OBS Virtual Camera instead of the Projector. Virtual camera
 re-encodes and caps the feed around 1080p. Switch Zoom's share target to the
 Projector window.
 
-## Chrome Session
+## Chrome session
 
 ### Chrome profile seeding failures (`chrome.profileName`)
 
@@ -179,8 +179,8 @@ Error messages from the resolver are specific:
 | `Could not find Chrome profile named "<name>"` | the name does not match any `info_cache[*].name` entry |
 
 The match is against the **visible profile name** shown in Chrome's
-profile-switcher UI (e.g. `Personal`), not the on-disk directory name
-(e.g. `Default` or `Profile 3`). Rename in Chrome's UI if needed.
+profile-switcher UI (e.g. `Personal`), not the on-disk directory name (e.g.
+`Default` or `Profile 3`). Rename in Chrome's UI if needed.
 
 ### Could not locate Google Chrome
 
@@ -213,11 +213,11 @@ flips `connected: false`, logs `Browser session disconnected unexpectedly`,
 rejects all pending CDP calls with `CDP transport closed`, and from then on
 every subsequent `activateTab` / `navigate` is a no-op that throws.
 
-`/status.json` will show `browserSession.connected: false` with the
-last-known source map; reopening tabs is not supported.
+`/status.json` shows `browserSession.connected: false` with the last-known
+source map; reopening tabs is not supported.
 
 **Recovery**: stop Deckhand and start it again. Deckhand relaunches Chrome,
-rebuilds the windows and preloads the declared tabs from scratch.
+rebuilds the windows, and preloads the declared tabs from scratch.
 
 ### Operator accidentally closes a Deckhand Chrome window
 
@@ -225,9 +225,9 @@ Same answer as above: Deckhand does not detect manual window closure and does
 not reopen it. If you close a managed window mid-talk, restart Deckhand to get
 the source back.
 
-If you need to defuse this risk before a talk: hide Chrome from the Dock and
-Cmd-Tab chain by running it in its own Space, or simply keep the managed
-Chrome windows away from your normal browser Space.
+To defuse this risk before a talk: hide Chrome from the Dock and Cmd-Tab chain
+by running it in its own Space, or simply keep the managed Chrome windows away
+from your normal browser Space.
 
 ### Custom `chrome.profileDir` and shutdown sweeps
 
@@ -252,9 +252,9 @@ would break Deckhand's isolation guarantees at launch.
 ## Hammerspoon
 
 Hammerspoon owns the macOS work Deckhand cannot do itself: window resize,
-focus, raise, minimize, and the global slide hotkeys. None of that is
-validated by `presenter:doctor` or `presenter:smoke` — passing both does not
-mean Hammerspoon is healthy.
+focus, raise, minimize, and the global slide hotkeys. None of that is validated
+by `presenter:doctor` or `presenter:smoke` — passing both does not mean
+Hammerspoon is healthy.
 
 ### Hammerspoon Accessibility revoked mid-talk
 
@@ -281,9 +281,9 @@ traceback. Open the console from the Hammerspoon menu bar icon.
 **Recovery (no restart needed)**:
 
 1. System Settings → Privacy & Security → Accessibility.
-2. Re-enable **Hammerspoon**. If it appears already enabled, toggle it off
-   and on (macOS sometimes shows a stale "on" state after an update or after
-   a Hammerspoon binary update).
+2. Re-enable **Hammerspoon**. If it appears already enabled, toggle it off and
+   on (macOS sometimes shows a stale "on" state after an update or after a
+   Hammerspoon binary update).
 3. From the Hammerspoon menu bar icon, choose **Reload Config** (or
    `Cmd+Ctrl+R`).
 4. Advance one slide to republish sticky `presentationState`. The next apply
@@ -295,7 +295,7 @@ next launch).
 
 ### Hammerspoon not installed, not running, or Lua missing
 
-The Deckhand-side startup does not fail. Deckhand's own
+Deckhand-side startup does not fail. Deckhand's own
 `defaultResolveMacWindowBindings` resolves browser windows itself (10 × 500ms
 of CGWindowList + Accessibility-title matching), startup completes, and OBS
 gets bootstrap bindings.
@@ -304,8 +304,8 @@ Symptoms:
 
 - `Ctrl+Shift+Left/Right` do nothing (hotkeys aren't bound).
 - Windows never resize or focus on slide changes.
-- `/status.json` shows a normal observer count if any other observer (e.g.
-  the presenter web app) is connected; you cannot tell from status alone that
+- `/status.json` shows a normal observer count if any other observer (e.g. the
+  presenter web app) is connected; you cannot tell from status alone that
   Hammerspoon is missing.
 
 **Recovery**:
@@ -333,30 +333,28 @@ websocket may have dropped — reload the tab.
 ### `presenter:doctor` and `presenter:smoke` pass but Hammerspoon is broken
 
 Both are Deckhand-side checks only. `doctor` validates config, OBS canvas
-dimensions, platform, ffmpeg, and whisper paths. `smoke` probes Deckhand's
-HTTP and opens its own observer websocket. Neither inspects
-`~/.hammerspoon/`, the init.lua sentinel block, the Hammerspoon process, or
-the Accessibility grant.
+dimensions, platform, ffmpeg, and whisper paths. `smoke` probes Deckhand's HTTP
+and opens its own observer websocket. Neither inspects `~/.hammerspoon/`, the
+init.lua sentinel block, the Hammerspoon process, or the Accessibility grant.
 
 Pre-talk, manually confirm:
 
 1. `~/.hammerspoon/deckhand/{deckhand,apply_state,window_match}.lua` exist
    (re-run `npm run hammerspoon:setup` if not),
-2. `~/.hammerspoon/init.lua` contains the
-   `-- >>> deckhand >>>` / `-- <<< deckhand <<<` block,
+2. `~/.hammerspoon/init.lua` contains the `-- >>> deckhand >>>` /
+   `-- <<< deckhand <<<` block,
 3. Hammerspoon is running,
 4. Accessibility is granted to Hammerspoon in System Settings,
-5. the Hammerspoon console has no `[deckhand:hammerspoon]` errors after a
-   slide advance.
+5. the Hammerspoon console has no `[deckhand:hammerspoon]` errors after a slide
+   advance.
 
 See [RUNBOOK.md](RUNBOOK.md) for the literal pre-talk version of this.
 
 ### Hub restarts
 
 Not a failure most operators will hit, but worth knowing: Hammerspoon
-auto-reconnects
-to the hub ~1s after a drop, resets its `last_seq` counter to 0, re-registers
-as an observer, and accepts the freshly republished sticky
+auto-reconnects to the hub ~1s after a drop, resets its `last_seq` counter to
+0, re-registers as an observer, and accepts the freshly republished sticky
 `presentationState` even though its seq is lower than the last seen. No manual
 intervention is needed.
 
@@ -364,7 +362,7 @@ If the whole Deckhand process is down (not just the hub), Hammerspoon keeps
 retrying; hotkeys fire but the send is a silent no-op (`socket == nil`).
 Restart Deckhand and Hammerspoon reconnects within a second.
 
-## When `/status.json` Lies
+## When `/status.json` lies
 
 Because Deckhand does not actively poll most of its dependencies, the status
 payload can be misleading in specific cases:
@@ -380,18 +378,18 @@ When in doubt, advance a slide and watch the Deckhand terminal log. Every OBS
 failure, browser failure, and observer publish failure is logged there even
 when it does not change status.
 
-## Recovering Without Losing Your Place
+## Recovering without losing your place
 
 If you must restart Deckhand mid-talk:
 
-1. Note the current slide id (visible in `/status.json` as
-   `current.slideId`, or in the deck URL's `#/<h>.<v>` fragment).
+1. Note the current slide id (visible in `/status.json` as `current.slideId`,
+   or in the deck URL's `#/<h>.<v>` fragment).
 2. Stop Deckhand (`Ctrl+C`).
 3. Start it again: `node ./src/index.js <name>`.
 4. After startup, navigate the deck to the noted slide id. Deckhand rebuilds
    browser windows and OBS bindings from the current slide's `layout`.
 
-There is no built-in "resume from slide X" yet — the deck itself is the
-source of truth for position. The OBS reconcile at startup will re-prune
-`Deckhand_*` entities to match config, so it is safe to restart mid-talk
-without leaving OBS in a half-state.
+There is no built-in "resume from slide X" yet — the deck itself is the source
+of truth for position. The OBS reconcile at startup re-prunes `Deckhand_*`
+entities to match config, so it is safe to restart mid-talk without leaving OBS
+in a half-state.

@@ -1,13 +1,13 @@
 # Config
 
-## Shape
-
 Each presentation lives under `presentation/<name>/` and uses one layout-driven
-model for OBS, presenter stage, and slide actions.
+model for OBS, the presenter stage, and slide actions.
 
-- `presentation/<name>/config.json`: tracked shareable presentation config
-- `presentation/<name>/config.local.json`: optional untracked local override for
-  secrets and machine-specific values
+- `presentation/<name>/config.json` — tracked, shareable presentation config
+- `presentation/<name>/config.local.json` — optional, untracked local override
+  for secrets and machine-specific values; deep-merged on top of `config.json`
+
+## Shape
 
 ```json
 {
@@ -111,59 +111,53 @@ model for OBS, presenter stage, and slide actions.
 }
 ```
 
-## Core Fields
+## Core fields
 
-- `driver.type`: currently `revealjs`
-- `obs.url`: OBS WebSocket URL
-- `obs.password`: OBS WebSocket password
-- `obs.prune`: boolean, default `true`. Deckhand reconciles OBS to the current
+- `driver.type` — currently `revealjs`
+- `obs.url` — OBS WebSocket URL
+- `obs.password` — OBS WebSocket password
+- `obs.prune` — boolean, default `true`. Deckhand reconciles OBS to the current
   config, removing any `Deckhand_*` inputs/scenes it created that this
-  presentation no longer references. Non-`Deckhand_*` OBS content is never
-  touched. Set `false` to leave stale entities in place. See
+  presentation no longer references. Non-`Deckhand_*` content is never touched.
+  Set `false` to leave stale entities in place. See
   [OBS Reconciliation](#obs-reconciliation).
-- `obs.transitions`: optional block enabling whole-frame slide transitions;
-  see [Slide Transitions](#slide-transitions). Absent means the legacy instant
-  cut is used and OBS transitions are never touched.
-- `hub.port`: localhost WebSocket port for driver and observer clients
+- `obs.transitions` — optional block enabling whole-frame slide transitions;
+  absent means the instant cut is used and OBS transitions are never touched.
+  See [Slide Transitions](#slide-transitions).
+- `hub.port` — localhost WebSocket port for driver and observer clients
 
 ## Sources
 
 `sources` is the authoritative catalog of logical source IDs. Layouts, slide
-actions, and presenter bindings all reference IDs declared here.
+actions, and presenter bindings all reference IDs declared here. The canonical
+presentation sources are `Slide`, `Terminal`, `BrowserA`, and `BrowserB`. These
+names describe what the operator is coordinating; they do not encode position,
+transport, or OBS implementation details. Source IDs are position-agnostic and
+stay stable across layouts — if you need two live browser windows, declare two
+browser sources such as `BrowserA` and `BrowserB`.
 
-The canonical presentation sources are:
+Each entry declares a `kind`:
 
-- `Slide`
-- `Terminal`
-- `BrowserA`
-- `BrowserB`
-
-Each entry declares a `kind`. Current kinds:
-
-- `browser`: a source Deckhand owns end-to-end through its own Chrome session
-- `app`: a macOS app Deckhand launches via `open -a` (e.g. an editor, iTerm2)
+- `browser` — a source Deckhand owns end-to-end through its own Chrome session
+- `app` — a macOS app Deckhand launches via `open -a` (an editor, iTerm2)
 
 All non-`browser` sources are *owned* sources: Deckhand launches the window,
 captures its exact macOS window id by diffing the window list before and after
-launch, and binds it strictly. Identity is the runtime window handle, never
+launch, and binds it strictly. Identity is the runtime window handle, never the
 title.
 
-App-specific launch/close quirks (VS Code's `--new-window`, iTerm2's
-AppleScript session handling, unsaved-changes discard) live in `src/apps/`.
-Adding a new app that misbehaves is one file there plus one registry line in
-`src/apps/index.js`. Apps that behave generically need no adapter file.
+App-specific launch/close quirks live in per-app adapters under `src/apps/`.
+Adding an app that misbehaves is one adapter file plus one registry line in
+`src/apps/index.js`; generic apps fall through to the default adapter and need
+no file. See [Architecture: Owned App Sources](ARCHITECTURE.md#owned-app-sources)
+and [Adapters: App Adapters](ADAPTERS.md#app-adapters).
 
-Source IDs are position-agnostic and stay stable across layouts. They do not
-encode OBS scene names, transport identifiers, or window-match hints. If you
-need two live browser windows, declare two browser sources such as `BrowserA`
-and `BrowserB`.
+### Browser sources
 
-### Browser Sources
-
-A `browser` source must declare a `browser` catalog with a `tabs` map. Deckhand
-creates one Chrome window per browser source and preloads the declared tabs into
-that window at startup. Identity is a runtime handle owned by Deckhand, never
-URL or title lookup.
+A `browser` source declares a `browser` catalog with a `tabs` map. Deckhand
+creates one Chrome window per browser source and preloads the declared tabs at
+startup. Identity is a runtime handle owned by Deckhand, never URL or title
+lookup.
 
 ```json
 "BrowserA": {
@@ -178,22 +172,22 @@ URL or title lookup.
 }
 ```
 
-- `window.label`: optional source label carried in the runtime registry for
+- `window.label` — optional source label carried in the runtime registry for
   managed-window bookkeeping
-- `tabs`: non-empty map of source-local tab aliases to tab descriptors
+- `tabs` — non-empty map of source-local tab aliases to tab descriptors
 - each tab descriptor takes:
-  - `url`: absolute `http` or `https` URL
-  - `initial`: optional boolean; exactly one tab (or none, defaulting to the
+  - `url` — absolute `http` or `https` URL
+  - `initial` — optional boolean; exactly one tab (or none, defaulting to the
     first declared) is the active tab at startup
-  - `preload`: optional boolean that currently must remain `true`; Deckhand
+  - `preload` — optional boolean that currently must remain `true`; Deckhand
     preloads every declared tab at startup
 
-### App Sources
+### App sources
 
-An `app` source is a macOS app Deckhand launches via `open -a`. The new
-window is captured by owner-name diff (PID-based diff is unreliable for
-Electron single-instance apps such as VS Code, which hand off to an
-already-running process).
+An `app` source is a macOS app Deckhand launches via `open -a`. The new window
+is captured by owner-name diff (PID-based diff is unreliable for Electron
+single-instance apps such as VS Code, which hand off to an already-running
+process).
 
 At shutdown, Deckhand closes only the tracked window for each `app` source by
 exact `macWindowId` (not the whole app process). If the app shows an
@@ -208,11 +202,11 @@ tracked window so shutdown can complete without manual prompts.
 }
 ```
 
-- `app`: required macOS app name as `open -a` expects it (e.g.
+- `app` — required macOS app name as `open -a` expects it (e.g.
   `Visual Studio Code`, `iTerm2`)
-- `args`: optional array of launch arguments passed after `--args`
-- `cwd`: optional absolute working directory where relevant
-- `command`: optional shell command run inside the new window (used by
+- `args` — optional array of launch arguments passed after `--args`
+- `cwd` — optional absolute working directory where relevant
+- `command` — optional shell command run inside the new window (used by
   terminal apps like iTerm2; ignored by apps that don't need it)
 
 #### iTerm2
@@ -220,8 +214,8 @@ tracked window so shutdown can complete without manual prompts.
 iTerm2 is an `app` source with `app: "iTerm2"`. Deckhand creates a new iTerm2
 window via AppleScript, optionally runs a shell command at a working directory,
 and closes it by session UUID on shutdown (not by process kill). The `command`
-field is what makes iTerm2 different from a generic app; it is read by the
-iTerm2 adapter in `src/apps/iterm2.js`.
+field is what distinguishes iTerm2 from a generic app; it is read by the iTerm2
+adapter in `src/apps/iterm2.js`.
 
 ```json
 "Terminal": {
@@ -232,42 +226,40 @@ iTerm2 adapter in `src/apps/iterm2.js`.
 }
 ```
 
-## Chrome Session
+## Chrome session
 
 The optional top-level `chrome` section customizes the dedicated Chrome process
 Deckhand launches for browser sources:
 
-- `executablePath`: absolute path to a Chrome or Chromium binary
-- `profileDir`: absolute path to a dedicated user-data directory; when omitted,
-  Deckhand creates a fresh per-run working directory under the system temp dir
-- `profileName`: optional visible Chrome profile name to seed that working copy
-  from, such as `Personal`
-- `debugPort`: remote debugging port (a random port in 9222-9322 by default)
-- `extraArgs`: array of extra Chrome command-line arguments
+- `executablePath` — absolute path to a Chrome or Chromium binary
+- `profileDir` — absolute path to a dedicated user-data directory; when
+  omitted, Deckhand creates a fresh per-run working directory under the system
+  temp dir
+- `profileName` — optional visible Chrome profile name to seed that working
+  copy from, such as `Personal`
+- `debugPort` — remote debugging port (a random port in 9222-9322 by default)
+- `extraArgs` — array of extra Chrome command-line arguments
 
 Deckhand only ever controls windows and tabs it created in this session; the
-operator's ordinary Chrome usage is left untouched.
-
-When `profileName` is set, Deckhand resolves that named Chrome profile and
-launches a Deckhand-owned working copy seeded from it. Chrome DevTools port
-discovery uses the launched profile's `DevToolsActivePort` file so the actual
-port wins even when Chrome chooses a different one than requested.
+operator's ordinary Chrome usage is left untouched. When `profileName` is set,
+Deckhand resolves that named Chrome profile and launches a Deckhand-owned
+working copy seeded from it. DevTools port discovery uses the launched
+profile's `DevToolsActivePort` file so the actual port wins even when Chrome
+chooses a different one than requested.
 
 ## Layouts
 
 `layouts` is the source of truth for audience scene names and logical source
-placement.
+placement. Each layout contains:
 
-Each layout contains:
-
-- `audienceScene`: OBS scene name
-- `slots`: array of logical window positions
-- `overlays`: optional array of presenter-only overlays
+- `audienceScene` — OBS scene name
+- `slots` — array of logical window positions
+- `overlays` — optional array of presenter-only overlays
 
 Each slot contains:
 
-- `source`: logical source ID declared in `sources`
-- `position`: `full`, `left`, or `right`
+- `source` — logical source ID declared in `sources`
+- `position` — `full`, `left`, or `right`
 
 Rules:
 
@@ -282,42 +274,42 @@ Rules:
 Overlay entries currently support only the reserved source `Presenter` and must
 declare exactly one of:
 
-- `rect`: absolute macOS desktop rect `{ x, y, w, h }`
-- `hidden: true`: minimize the teleprompter for that layout or slide
+- `rect` — absolute macOS desktop rect `{ x, y, w, h }`
+- `hidden: true` — minimize the teleprompter for that layout or slide
 
 ## Slides
 
 Each slide entry supports:
 
-- `layout`: required layout ID
-- `focus`: optional logical source to focus after presenter layout is applied
-- `script`: optional teleprompter text; absent means clear the presenter script
-- `overlays`: optional presenter-only overlay overrides merged by source on top
-  of the layout's `overlays`
-- `browser`: optional array of browser actions executed against Deckhand-owned
+- `layout` — required layout ID
+- `focus` — optional logical source to focus after the presenter layout is
+  applied
+- `script` — optional teleprompter text; absent means clear the presenter
+  script
+- `overlays` — optional presenter-only overlay overrides, merged by source on
+  top of the layout's `overlays`
+- `browser` — optional array of browser actions executed against Deckhand-owned
   tabs
 
 Each `browser` action contains:
 
-- `source`: browser-capable source ID declared in `sources`
-- `action`: `activateTab` or `navigate`
-- `tab`: source-local tab alias declared in the source's `browser.tabs`
-- `url`: required when `action` is `navigate`; absolute `http` or `https` URL
+- `source` — browser-capable source ID declared in `sources`
+- `action` — `activateTab` or `navigate`
+- `tab` — source-local tab alias declared in the source's `browser.tabs`
+- `url` — required when `action` is `navigate`; absolute `http` or `https` URL
 
 `activateTab` switches to a preloaded tab by its runtime handle without
 reloading it. `navigate` loads a new URL in the named tab.
 
-## Slide Transitions
+## Slide transitions
 
 `obs.transitions` is optional. When present, advancing the deck runs a
-freeze -> resize -> directional-reveal sequence instead of an instant cut:
-the previous audience frame is held as a still while windows resize and tabs
+freeze → resize → directional-reveal sequence instead of an instant cut: the
+previous audience frame is held as a still while windows resize and tabs
 navigate behind it, then the new scene slides in. When absent, Deckhand uses
-the legacy instant cut and never touches OBS transitions.
-
-OBS WebSocket cannot create transitions, so you must add the two Slide
-transitions in the OBS UI and reference them by name here (see
-[SETUP.md](SETUP.md#whole-frame-slide-transitions-optional)).
+the instant cut and never touches OBS transitions. See
+[SETUP.md: Whole-frame slide transitions](SETUP.md#whole-frame-slide-transitions-optional)
+for the one-time OBS setup.
 
 ```json
 "obs": {
@@ -330,24 +322,24 @@ transitions in the OBS UI and reference them by name here (see
 
 Required:
 
-- `forward`: OBS Slide transition name used for `next`/forward moves
-- `backward`: OBS Slide transition name used for `prev`/backward moves
+- `forward` — OBS Slide transition name used for `next`/forward moves
+- `backward` — OBS Slide transition name used for `prev`/backward moves
 
 Optional (with defaults):
 
-- `freezeScene`: OBS scene name for the freeze still (`Deckhand_Freeze`);
+- `freezeScene` — OBS scene name for the freeze still (`Deckhand_Freeze`);
   created automatically at startup
-- `freezeImage`: `image_source` input name inside the freeze scene
+- `freezeImage` — `image_source` input name inside the freeze scene
   (`Deckhand_Freeze Frame`); created automatically
-- `freezeImagePath`: PNG path for the freeze still; defaults to
+- `freezeImagePath` — PNG path for the freeze still; defaults to
   `deckhand-freeze-frame.png` under the system temp dir
-- `durationMs`: slide transition duration in milliseconds (`300`)
-- `settleMs`: pause after the freeze appears and after pure-resize mutates,
+- `durationMs` — slide transition duration in milliseconds (`300`)
+- `settleMs` — pause after the freeze appears and after pure-resize mutates,
   before revealing (`200`)
-- `freezeDimPercent`: opacity reduction (0–100) applied to the freeze still
+- `freezeDimPercent` — opacity reduction (0–100) applied to the freeze still
   while a slide change is masked behind it (`5`); gives the presenter a subtle
-  visual cue that the advance registered. `0` disables the dim entirely.
-- `navigationWaitMs`: cap waited behind the freeze for slides that navigate a
+  cue that the advance registered. `0` disables the dim entirely.
+- `navigationWaitMs` — cap waited behind the freeze for slides that navigate a
   tab, before revealing regardless of load state (`1000`)
 
 Behavior notes:
@@ -359,7 +351,7 @@ Behavior notes:
 - Set `transition: 'none'` in the deck's `Reveal.initialize` so OBS owns all
   perceived motion.
 
-## OBS Reconciliation
+## OBS reconciliation
 
 Every OBS entity Deckhand creates is named with a `Deckhand_` prefix (for
 example the `BrowserA` source becomes the `Deckhand_BrowserA` input, and the
@@ -376,8 +368,8 @@ Deckhand reconciles OBS to the current presentation:
   config is removed — so switching to a presentation with fewer sources prunes
   the dropped ones automatically;
 - non-`Deckhand_*` entities are never modified or removed;
-- freeze assets (`Deckhand_Freeze` / `Deckhand_Freeze Frame`) are retained while
-  `obs.transitions` is configured and pruned when a presentation drops
+- freeze assets (`Deckhand_Freeze` / `Deckhand_Freeze Frame`) are retained
+  while `obs.transitions` is configured and pruned when a presentation drops
   transitions.
 
 This is stateless: there is no manifest or state directory, and the
@@ -388,42 +380,37 @@ one-time manual cleanup of those old names may be needed after upgrading.
 ## Presenter
 
 `presenter` is optional as a whole. If omitted, Deckhand still supports the
-audience-only flow.
-
-When present:
+audience-only flow. When present:
 
 - `platform` must be `macos`
 - `stage` defines the presenter-stage rectangle; width must be even
-- `windows` maps logical sources to macOS window selectors; every key must exist
-  in `sources`. A selector is optional for owned source kinds (`browser`,
-  `app`): their owner name is derived from the source descriptor and
-  their exact `macWindowId` is resolved at launch, so `titleIncludes` is not
-  required
+- `windows` maps logical sources to macOS window selectors; every key must
+  exist in `sources`. A selector is optional for owned source kinds
+  (`browser`, `app`): their owner name is derived from the source descriptor
+  and their exact `macWindowId` is resolved at launch, so `titleIncludes` is
+  not required
 - `stt` configures the local whisper.cpp observer
 - `teleprompter.followEnabledByDefault` controls initial follow mode
 - `teleprompter.window` is the presenter-window selector used to bind the
-  teleprompter window; it is required when any layout or slide uses
-  `overlays` for `Presenter`
+  teleprompter window; required when any layout or slide uses `overlays` for
+  `Presenter`
 - `http` configures the presenter web app/status surface
 
 Window selectors contain:
 
-- `app`: required app name
-- `titleIncludes`: optional substring to disambiguate multiple windows during
+- `app` — required app name
+- `titleIncludes` — optional substring to disambiguate multiple windows during
   bootstrap resolution
 
 At runtime, presenter observers may upgrade these bootstrap selectors to exact
 session bindings by reporting `pid`, `macWindowId`, and `strict: true` back to
 Deckhand. Those exact fields are runtime state, not part of committed config.
-
-Deckhand uses these bootstrap selectors to seed OBS `window_capture` settings,
+Deckhand uses the bootstrap selectors to seed OBS `window_capture` settings,
 then upgrades them in place to exact managed bindings when runtime window
-handles are available.
+handles are available. The teleprompter window is not an OBS source; its
+selector is used only for the local presenter window-management path.
 
-The teleprompter window is not an OBS source. Its selector is used only for the
-local presenter window-management path.
-
-## Slide ID Scheme
+## Slide ID scheme
 
 For the `reveal.js` driver:
 
@@ -457,10 +444,10 @@ The config loader returns path-based errors for invalid input, including:
 - malformed window selectors
 - relative STT paths
 
-## Sample Artifacts
+## Sample artifacts
 
-- `presentation/example/config.json`: presenter-capable sample
-- `presentation/<name>/config.local.json`: local-only override, ignored by git
+- `presentation/example/config.json` — presenter-capable sample
+- `presentation/<name>/config.local.json` — local-only override, ignored by git
 
 Committed sample artifacts use placeholders only. Do not commit real OBS
 passwords, machine-specific model paths, or personal window-title selectors.
