@@ -333,6 +333,48 @@ test('navigateTab resolves via the timeout fallback when no load event arrives',
   await assert.doesNotReject(pending);
 });
 
+test('waitForTabPaint attaches to the target session and awaits a painted frame', async () => {
+  const transport = createFakeTransport();
+  const client = createCdpClient({
+    discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://browser', chromePid: 1 }),
+    createTransport() {
+      return transport;
+    },
+  });
+
+  await client.connect();
+
+  const pending = client.waitForTabPaint({ targetId: 'TARGET_TAB_HOME' });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(transport.sent[0], {
+    id: 1,
+    method: 'Target.attachToTarget',
+    params: { targetId: 'TARGET_TAB_HOME', flatten: true },
+  });
+
+  respondTo(transport, 1, { sessionId: 'SESSION_HOME' });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(transport.sent[1].method, 'Runtime.evaluate');
+  assert.equal(transport.sent[1].sessionId, 'SESSION_HOME');
+  assert.equal(transport.sent[1].params.awaitPromise, true);
+  assert.match(transport.sent[1].params.expression, /requestAnimationFrame/);
+
+  respondTo(transport, 2, {
+    result: {
+      type: 'object',
+      value: {
+        reason: 'paint',
+        readyState: 'complete',
+        visibilityState: 'visible',
+      },
+    },
+  });
+
+  await pending;
+});
+
 test('setWindowTitle attaches once per target then applies the persistent title script on the session', async () => {
   const transport = createFakeTransport();
   const client = createCdpClient({

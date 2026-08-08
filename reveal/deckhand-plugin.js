@@ -40,6 +40,15 @@
 
   function buildPositionMessage(event) {
     const normalized = deriveSlideId(event);
+    var meta = {
+      idSource: normalized.idSource,
+      indexh: normalized.indexh,
+      indexv: normalized.indexv,
+    };
+
+    if (Number.isInteger(event.driverEventId) && event.driverEventId > 0) {
+      meta.driverEventId = event.driverEventId;
+    }
 
     return {
       type: 'positionChanged',
@@ -49,11 +58,7 @@
           h: normalized.indexh,
           v: normalized.indexv,
         },
-        meta: {
-          idSource: normalized.idSource,
-          indexh: normalized.indexh,
-          indexv: normalized.indexv,
-        },
+        meta: meta,
       },
     };
   }
@@ -127,6 +132,7 @@
         let reconnectTimer = null;
         let lastPositionEvent = null;
         let driverRegistered = false;
+        let nextDriverEventId = 1;
 
         function log(level, message, details) {
           const logger = console[level] || console.log;
@@ -152,14 +158,65 @@
           }
         }
 
+        function afterNextPaint(callback) {
+          if (typeof globalScope.requestAnimationFrame === 'function') {
+            globalScope.requestAnimationFrame(function afterFirstPaint() {
+              globalScope.requestAnimationFrame(callback);
+            });
+            return;
+          }
+
+          setTimeout(callback, 0);
+        }
+
+        function enrichPositionEvent(event) {
+          return {
+            currentSlide: event.currentSlide,
+            indexh: Number.isInteger(event.indexh) ? event.indexh : 0,
+            indexv: Number.isInteger(event.indexv) ? event.indexv : 0,
+            driverEventId: nextDriverEventId,
+          };
+        }
+
+        function schedulePositionSettled(eventId) {
+          afterNextPaint(function onPainted() {
+            if (!driverRegistered) {
+              return;
+            }
+
+            if (lastPositionEvent === null || lastPositionEvent.driverEventId !== eventId) {
+              return;
+            }
+
+            log('info', 'Reported positionSettled', {
+              eventId: eventId,
+              slideId: deriveSlideId(lastPositionEvent).id,
+            });
+
+            send({
+              type: 'positionSettled',
+              eventId: eventId,
+            });
+          });
+        }
+
         function report(event) {
-          lastPositionEvent = event;
+          var enriched = enrichPositionEvent(event);
+          lastPositionEvent = enriched;
+          nextDriverEventId += 1;
 
           if (!driverRegistered) {
             return;
           }
 
-          send(buildPositionMessage(event));
+          send(buildPositionMessage(enriched));
+          log('info', 'Reported positionChanged', {
+            driverEventId: enriched.driverEventId,
+            slideId: deriveSlideId(enriched).id,
+            indexh: enriched.indexh,
+            indexv: enriched.indexv,
+          });
+          schedulePositionSettled(enriched.driverEventId);
         }
 
         function buildCurrentPositionEvent() {
@@ -174,7 +231,23 @@
         }
 
         function reportCurrentPosition() {
-          report(lastPositionEvent || buildCurrentPositionEvent());
+          if (lastPositionEvent === null) {
+            report(buildCurrentPositionEvent());
+            return;
+          }
+
+          if (!driverRegistered) {
+            return;
+          }
+
+          send(buildPositionMessage(lastPositionEvent));
+          log('info', 'Reported current position after driver registration', {
+            driverEventId: lastPositionEvent.driverEventId,
+            slideId: deriveSlideId(lastPositionEvent).id,
+            indexh: lastPositionEvent.indexh,
+            indexv: lastPositionEvent.indexv,
+          });
+          schedulePositionSettled(lastPositionEvent.driverEventId);
         }
 
         function handleCommand(payload) {
@@ -183,6 +256,7 @@
           }
 
           const command = payload.command;
+          log('info', 'Received driver command', command);
 
           if (command.type === 'next') {
             deck.next();

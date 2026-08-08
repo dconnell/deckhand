@@ -223,6 +223,7 @@ test('normalizeConfig normalizes the slide-transitions block with defaults', () 
     settleMs: 200,
     navigationWaitMs: 1000,
     windowSettleMs: 2000,
+    freezeDimPercent: 5,
   });
 });
 
@@ -268,6 +269,7 @@ test('normalizeConfig accepts operator overrides for freeze assets and timing', 
     durationMs: 250,
     settleMs: 150,
     navigationWaitMs: 800,
+    freezeDimPercent: 15,
   };
 
   const normalized = normalizeConfig(config);
@@ -276,6 +278,27 @@ test('normalizeConfig accepts operator overrides for freeze assets and timing', 
   assert.equal(normalized.obs.transitions.freezeImagePath, '/tmp/freeze.png');
   assert.equal(normalized.obs.transitions.durationMs, 250);
   assert.equal(normalized.obs.transitions.navigationWaitMs, 800);
+  assert.equal(normalized.obs.transitions.freezeDimPercent, 15);
+});
+
+test('normalizeConfig clamps freezeDimPercent to the 0-100 range', () => {
+  const config = createValidConfig();
+  config.obs.transitions = { forward: 'Slide Right', backward: 'Slide Left' };
+
+  assertConfigError(() => {
+    const c = createValidConfig();
+    c.obs.transitions = { forward: 'Slide Right', backward: 'Slide Left', freezeDimPercent: -1 };
+    normalizeConfig(c);
+  }, 'obs.transitions.freezeDimPercent', /0.*100/i);
+
+  assertConfigError(() => {
+    const c = createValidConfig();
+    c.obs.transitions = { forward: 'Slide Right', backward: 'Slide Left', freezeDimPercent: 101 };
+    normalizeConfig(c);
+  }, 'obs.transitions.freezeDimPercent', /0.*100/i);
+
+  config.obs.transitions = { forward: 'Slide Right', backward: 'Slide Left', freezeDimPercent: 0 };
+  assert.equal(normalizeConfig(config).obs.transitions.freezeDimPercent, 0);
 });
 
 test('normalizeConfig converts slide browser actions into typed command objects', () => {

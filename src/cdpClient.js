@@ -7,6 +7,7 @@ function createNoopLogger() {
 }
 
 const DEFAULT_NAVIGATION_LOAD_TIMEOUT_MS = 10000;
+const DEFAULT_TAB_PAINT_TIMEOUT_MS = 2000;
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -19,7 +20,7 @@ function isPlainObject(value) {
  * mocked WebSocket traffic without a real Chrome process.
  *
  * @param {{ discover(): Promise<{ webSocketDebuggerUrl: string, chromePid?: number | null }>, createTransport(url: string): { send(raw: string): void, close(): void, on(event: 'message' | 'close' | 'error', handler: (payload?: string) => void): void, waitUntilReady?(): Promise<void> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Client dependencies.
- * @returns {{ connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string, loadTimeoutMs?: number }): Promise<void>, setWindowTitle(details: { targetId: string, title: string }): Promise<void>, closeTarget(details: { targetId: string }): Promise<void>, getTargets(): Promise<Array<Record<string, unknown>>> }}
+ * @returns {{ connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string, loadTimeoutMs?: number }): Promise<void>, waitForTabPaint(details: { targetId: string, paintTimeoutMs?: number }): Promise<void>, setWindowTitle(details: { targetId: string, title: string }): Promise<void>, closeTarget(details: { targetId: string }): Promise<void>, getTargets(): Promise<Array<Record<string, unknown>>> }}
  */
 export function createCdpClient(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -126,6 +127,50 @@ export function createCdpClient(options) {
         reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
+  }
+
+  async function ensureSession(targetId) {
+    let sessionId = sessions.get(targetId);
+
+    if (sessionId === undefined) {
+      const attach = await send('Target.attachToTarget', { targetId, flatten: true });
+      sessionId = attach.sessionId;
+      sessions.set(targetId, sessionId);
+    }
+
+    return sessionId;
+  }
+
+  function buildPaintWaitExpression(timeoutMs) {
+    return `(() => new Promise((resolve) => {
+      let settled = false;
+      const finish = (reason) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        resolve({
+          reason,
+          readyState: document.readyState,
+          visibilityState: document.visibilityState,
+        });
+      };
+
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            finish('paint');
+          });
+        });
+      } else {
+        finish('no-raf');
+      }
+
+      setTimeout(() => {
+        finish('timeout');
+      }, ${timeoutMs});
+    }))()`;
   }
 
   /**
@@ -265,13 +310,7 @@ export function createCdpClient(options) {
     },
 
     async navigateTab({ targetId, url, loadTimeoutMs = DEFAULT_NAVIGATION_LOAD_TIMEOUT_MS }) {
-      let sessionId = sessions.get(targetId);
-
-      if (sessionId === undefined) {
-        const attach = await send('Target.attachToTarget', { targetId, flatten: true });
-        sessionId = attach.sessionId;
-        sessions.set(targetId, sessionId);
-      }
+      const sessionId = await ensureSession(targetId);
 
       // Page.enable must be on for Chrome to emit Page.loadEventFired. Called
       // once per session; later navigations reuse it.
@@ -290,14 +329,26 @@ export function createCdpClient(options) {
       await waitForPageLoad(sessionId, loadTimeoutMs);
     },
 
-    async setWindowTitle({ targetId, title }) {
-      let sessionId = sessions.get(targetId);
+    async waitForTabPaint({ targetId, paintTimeoutMs = DEFAULT_TAB_PAINT_TIMEOUT_MS }) {
+      const sessionId = await ensureSession(targetId);
+      const result = await send('Runtime.evaluate', {
+        expression: buildPaintWaitExpression(paintTimeoutMs),
+        awaitPromise: true,
+        returnByValue: true,
+      }, sessionId);
 
-      if (sessionId === undefined) {
-        const attach = await send('Target.attachToTarget', { targetId, flatten: true });
-        sessionId = attach.sessionId;
-        sessions.set(targetId, sessionId);
+      const details = result?.result?.value;
+      if (details?.reason === 'timeout') {
+        logger.warn('Timed out waiting for tab paint; continuing', {
+          paintTimeoutMs,
+          targetId,
+          visibilityState: details.visibilityState,
+        });
       }
+    },
+
+    async setWindowTitle({ targetId, title }) {
+      const sessionId = await ensureSession(targetId);
 
       const expression = `(() => {
         const deckhandTitle = ${JSON.stringify(title)};

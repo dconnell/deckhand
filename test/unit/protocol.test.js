@@ -193,9 +193,21 @@ test('validateClientMessage accepts observer window-settled acks', () => {
   );
 });
 
+test('validateClientMessage accepts driver position-settled acks', () => {
+  assert.deepEqual(
+    validateClientMessage({ type: 'positionSettled', eventId: 7 }),
+    { type: 'positionSettled', eventId: 7 },
+  );
+});
+
 test('validateClientMessage rejects window-settled acks without a positive seq', () => {
   assert.throws(() => validateClientMessage({ type: 'windowSettled' }), /seq/i);
   assert.throws(() => validateClientMessage({ type: 'windowSettled', seq: 0 }), /seq/i);
+});
+
+test('validateClientMessage rejects position-settled acks without a positive eventId', () => {
+  assert.throws(() => validateClientMessage({ type: 'positionSettled' }), /eventId/i);
+  assert.throws(() => validateClientMessage({ type: 'positionSettled', eventId: 0 }), /eventId/i);
 });
 
 test('validateClientMessage rejects observer subscriptions with unknown message types', () => {

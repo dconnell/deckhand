@@ -128,8 +128,83 @@ test('reveal plugin reports the current slide after websocket open even when rev
       position: {
         id: 'welcome',
         index: { h: 0, v: 0 },
-        meta: { idSource: 'data-deckhand-id', indexh: 0, indexv: 0 },
+        meta: { idSource: 'data-deckhand-id', indexh: 0, indexv: 0, driverEventId: 1 },
       },
     },
   ]);
+});
+
+test('reveal plugin emits a position-settled ack after the slide has painted', async () => {
+  FakeWebSocket.instances = [];
+  const source = await readFile(pluginPath, 'utf8');
+  const rafQueue = [];
+  const context = {
+    console: {
+      info() {},
+      log() {},
+      warn() {},
+    },
+    clearTimeout,
+    document: {
+      querySelectorAll() {
+        return [];
+      },
+    },
+    setTimeout,
+    window: {
+      WebSocket: FakeWebSocket,
+      requestAnimationFrame(callback) {
+        rafQueue.push(callback);
+        return rafQueue.length;
+      },
+    },
+  };
+
+  vm.runInNewContext(source, context);
+
+  const plugin = context.window.DeckhandRevealPlugin({ hubUrl: 'ws://127.0.0.1:8765' });
+  const deck = createDeck();
+  plugin.init(deck);
+
+  const socket = FakeWebSocket.instances[0];
+  socket.open();
+  socket.dispatch('message', {
+    data: JSON.stringify({
+      type: 'registered',
+      role: 'driver',
+      sessionId: 'driver-1',
+    }),
+  });
+
+  socket.sent.length = 0;
+  deck.handlers.get('slidechanged')({
+    currentSlide: { dataset: { deckhandId: 'demo' } },
+    indexh: 1,
+    indexv: 0,
+  });
+
+  assert.deepEqual(socket.sent, [
+    {
+      type: 'positionChanged',
+      position: {
+        id: 'demo',
+        index: { h: 1, v: 0 },
+        meta: { idSource: 'data-deckhand-id', indexh: 1, indexv: 0, driverEventId: 2 },
+      },
+    },
+  ]);
+
+  const flushRaf = () => {
+    const callbacks = rafQueue.splice(0);
+    callbacks.forEach((callback) => callback());
+  };
+
+  flushRaf();
+  assert.equal(socket.sent.length, 1);
+
+  flushRaf();
+  assert.deepEqual(socket.sent[1], {
+    type: 'positionSettled',
+    eventId: 2,
+  });
 });

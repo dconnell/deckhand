@@ -55,11 +55,20 @@ export function deriveRevealSlideId(position) {
 /**
  * Build the normalized driver position message sent to the coordinator hub.
  *
- * @param {{ currentSlide?: { dataset?: Record<string, string> }, indexh?: number, indexv?: number }} position The reveal.js event payload.
- * @returns {{ type: 'positionChanged', position: { id: string, index: { h: number, v: number }, meta: { idSource: string, indexh: number, indexv: number } } }}
+ * @param {{ currentSlide?: { dataset?: Record<string, string> }, indexh?: number, indexv?: number, driverEventId?: number }} position The reveal.js event payload.
+ * @returns {{ type: 'positionChanged', position: { id: string, index: { h: number, v: number }, meta: { idSource: string, indexh: number, indexv: number, driverEventId?: number } } }}
  */
 export function buildRevealPositionChangedMessage(position) {
   const normalized = deriveRevealSlideId(position);
+  const meta = {
+    idSource: normalized.idSource,
+    indexh: normalized.indexh,
+    indexv: normalized.indexv,
+  };
+
+  if (Number.isInteger(position?.driverEventId) && position.driverEventId > 0) {
+    meta.driverEventId = position.driverEventId;
+  }
 
   return {
     type: 'positionChanged',
@@ -69,11 +78,7 @@ export function buildRevealPositionChangedMessage(position) {
         h: normalized.indexh,
         v: normalized.indexv,
       },
-      meta: {
-        idSource: normalized.idSource,
-        indexh: normalized.indexh,
-        indexv: normalized.indexv,
-      },
+      meta,
     },
   };
 }

@@ -660,6 +660,8 @@ export async function run(options = {}) {
         }
       }
 
+      await stopBrowserRuntime();
+
       const chromePid = chromeLaunch?.chromePid;
 
       if (typeof chromePid === 'number' && chromePid > 0) {
