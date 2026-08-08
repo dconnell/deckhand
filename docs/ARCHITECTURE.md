@@ -307,6 +307,28 @@ Observer responsibilities:
 - consume sticky `presentationState` safely
 - optionally publish `transcript` events
 
+## Owned App Sources
+
+Non-browser sources Deckhand launches and tracks (editors, terminals) flow
+through a dedicated owned-app seam, kept out of the coordinator and `index.js`:
+
+- `src/appRuntime.js` — owned-source resolution, OBS/bootstrap binding builders,
+  and the shutdown close helper. It resolves an adapter per source and never
+  branches on app names.
+- `src/apps/` — a static adapter registry (`index.js`) plus per-app adapters
+  (`default.js`, `vscode.js`, `iterm2.js`). Each adapter owns its app's aliases,
+  CGWindow owner name, presenter bootstrap name, launch/args quirks,
+  window-stability confirmation, and close strategy.
+- `src/launchers/` — generic launch primitives only (`app.js` does the
+  `open -a` plumbing; `iterm2.js` holds the AppleScript primitives). No
+  app-specific knowledge lives here.
+
+Adding a new owned app is one file in `src/apps/` plus one line in the registry.
+Two names an adapter must keep distinct: the **CGWindow/OBS owner name**
+(`Code`, `iTerm`) used for window enumeration and OBS `owner_name` fallback, and
+the **presenter/Hammerspoon bootstrap name** (`Visual Studio Code`, `iTerm2`)
+used for application lookup.
+
 ## Presenter Surfaces
 
 - `/presenter/`: first-class presenter web app

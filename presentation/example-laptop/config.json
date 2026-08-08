@@ -26,7 +26,7 @@
         }
       }
     },
-    "Terminal": { "kind": "iterm2", "command": "npm run dev", "cwd": "/repos/demo" },
+    "Terminal": { "kind": "app", "app": "iTerm2", "command": "npm run dev", "cwd": "/repos/demo" },
     "BrowserA": {
       "kind": "browser",
       "browser": {

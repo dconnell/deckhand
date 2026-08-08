@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { buildVsCodeLaunchArgs, isVisualStudioCodeApp } from '../../src/apps/vscode.js';
 import { buildIterm2WriteText, buildIterm2AppleScript } from '../../src/launchers/iterm2.js';
-import { buildOpenArgs, buildVsCodeLaunchArgs, isVisualStudioCodeApp } from '../../src/launchers/app.js';
+import { buildOpenArgs } from '../../src/launchers/app.js';
 
 test('buildIterm2WriteText composes cd and command for the new session', () => {
   assert.equal(
@@ -67,7 +68,7 @@ test('isVisualStudioCodeApp matches Visual Studio Code aliases', () => {
   assert.equal(isVisualStudioCodeApp('Visual Studio'), false);
 });
 
-test('buildVsCodeLaunchArgs injects --new-window and --user-data-dir when absent', () => {
+test('buildVsCodeLaunchArgs injects --new-window when absent', () => {
   assert.deepEqual(
     buildVsCodeLaunchArgs({ args: ['/repos/demo'] }),
     ['--new-window', '/repos/demo'],

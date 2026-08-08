@@ -5,9 +5,8 @@ const BUILTIN_DRIVER_TYPES = ['revealjs'];
 const VALID_SLOT_POSITIONS = new Set(['full', 'left', 'right']);
 const PRESENTER_OVERLAY_SOURCE = 'Presenter';
 const BROWSER_SOURCE_KIND = 'browser';
-const ITERM2_SOURCE_KIND = 'iterm2';
 const APP_SOURCE_KIND = 'app';
-const VALID_SOURCE_KINDS = new Set([BROWSER_SOURCE_KIND, ITERM2_SOURCE_KIND, APP_SOURCE_KIND]);
+const VALID_SOURCE_KINDS = new Set([BROWSER_SOURCE_KIND, APP_SOURCE_KIND]);
 const VALID_BROWSER_ACTIONS = new Set(['activateTab', 'navigate']);
 
 function isPlainObject(value) {
@@ -235,11 +234,9 @@ function normalizeSourceEntry(sourceId, entry) {
 
   if (kind === BROWSER_SOURCE_KIND) {
     source.browser = normalizeBrowserCatalog(value.browser, `${pathName}.browser`);
-  } else if (kind === ITERM2_SOURCE_KIND) {
-    normalizeOwnedLaunchFields(value, source, pathName, ['command', 'cwd']);
   } else if (kind === APP_SOURCE_KIND) {
     source.app = assertNonEmptyString(value.app, `${pathName}.app`);
-    normalizeOwnedLaunchFields(value, source, pathName, ['args', 'cwd']);
+    normalizeOwnedLaunchFields(value, source, pathName, ['args', 'cwd', 'command']);
   }
 
   return source;
@@ -739,7 +736,7 @@ function normalizePresenter(presenter, layouts, slides, sources) {
       continue;
     }
 
-    // Owned source kinds (browser, iterm2, app) derive their owner name from
+    // Owned source kinds (browser, app) derive their owner name from
     // the source descriptor and resolve exact macWindowId bindings at launch,
     // so a presenter.windows selector is optional rather than required.
     const kind = sources[source]?.kind;

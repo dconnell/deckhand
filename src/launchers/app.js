@@ -1,45 +1,5 @@
 import { spawn } from 'node:child_process';
 
-const VSCODE_APP_ALIASES = new Set([
-  'code',
-  'visual studio code',
-]);
-
-/**
- * Detect whether a configured app target is Visual Studio Code.
- *
- * @param {string} app App name from config.
- * @returns {boolean}
- */
-export function isVisualStudioCodeApp(app) {
-  if (typeof app !== 'string') {
-    return false;
-  }
-
-  return VSCODE_APP_ALIASES.has(app.trim().toLowerCase());
-}
-
-/**
- * Build launch args for VS Code that guarantee a Deckhand-owned instance.
- *
- * Ensures `--new-window` is always present so a new window is created and can
- * be bound by CGWindowID diff.
- *
- * @param {{ args?: string[] }} options Launch options.
- * @returns {string[]}
- */
-export function buildVsCodeLaunchArgs({ args = [] }) {
-  const normalized = Array.isArray(args) ? [...args] : [];
-  const hasNewWindow = normalized.includes('--new-window');
-
-  const result = [];
-  if (!hasNewWindow) {
-    result.push('--new-window');
-  }
-
-  return [...result, ...normalized];
-}
-
 function spawnAndWait(command, args, cwd, label) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -57,10 +17,6 @@ function spawnAndWait(command, args, cwd, label) {
       }
     });
   });
-}
-
-async function launchVsCodeWindow({ args, cwd }) {
-  await spawnAndWait('open', buildOpenArgs({ app: 'Visual Studio Code', args: buildVsCodeLaunchArgs({ args }) }), cwd, 'open -a Visual Studio Code');
 }
 
 /**
@@ -100,11 +56,6 @@ export function buildOpenArgs({ app, args }) {
  */
 export async function launchAppWindow({ app, args, cwd }) {
   if (process.platform !== 'darwin') {
-    return { ownerName: app };
-  }
-
-  if (isVisualStudioCodeApp(app)) {
-    await launchVsCodeWindow({ args, cwd });
     return { ownerName: app };
   }
 

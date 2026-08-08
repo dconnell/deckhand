@@ -214,7 +214,7 @@ export function buildPresentationState(slideId, config, seq, runtime = {}) {
     };
   }
 
-  // Owned source kinds (iterm2, app) may omit a presenter.windows selector:
+  // Owned source kinds (browser, app) may omit a presenter.windows selector:
   // their owner name and exact macWindowId are derived from the runtime
   // binding rather than committed config. Surface those bindings too so they
   // flow to Hammerspoon and OBS without a configured window selector.

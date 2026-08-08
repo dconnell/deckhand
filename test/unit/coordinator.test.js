@@ -500,7 +500,7 @@ test('coordinator ignores observer window bindings for non-browser sources', asy
   const obs = createFakeObs();
   const executor = createFakeExecutor();
   const config = createConfig();
-  config.sources.TerminalA = { id: 'TerminalA', kind: 'iterm2' };
+  config.sources.TerminalA = { id: 'TerminalA', kind: 'app', app: 'iTerm2' };
   config.layouts['full-terminal-a'] = {
     id: 'full-terminal-a',
     audienceScene: 'Full Terminal A',

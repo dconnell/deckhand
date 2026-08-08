@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { loadConfig, ConfigError } from './config.js';
 import { createCoordinator } from './coordinator.js';
 import { createHub } from './hub.js';
+import { createLogger } from './logger.js';
 import { createObsClient } from './obsClient.js';
 import { createPresentationServer } from './presentationServer.js';
 import { createPresenterHttpServer } from './presenterHttp.js';
@@ -14,94 +15,32 @@ import { loadPresentationConfig } from './presentations.js';
 import { parsePresentationCliArgs } from './presentations.js';
 import { resolvePresentationPaths } from './presentations.js';
 import { buildRuntimeStatus } from './runtimeStatus.js';
+import {
+  buildBootstrapBinding,
+  buildObsWindowBindings,
+  closeOwnedAppWindows,
+  defaultResolveMacWindowBindings,
+  defaultResolveOwnedWindowBindings,
+  getSourceOwnerName,
+  hasBrowserSources,
+  isPromiseLike,
+  listBrowserSourceIds,
+  listOwnedAppSourceEntries,
+  resolvePresenterTeleprompterBinding,
+  shouldDiscardUnsavedChanges,
+  terminateProcessGroup,
+} from './appRuntime.js';
 import { createCdpClient } from './cdpClient.js';
 import { createBrowserSession, createBrowserCommandExecutor } from './browserSession.js';
 import { createWsTransport, discoverCdpEndpoint, launchChromeSession } from './chromeLauncher.js';
-import { closeMacWindow, diffNewWindows, enumerateWindowsByOwnerName, enumerateWindowsByPid } from './macWindows.js';
-import { resolveOwnedWindowBindings } from './ownedWindows.js';
-import { closeIterm2OwnedWindow, launchIterm2Window } from './launchers/iterm2.js';
-import { isVisualStudioCodeApp, launchAppWindow } from './launchers/app.js';
+import { waitForFirstDriverPosition, waitForPresentationObserver } from './lifecycle/waitFor.js';
+import { closeMacWindow } from './macWindows.js';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 
 const PRESENTATION_SERVER_HOST = '127.0.0.1';
 const PRESENTATION_SERVER_PORT = Number(process.env.PORT ?? 3000);
-const DRIVER_READY_TIMEOUT_MS = 10000;
-const PRESENTER_OBSERVER_TIMEOUT_MS = 5000;
-const WINDOW_BINDINGS_TIMEOUT_MS = 15000;
-const APP_SHUTDOWN_GRACE_MS = 2000;
 const PRESENTER_SOURCE_ID = 'Presenter';
-
-function delay(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-function isMissingProcessError(error) {
-  return error instanceof Error
-    && typeof error === 'object'
-    && 'code' in error
-    && error.code === 'ESRCH';
-}
-
-function isPromiseLike(value) {
-  return value !== null
-    && typeof value === 'object'
-    && 'then' in value
-    && typeof value.then === 'function';
-}
-
-async function terminateProcessGroup(pid, logger, sourceId, graceMs = APP_SHUTDOWN_GRACE_MS) {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    return;
-  }
-
-  try {
-    process.kill(-pid, 'SIGTERM');
-  } catch (error) {
-    if (!isMissingProcessError(error)) {
-      logger.warn('Failed to send SIGTERM to owned app process group', {
-        source: sourceId,
-        pid,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-    return;
-  }
-
-  await delay(graceMs);
-
-  try {
-    process.kill(-pid, 0);
-  } catch (error) {
-    if (!isMissingProcessError(error)) {
-      logger.warn('Failed to probe owned app process group after SIGTERM', {
-        source: sourceId,
-        pid,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-    return;
-  }
-
-  try {
-    process.kill(-pid, 'SIGKILL');
-    logger.warn('Escalated owned app process-group shutdown to SIGKILL', { source: sourceId, pid });
-  } catch (error) {
-    if (!isMissingProcessError(error)) {
-      logger.warn('Failed to send SIGKILL to owned app process group', {
-        source: sourceId,
-        pid,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-}
-
-function hasBrowserSources(config) {
-  return Object.values(config.sources).some((source) => source?.kind === 'browser');
-}
 
 function resolveProfileDir(config, presentationName) {
   if (config.chrome?.profileDir !== undefined) {
@@ -109,386 +48,6 @@ function resolveProfileDir(config, presentationName) {
   }
 
   return path.join(os.tmpdir(), 'deckhand-chrome-profiles', presentationName, randomUUID());
-}
-
-function listBrowserSourceIds(config) {
-  return Object.entries(config.sources)
-    .filter(([, source]) => source?.kind === 'browser')
-    .map(([id]) => id);
-}
-
-/**
- * Derive the macOS owner (app) name for an owned source.
- *
- * Owned kinds resolve their owner without relying on `presenter.windows`:
- * `iterm2` is always iTerm2, `app` carries its owner name, and browser sources
- * fall back to the configured app name (or Google Chrome) (`app-sources.md`
- * decision 5).
- *
- * @param {{ sources: Record<string, { kind: string, app?: string }>, presenter?: null | { windows: Record<string, { app?: string }> } }} config Normalized config.
- * @param {string} sourceId Logical source ID.
- * @returns {string}
- */
-function getSourceOwnerName(config, sourceId) {
-  const source = config.sources[sourceId];
-
-  if (source?.kind === 'iterm2') {
-    return 'iTerm';
-  }
-
-  if (source?.kind === 'app') {
-    return source.app;
-  }
-
-  return config.presenter?.windows?.[sourceId]?.app ?? 'Google Chrome';
-}
-
-/**
- * List owned app-window sources (iterm2 + app) that Deckhand must launch.
- *
- * @param {{ sources: Record<string, { kind: string }> }} config Normalized config.
- * @returns {Array<[string, { kind: string, command?: string, cwd?: string, app?: string, args?: string[] }]>}
- */
-function listOwnedAppSourceEntries(config) {
-  return Object.entries(config.sources).filter(([, source]) => source?.kind === 'iterm2' || source?.kind === 'app');
-}
-
-/**
- * Build OBS window-capture bindings from all resolved macWindowId bindings.
- *
- * Every reconcile must carry the full set of resolved bindings so that
- * processing a scene item for one source never silently regresses the
- * macWindowId of another (browser sources losing their exact window when the
- * owned-source reconcile processes browser scenes with an empty overlay).
- *
- * @param {{ sources: Record<string, { kind: string, app?: string }>, presenter?: null | { windows: Record<string, { app?: string }> } }} config Normalized config.
- * @param {Record<string, { macWindowId: number, pid?: number }>} resolvedMacWindowBindings Accumulated mac-window bindings (browser + owned).
- * @returns {Record<string, { app: string, macWindowId: number, strict: true, pid?: number }>}
- */
-function buildObsWindowBindings(config, resolvedMacWindowBindings) {
-  const bindings = {};
-
-  for (const [sourceId, binding] of Object.entries(resolvedMacWindowBindings)) {
-    if (!Object.prototype.hasOwnProperty.call(config.sources, sourceId)) {
-      continue;
-    }
-
-    const obsBinding = {
-      app: binding.ownerName ?? getSourceOwnerName(config, sourceId),
-      macWindowId: binding.macWindowId,
-      strict: true,
-    };
-
-    if (binding.pid !== undefined) {
-      obsBinding.pid = binding.pid;
-    }
-
-    bindings[sourceId] = obsBinding;
-  }
-
-  return bindings;
-}
-
-/**
- * Default launch+diff resolver for owned app-window sources.
- *
- * Builds a per-kind launch strategy (iTerm2 AppleScript with PID diff; generic
- * `open -a` with owner-name diff) and resolves each via the generic owned-window
- * resolver. No-ops when there are no owned app sources.
- *
- * @param {{ config: { sources: Record<string, { kind: string, command?: string, cwd?: string, app?: string, args?: string[] }> } }} options Resolver options.
- * @param {{ info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void }} logger Logger.
- * @returns {Promise<Record<string, { macWindowId: number, pid?: number }>>}
- */
-async function defaultResolveOwnedWindowBindings({ config, logger }) {
-  function ownerPrefixForApp(appName) {
-    if (isVisualStudioCodeApp(appName)) {
-      return 'Code';
-    }
-
-    return appName;
-  }
-
-  const entries = [];
-
-  for (const [sourceId, source] of listOwnedAppSourceEntries(config)) {
-    if (source.kind === 'iterm2') {
-      entries.push({
-        sourceId,
-        snapshot: () => enumerateWindowsByOwnerName('iTerm'),
-        launch: () => launchIterm2Window({ command: source.command, cwd: source.cwd, logger }),
-      });
-    } else if (source.kind === 'app') {
-      entries.push({
-        sourceId,
-        snapshot: () => enumerateWindowsByOwnerName(ownerPrefixForApp(source.app)),
-        launch: () => launchAppWindow({ app: source.app, args: source.args, cwd: source.cwd, logger }),
-        confirm: { stableSamples: 2 },
-      });
-    }
-  }
-
-  logger.info('Launching owned app-window sources', { sources: entries.map((entry) => entry.sourceId) });
-
-  return resolveOwnedWindowBindings({
-    entries,
-    delay: (ms) => new Promise((resolve) => {
-      setTimeout(resolve, ms);
-    }),
-    maxAttempts: 30,
-    logger,
-  });
-}
-
-async function resolvePresenterTeleprompterBinding({ browserSession, config, logger }) {
-  const chromePid = browserSession?.getStatus().chromePid ?? null;
-  const selector = config.presenter?.teleprompter?.window ?? null;
-
-  if (selector === null || !Number.isInteger(chromePid) || chromePid <= 0) {
-    return null;
-  }
-
-  const before = enumerateWindowsByPid(chromePid);
-  await browserSession.openWindow(`http://${config.presenter.http.host}:${config.presenter.http.port}/presenter/`);
-  const after = enumerateWindowsByPid(chromePid);
-  const matches = diffNewWindows(before, after, {
-    rejectEmptyTitle: true,
-    titleIncludes: selector.titleIncludes,
-  });
-
-  if (matches.length === 0) {
-    logger.warn('Failed to resolve presenter teleprompter window binding at launch');
-    return null;
-  }
-
-  const match = matches[0];
-  return {
-    macWindowId: match.windowId,
-    pid: chromePid,
-  };
-}
-
-async function defaultResolveMacWindowBindings({ browserSession, browserSourceIds, config, logger }) {
-  logger.info('Resolving macOS window IDs for browser sources');
-
-  const sourceTitles = Object.fromEntries(
-    Object.entries(browserSession.getRegistry().sources)
-      .filter(([id]) => browserSourceIds.includes(id))
-      .map(([id, source]) => [id, { title: source.title }]),
-  );
-
-  const chromePid = browserSession.getStatus().chromePid;
-
-  let resolvedBindings = {};
-  const maxAttempts = 10;
-  const retryDelayMs = 500;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    resolvedBindings = {};
-
-    const macWindows = enumerateWindowsByPid(chromePid);
-    const matchedWindowIds = new Set();
-    const unmatchedSources = [];
-    const unmatchedWindows = [];
-
-    for (const sourceId of browserSourceIds) {
-      const expectedTitle = sourceTitles[sourceId]?.title;
-      const match = macWindows.find((w) => !matchedWindowIds.has(w.windowId) && w.title.includes(expectedTitle));
-
-      if (match) {
-        matchedWindowIds.add(match.windowId);
-        resolvedBindings[sourceId] = { macWindowId: match.windowId, pid: chromePid };
-      } else {
-        unmatchedSources.push(sourceId);
-      }
-    }
-
-    for (const w of macWindows) {
-      if (matchedWindowIds.has(w.windowId)) {
-        continue;
-      }
-
-      if (w.title.includes('Presenter') || w.title === 'New Tab - Google Chrome' || w.title === '') {
-        continue;
-      }
-
-      unmatchedWindows.push(w);
-    }
-
-    unmatchedWindows.sort((a, b) => a.windowId - b.windowId);
-    unmatchedSources.sort((a, b) => browserSourceIds.indexOf(a) - browserSourceIds.indexOf(b));
-
-    for (let i = 0; i < unmatchedSources.length && i < unmatchedWindows.length; i += 1) {
-      const sourceId = unmatchedSources[i];
-      const macWindow = unmatchedWindows[i];
-      resolvedBindings[sourceId] = { macWindowId: macWindow.windowId, pid: chromePid };
-    }
-
-    const allResolved = browserSourceIds.every((id) => resolvedBindings[id] !== undefined);
-    if (allResolved) {
-      break;
-    }
-
-    if (attempt < maxAttempts) {
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-    }
-  }
-
-  return resolvedBindings;
-}
-
-async function waitForWindowBindings({ hub, expectedSources, timeoutMs = WINDOW_BINDINGS_TIMEOUT_MS, logger }) {
-  if (expectedSources.length === 0) {
-    return;
-  }
-
-  const resolved = new Set();
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      const missing = expectedSources.filter((source) => !resolved.has(source));
-      reject(new Error(
-        `Timed out waiting for Hammerspoon to resolve window bindings for: ${missing.join(', ')}. `
-        + 'Check Hammerspoon is running, has Accessibility permission, and can see the Deckhand Chrome windows.',
-      ));
-    }, timeoutMs);
-
-    function checkResolve() {
-      if (resolved.size === expectedSources.length) {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        clearTimeout(timer);
-        resolve();
-      }
-    }
-
-    hub.on('observerWindowBindings', (payload) => {
-      for (const source of Object.keys(payload.bindings ?? {})) {
-        const binding = payload.bindings[source];
-        if (binding?.macWindowId !== undefined && expectedSources.includes(source)) {
-          resolved.add(source);
-          logger.info('Resolved exact window binding', {
-            macWindowId: binding.macWindowId,
-            pid: binding.pid,
-            source,
-          });
-        }
-      }
-
-      checkResolve();
-    });
-  });
-}
-
-function hasPresentationObserver(hubSnapshot) {
-  return hubSnapshot.observers.some((observer) => Array.isArray(observer.subscriptions) && observer.subscriptions.includes('presentationState'));
-}
-
-function waitForEvent(timeoutMs, timeoutMessage, register) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      reject(new Error(timeoutMessage));
-    }, timeoutMs);
-
-    register((payload) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      clearTimeout(timer);
-      resolve(payload);
-    });
-  });
-}
-
-async function waitForFirstDriverPosition({ coordinator, hub, timeoutMs = DRIVER_READY_TIMEOUT_MS, presentationName }) {
-  if (coordinator.getCurrentPresentationState() !== null) {
-    return;
-  }
-
-  await waitForEvent(
-    timeoutMs,
-    `Timed out waiting for the first driver position for presentation ${presentationName}. Open the deck and confirm the driver connects.`,
-    (resolve) => {
-      hub.on('driverPositionChanged', resolve);
-    },
-  );
-}
-
-async function waitForPresentationObserver({ hub, timeoutMs = PRESENTER_OBSERVER_TIMEOUT_MS }) {
-  if (hasPresentationObserver(hub.getSnapshot())) {
-    return;
-  }
-
-  await waitForEvent(
-    timeoutMs,
-    'Timed out waiting for a presenter observer. Check Hammerspoon, reload its config, and confirm Accessibility permission.',
-    (resolve) => {
-      hub.on('observerRegistered', (observer) => {
-        if (Array.isArray(observer.subscriptions) && observer.subscriptions.includes('presentationState')) {
-          resolve(observer);
-        }
-      });
-    },
-  );
-}
-
-function sanitizeContext(value) {
-  if (value === null || value === undefined) {
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((entry) => sanitizeContext(entry));
-  }
-
-  if (typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [key, key.toLowerCase().includes('password') ? '[redacted]' : sanitizeContext(entry)]),
-    );
-  }
-
-  return value;
-}
-
-function createLogger(consoleLike) {
-  function write(method, message, context) {
-    const parts = [`[deckhand] ${message}`];
-
-    if (context !== undefined) {
-      parts.push(JSON.stringify(sanitizeContext(context)));
-    }
-
-    consoleLike[method](parts.join(' '));
-  }
-
-  return {
-    error(message, context) {
-      write('error', message, context);
-    },
-    info(message, context) {
-      write('info', message, context);
-    },
-    warn(message, context) {
-      write('warn', message, context);
-    },
-  };
 }
 
 function isMainModule(metaUrl) {
@@ -581,36 +140,15 @@ export async function run(options = {}) {
     }
 
     const closeOwnedWindowsFn = options.closeOwnedWindowsFn ?? (async ({ bindings }) => {
-      for (const {
-        kind,
-        sourceId,
-        macWindowId,
-        pid,
-        sessionId,
-        discardUnsavedChanges = false,
-      } of bindings) {
-        if (kind === 'iterm2') {
-          closeIterm2OwnedWindow(sessionId);
-        } else if (kind === 'app') {
-          if (typeof macWindowId === 'number' && typeof pid === 'number') {
-            const closed = closeMacWindowFn(macWindowId, pid, { discardUnsavedChanges });
-            if (!closed) {
-              logger.warn('Owned app window close did not confirm closure; leaving app process running', {
-                source: sourceId,
-                macWindowId,
-                pid,
-              });
-            }
-          }
-        } else if (typeof macWindowId === 'number' && typeof pid === 'number') {
-          const closed = closeMacWindowFn(macWindowId, pid, { discardUnsavedChanges });
-          if (!closed) {
-            await terminateProcessGroupFn(pid, logger, sourceId ?? 'app');
-          }
-        } else {
-          await terminateProcessGroupFn(pid, logger, sourceId ?? 'app');
-        }
-      }
+      await closeOwnedAppWindows({
+        entries: bindings.map((binding) => ({
+          sourceId: binding.sourceId,
+          source: config.sources[binding.sourceId],
+          binding,
+        })),
+        logger,
+        closeMacWindowFn,
+      });
     });
 
     let shuttingDown = false;
@@ -625,7 +163,7 @@ export async function run(options = {}) {
       logger.info('Received shutdown signal', { signal });
 
       for (const [sourceId, source] of Object.entries(config.sources)) {
-        if (source.kind !== 'iterm2' && source.kind !== 'app') {
+        if (source.kind !== 'app') {
           continue;
         }
 
@@ -639,7 +177,7 @@ export async function run(options = {}) {
             bindings: [{
               kind: source.kind,
               sourceId,
-              discardUnsavedChanges: source.kind === 'app',
+              discardUnsavedChanges: shouldDiscardUnsavedChanges(source),
               macWindowId: cached?.macWindowId,
               ownerName: getSourceOwnerName(config, sourceId),
               pid: cached?.pid,
@@ -792,10 +330,7 @@ export async function run(options = {}) {
               binding.pid = chromePid;
             }
           } else {
-            binding.app = cached?.ownerName ?? configured?.app ?? getSourceOwnerName(config, sourceId);
-            if (configured?.titleIncludes !== undefined) {
-              binding.titleIncludes = configured.titleIncludes;
-            }
+            Object.assign(binding, buildBootstrapBinding(source, configured));
             if (typeof cached?.pid === 'number') {
               binding.pid = cached.pid;
             }

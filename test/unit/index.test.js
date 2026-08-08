@@ -1329,7 +1329,7 @@ test('run derives owner names and publishes strict macWindowId bindings for owne
       hub: { port: 8765 },
       sources: {
         Slide: { kind: 'browser', browser: { tabs: { deck: { url: 'http://127.0.0.1:3000/deck/', initial: true } } } },
-        Terminal: { kind: 'iterm2', command: 'npm run dev', cwd: '/repos/demo' },
+        Terminal: { kind: 'app', app: 'iTerm2', command: 'npm run dev', cwd: '/repos/demo' },
         Editor: { kind: 'app', app: 'Visual Studio Code', args: ['--new-window', '/repos/demo'] },
       },
       layouts: {
@@ -1415,7 +1415,7 @@ test('run derives owner names and publishes strict macWindowId bindings for owne
 
     const bindings = capturedGetManagedWindowBindings();
 
-    assert.deepEqual(bindings.Terminal, { app: 'iTerm', macWindowId: 555, pid: 4321 });
+    assert.deepEqual(bindings.Terminal, { app: 'iTerm2', macWindowId: 555, pid: 4321 });
     assert.deepEqual(bindings.Editor, { app: 'Visual Studio Code', macWindowId: 888 });
     assert.equal(bindings.Slide.app, 'Google Chrome');
     assert.equal(bindings.Slide.titleIncludes, 'Deckhand Deck');
@@ -1428,7 +1428,7 @@ test('run derives owner names and publishes strict macWindowId bindings for owne
       app: 'iTerm', macWindowId: 555, pid: 4321, strict: true,
     });
     assert.deepEqual(ownedReconcile.Editor, {
-      app: 'Visual Studio Code', macWindowId: 888, strict: true,
+      app: 'Code', macWindowId: 888, strict: true,
     });
     assert.deepEqual(ownedReconcile.Slide, {
       app: 'Google Chrome', macWindowId: 11111, pid: 47213, strict: true,
@@ -1555,7 +1555,7 @@ test('run closes owned app windows on shutdown via closeOwnedWindowsFn', async (
       hub: { port: 8765 },
       sources: {
         Slide: { kind: 'browser', browser: { tabs: { deck: { url: 'http://127.0.0.1:3000/deck/', initial: true } } } },
-        Terminal: { kind: 'iterm2', command: 'npm run dev', cwd: '/repos/demo' },
+        Terminal: { kind: 'app', app: 'iTerm2', command: 'npm run dev', cwd: '/repos/demo' },
       },
       layouts: {
         'full-slide': { audienceScene: 'Full Slide', slots: [{ source: 'Slide', position: 'full' }] },
@@ -1655,7 +1655,7 @@ test('run closes owned app windows on shutdown via closeOwnedWindowsFn', async (
 
   assert.equal(closedBindings.length, 1);
   assert.deepEqual(closedBindings[0], {
-    kind: 'iterm2',
+    kind: 'app',
     sourceId: 'Terminal',
     discardUnsavedChanges: false,
     macWindowId: 555,
@@ -1781,7 +1781,7 @@ test('run requests discardUnsavedChanges when shutting down owned app windows', 
     kind: 'app',
     sourceId: 'Editor',
     macWindowId: 888,
-    ownerName: 'Visual Studio Code',
+    ownerName: 'Code',
     pid: 9999,
     sessionId: undefined,
     discardUnsavedChanges: true,

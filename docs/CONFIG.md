@@ -24,7 +24,7 @@ model for OBS, presenter stage, and slide actions.
         }
       }
     },
-    "Terminal": { "kind": "iterm2", "command": "npm run dev", "cwd": "/repos/demo" },
+    "Terminal": { "kind": "app", "app": "iTerm2", "command": "npm run dev", "cwd": "/repos/demo" },
     "Editor": { "kind": "app", "app": "Visual Studio Code", "args": ["--new-window", "/repos/demo"] },
     "BrowserA": {
       "kind": "browser",
@@ -141,12 +141,17 @@ The canonical presentation sources are:
 Each entry declares a `kind`. Current kinds:
 
 - `browser`: a source Deckhand owns end-to-end through its own Chrome session
-- `iterm2`: a terminal source Deckhand launches and tracks via iTerm2
-- `app`: a generic macOS app Deckhand launches via `open -a` (e.g. an editor)
+- `app`: a macOS app Deckhand launches via `open -a` (e.g. an editor, iTerm2)
 
-`iterm2` and `app` are *owned* sources: Deckhand launches the window, captures
-its exact macOS window id by diffing the window list before and after launch,
-and binds it strictly. Identity is the runtime window handle, never title.
+All non-`browser` sources are *owned* sources: Deckhand launches the window,
+captures its exact macOS window id by diffing the window list before and after
+launch, and binds it strictly. Identity is the runtime window handle, never
+title.
+
+App-specific launch/close quirks (VS Code's `--new-window`, iTerm2's
+AppleScript session handling, unsaved-changes discard) live in `src/apps/`.
+Adding a new app that misbehaves is one file there plus one registry line in
+`src/apps/index.js`. Apps that behave generically need no adapter file.
 
 Source IDs are position-agnostic and stay stable across layouts. They do not
 encode OBS scene names, transport identifiers, or window-match hints. If you
@@ -183,31 +188,12 @@ URL or title lookup.
   - `preload`: optional boolean that currently must remain `true`; Deckhand
     preloads every declared tab at startup
 
-### iTerm2 Sources
-
-An `iterm2` source is a terminal Deckhand launches and owns. Deckhand creates a
-new iTerm2 window, optionally runs a shell command at a working directory, and
-binds the exact macOS window id by diffing iTerm2's windows before and after
-launch. The terminal Deckhand was launched from predates the snapshot and is
-therefore never captured.
-
-```json
-"Terminal": {
-  "kind": "iterm2",
-  "command": "npm run dev",
-  "cwd": "/repos/demo"
-}
-```
-
-- `command`: optional shell command run inside the new window
-- `cwd`: optional absolute working directory for the command
-
 ### App Sources
 
-An `app` source is a generic macOS app Deckhand launches via `open -a`. The new
-window is captured by owner-name diff (PID-based diff is unreliable for Electron
-single-instance apps such as VS Code, which hand off to an already-running
-process).
+An `app` source is a macOS app Deckhand launches via `open -a`. The new
+window is captured by owner-name diff (PID-based diff is unreliable for
+Electron single-instance apps such as VS Code, which hand off to an
+already-running process).
 
 At shutdown, Deckhand closes only the tracked window for each `app` source by
 exact `macWindowId` (not the whole app process). If the app shows an
@@ -222,10 +208,29 @@ tracked window so shutdown can complete without manual prompts.
 }
 ```
 
-- `app`: required macOS owner name, exactly as macOS reports it
-  (`kCGWindowOwnerName`)
+- `app`: required macOS app name as `open -a` expects it (e.g.
+  `Visual Studio Code`, `iTerm2`)
 - `args`: optional array of launch arguments passed after `--args`
 - `cwd`: optional absolute working directory where relevant
+- `command`: optional shell command run inside the new window (used by
+  terminal apps like iTerm2; ignored by apps that don't need it)
+
+#### iTerm2
+
+iTerm2 is an `app` source with `app: "iTerm2"`. Deckhand creates a new iTerm2
+window via AppleScript, optionally runs a shell command at a working directory,
+and closes it by session UUID on shutdown (not by process kill). The `command`
+field is what makes iTerm2 different from a generic app; it is read by the
+iTerm2 adapter in `src/apps/iterm2.js`.
+
+```json
+"Terminal": {
+  "kind": "app",
+  "app": "iTerm2",
+  "command": "npm run dev",
+  "cwd": "/repos/demo"
+}
+```
 
 ## Chrome Session
 
@@ -391,7 +396,7 @@ When present:
 - `stage` defines the presenter-stage rectangle; width must be even
 - `windows` maps logical sources to macOS window selectors; every key must exist
   in `sources`. A selector is optional for owned source kinds (`browser`,
-  `iterm2`, `app`): their owner name is derived from the source descriptor and
+  `app`): their owner name is derived from the source descriptor and
   their exact `macWindowId` is resolved at launch, so `titleIncludes` is not
   required
 - `stt` configures the local whisper.cpp observer
@@ -434,7 +439,7 @@ The config loader returns path-based errors for invalid input, including:
 - missing or invalid `driver.type`
 - missing or empty `sources`
 - unknown source `kind`
-- `iterm2`/`app` sources with invalid `command`/`args`/`cwd`/`app` fields
+- `app` sources with invalid `command`/`args`/`cwd`/`app` fields
 - missing `layouts`
 - unknown `slides.<id>.layout`
 - layout slots that reference unknown sources

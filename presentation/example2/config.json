@@ -28,17 +28,20 @@
       "args": ["--new-window", "/repos/example2"]
     },
     "TerminalA": {
-      "kind": "iterm2",
+      "kind": "app",
+      "app": "iTerm2",
       "command": "npm run dev",
       "cwd": "/repos/example2/app"
     },
     "TerminalB": {
-      "kind": "iterm2",
+      "kind": "app",
+      "app": "iTerm2",
       "command": "npm run watch",
       "cwd": "/repos/example2/infra"
     },
     "TerminalC": {
-      "kind": "iterm2",
+      "kind": "app",
+      "app": "iTerm2",
       "command": "npm run docs",
       "cwd": "/repos/example2/docs"
     }

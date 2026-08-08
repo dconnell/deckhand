@@ -27,7 +27,7 @@ function createValidConfig() {
           },
         },
       },
-      Terminal: { kind: 'iterm2', command: 'npm run dev', cwd: '/repos/demo' },
+      Terminal: { kind: 'app', app: 'iTerm2', command: 'npm run dev', cwd: '/repos/demo' },
       BrowserA: {
         kind: 'browser',
         browser: {
@@ -148,7 +148,8 @@ test('normalizeConfig accepts the greenfield presenter-mode model', () => {
   });
   assert.deepEqual(config.sources.Terminal, {
     id: 'Terminal',
-    kind: 'iterm2',
+    kind: 'app',
+    app: 'iTerm2',
     command: 'npm run dev',
     cwd: '/repos/demo',
   });
@@ -357,46 +358,47 @@ test('normalizeConfig rejects unknown source kinds', () => {
   const config = createValidConfig();
   config.sources.Slide.kind = 'slide-deck';
 
-  assertConfigError(() => normalizeConfig(config), 'sources.Slide.kind', /browser, iterm2, app/i);
+  assertConfigError(() => normalizeConfig(config), 'sources.Slide.kind', /browser, app/i);
 });
 
 test('normalizeConfig rejects the removed terminal kind', () => {
   const config = createValidConfig();
   config.sources.Terminal.kind = 'terminal';
 
-  assertConfigError(() => normalizeConfig(config), 'sources.Terminal.kind', /browser, iterm2, app/i);
+  assertConfigError(() => normalizeConfig(config), 'sources.Terminal.kind', /browser, app/i);
 });
 
-test('normalizeConfig normalizes iterm2 command and cwd fields', () => {
+test('normalizeConfig normalizes iTerm2 app command and cwd fields', () => {
   const config = normalizeConfig(createValidConfig());
 
   assert.deepEqual(config.sources.Terminal, {
     id: 'Terminal',
-    kind: 'iterm2',
+    kind: 'app',
+    app: 'iTerm2',
     command: 'npm run dev',
     cwd: '/repos/demo',
   });
 });
 
-test('normalizeConfig accepts iterm2 sources without command or cwd', () => {
+test('normalizeConfig accepts iTerm2 app sources without command or cwd', () => {
   const config = createValidConfig();
-  config.sources.Terminal = { kind: 'iterm2' };
+  config.sources.Terminal = { kind: 'app', app: 'iTerm2' };
 
   const normalized = normalizeConfig(config);
 
-  assert.deepEqual(normalized.sources.Terminal, { id: 'Terminal', kind: 'iterm2' });
+  assert.deepEqual(normalized.sources.Terminal, { id: 'Terminal', kind: 'app', app: 'iTerm2' });
 });
 
-test('normalizeConfig rejects iterm2 sources with a non-string command', () => {
+test('normalizeConfig rejects iTerm2 app sources with a non-string command', () => {
   const config = createValidConfig();
-  config.sources.Terminal = { kind: 'iterm2', command: 42 };
+  config.sources.Terminal = { kind: 'app', app: 'iTerm2', command: 42 };
 
   assertConfigError(() => normalizeConfig(config), 'sources.Terminal.command', /non-empty string/i);
 });
 
-test('normalizeConfig rejects relative iterm2 cwd paths', () => {
+test('normalizeConfig rejects relative iTerm2 app cwd paths', () => {
   const config = createValidConfig();
-  config.sources.Terminal = { kind: 'iterm2', cwd: './demo' };
+  config.sources.Terminal = { kind: 'app', app: 'iTerm2', cwd: './demo' };
 
   assertConfigError(() => normalizeConfig(config), 'sources.Terminal.cwd', /absolute path/i);
 });
@@ -417,6 +419,20 @@ test('normalizeConfig normalizes app source owner, args, and cwd fields', () => 
     app: 'Visual Studio Code',
     args: ['--new-window', '/repos/demo'],
     cwd: '/repos/demo',
+  });
+});
+
+test('normalizeConfig preserves command on generic app sources so adapters can opt into it', () => {
+  const config = createValidConfig();
+  config.sources.Editor = { kind: 'app', app: 'Visual Studio Code', command: 'ignored-by-default' };
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.sources.Editor, {
+    id: 'Editor',
+    kind: 'app',
+    app: 'Visual Studio Code',
+    command: 'ignored-by-default',
   });
 });
 
@@ -639,7 +655,8 @@ test('normalizeConfig relaxes presenter.windows requirement for owned source kin
   const normalized = normalizeConfig(config);
 
   assert.equal(Object.prototype.hasOwnProperty.call(normalized.presenter.windows, 'Terminal'), false);
-  assert.equal(normalized.sources.Terminal.kind, 'iterm2');
+  assert.equal(normalized.sources.Terminal.kind, 'app');
+  assert.equal(normalized.sources.Terminal.app, 'iTerm2');
 });
 
 test('normalizeConfig accepts an app source without a presenter.windows entry', () => {

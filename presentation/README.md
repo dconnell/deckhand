@@ -9,7 +9,7 @@ copy-and-edit starting points.
 | Directory           | Best for                         | What it demonstrates                                                          |
 | ------------------- | -------------------------------- | ----------------------------------------------------------------------------- |
 | [`example/`](example/)                 | reference starting point | Browser-heavy live-coding talk: dual browser targets, single terminal, OBS slide transitions. |
-| [`example2/`](example2/)               | editor + multi-terminal  | VS Code via `kind: "app"`, three owned iTerm2 terminals with per-terminal cwds, editor/terminal layouts. |
+| [`example2/`](example2/)               | editor + multi-terminal  | VS Code via `kind: "app"`, three owned iTerm2 terminals (also `kind: "app", app: "iTerm2"`) with per-terminal cwds, editor/terminal layouts. |
 | [`example-laptop/`](example-laptop/)   | single-screen laptop     | Same flow as `example` plus per-layout teleprompter overlays with one per-slide override. |
 
 ## Choosing A Starting Point

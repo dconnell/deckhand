@@ -28,9 +28,9 @@ of them can take the whole audience frame.
 
 - `Slide` — the reveal.js deck (Deckhand-owned Chrome)
 - `Editor` — Visual Studio Code, opened via `kind: "app"`
-- `TerminalA` — iTerm2, cwd `/repos/example2/app`
-- `TerminalB` — iTerm2, cwd `/repos/example2/infra`
-- `TerminalC` — iTerm2, cwd `/repos/example2/docs`
+- `TerminalA` — iTerm2 (`kind: "app", app: "iTerm2"`), cwd `/repos/example2/app`
+- `TerminalB` — iTerm2 (`kind: "app", app: "iTerm2"`), cwd `/repos/example2/infra`
+- `TerminalC` — iTerm2 (`kind: "app", app: "iTerm2"`), cwd `/repos/example2/docs`
 
 ## Example Flow
 

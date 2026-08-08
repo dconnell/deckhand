@@ -16,11 +16,12 @@ Deckhand is a local presentation coordinator that keeps these outputs in sync:
   terminals and apps it launches (e.g. iTerm2, VS Code)
 
 Browser and terminal sources are reliable. Generic `app` sources (anything
-launched via `open -a`, such as VS Code or other editors) are best-effort:
-Deckhand tracks the launched window and closes only that window on shutdown,
-but app-specific behavior — unsaved-changes sheets, single-instance handoffs,
-custom shutdown prompts — can break clean launch or close for untested apps.
-Expect to need small code tweaks in `src/` for apps that do not behave.
+launched via `open -a`, such as editors) are best-effort: Deckhand tracks the
+launched window and closes only that window on shutdown, but app-specific
+behavior — unsaved-changes sheets, single-instance handoffs, custom shutdown
+prompts — can break clean launch or close for untested apps. Apps that need
+custom launch/close logic live in `src/apps/`; adding a new misbehaving app is
+one file there plus one registry line.
 
 Presentations are self-contained under
 `presentation/<name>/` while shared runtime integrations live at the repo root.
@@ -127,7 +128,7 @@ the managed browser windows before doing the final OBS binding pass. This can
 add a short startup delay and is intentional.
 
 On shutdown, Deckhand closes only windows it launched for the session: managed
-browser windows/tabs, owned iTerm2 windows, and owned `app` windows.
+browser windows/tabs and owned `app` windows (including iTerm2 terminals).
 
 For owned `app` windows (for example VS Code), Deckhand targets only the tracked
 exact macOS window id and never intentionally terminates the whole app process.
