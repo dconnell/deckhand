@@ -305,7 +305,30 @@ function normalizeObsTransitions(value) {
     settleMs: Number.isFinite(t.settleMs) ? t.settleMs : 200,
     navigationWaitMs: Number.isFinite(t.navigationWaitMs) ? t.navigationWaitMs : 1000,
     windowSettleMs: Number.isFinite(t.windowSettleMs) ? t.windowSettleMs : 2000,
+    freezeDimPercent: normalizeFreezeDimPercent(t.freezeDimPercent),
   };
+}
+
+/**
+ * Validate the freeze-frame dim percentage.
+ *
+ * `0` disables the dim entirely; otherwise the value must lie in `0..100` and
+ * is applied as a reduction of the freeze image source's opacity so the
+ * presenter can see that a slide change has begun.
+ *
+ * @param {unknown} value The raw config value.
+ * @returns {number}
+ */
+function normalizeFreezeDimPercent(value) {
+  if (value === undefined) {
+    return 5;
+  }
+
+  if (typeof value !== 'number' || Number.isNaN(value) || value < 0 || value > 100) {
+    throw new ConfigError('obs.transitions.freezeDimPercent', 'must be a number between 0 and 100');
+  }
+
+  return value;
 }
 
 function normalizeObs(obs) {
@@ -764,7 +787,7 @@ export class ConfigError extends Error {
  * Normalize a raw config object into the coordinator's internal model.
  *
  * @param {unknown} rawConfig The parsed config JSON.
- * @returns {{ driver: { type: string }, obs: { url: string, password: string, prune: boolean, transitions: null | { forward: string, backward: string, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number } }, hub: { host: string, port: number }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[] }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, profileName?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, chunkSeconds: number, language?: string }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
+ * @returns {{ driver: { type: string }, obs: { url: string, password: string, prune: boolean, transitions: null | { forward: string, backward: string, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number, windowSettleMs: number, freezeDimPercent: number } }, hub: { host: string, port: number }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[] }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, profileName?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, chunkSeconds: number, language?: string }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
  */
 export function normalizeConfig(rawConfig) {
   const root = assertPlainObject(rawConfig, 'config');

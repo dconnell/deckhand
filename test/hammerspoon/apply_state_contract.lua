@@ -68,6 +68,44 @@ local function create_window(name, calls, id, app)
   }
 end
 
+local function create_settling_window(name, calls, id, app, settle_frames)
+  local index = 1
+  return {
+    minimize = function(_)
+      table.insert(calls, "minimize:" .. name)
+    end,
+    unminimize = function(_)
+      table.insert(calls, "unminimize:" .. name)
+    end,
+    raise = function(_)
+      table.insert(calls, "raise:" .. name)
+    end,
+    setFrame = function(_, rect)
+      table.insert(calls, string.format("frame:%s:%d:%d:%d:%d", name, rect.x, rect.y, rect.w, rect.h))
+    end,
+    frame = function(_)
+      local current = settle_frames[index] or settle_frames[#settle_frames]
+      if index < #settle_frames then
+        index = index + 1
+      end
+      table.insert(calls, string.format("readframe:%s:%d:%d:%d:%d", name, current.x, current.y, current.w, current.h))
+      return current
+    end,
+    setFrameInScreenBounds = function(_)
+      table.insert(calls, "inbounds:" .. name)
+    end,
+    focus = function(_)
+      table.insert(calls, "focus:" .. name)
+    end,
+    id = function(_)
+      return id
+    end,
+    application = function(_)
+      return app
+    end,
+  }
+end
+
 local calls = {}
 local terminal_app = create_app("iTerm2", 2001)
 local slide_app = create_app("Safari", 2002)
@@ -230,3 +268,36 @@ local no_focus = apply_state.apply({
 })
 
 assert_equal(no_focus.focused, "Terminal", "expected first visible layout slot to be focused when explicit focus is absent")
+
+local settle_calls = {}
+local settling_slide = create_settling_window("SettlingSlide", settle_calls, 5001, slide_app, {
+  { x = 100, y = 0, w = 1700, h = 1168 },
+  { x = 40, y = 0, w = 1760, h = 1168 },
+  { x = 0, y = 0, w = 1800, h = 1168 },
+})
+
+local settled = apply_state.apply({
+  slots = {
+    {
+      source = "Slide",
+      position = "full",
+      rect = { x = 0, y = 0, w = 1800, h = 1168 },
+    },
+  },
+  windowBindings = {
+    Slide = fixture.windowBindings.Slide,
+  },
+  focus = nil,
+}, {
+  findWindow = function(_)
+    return settling_slide
+  end,
+  sleep = function() end,
+  settleMaxAttempts = 5,
+})
+
+assert_equal(settle_calls[1], "frame:SettlingSlide:0:0:1800:1168", "expected settling slide to be resized first")
+assert_equal(settle_calls[2], "readframe:SettlingSlide:100:0:1700:1168", "expected settle check to read intermediate geometry")
+assert_equal(settle_calls[3], "readframe:SettlingSlide:40:0:1760:1168", "expected settle check to keep polling until stable")
+assert_equal(settle_calls[4], "readframe:SettlingSlide:0:0:1800:1168", "expected settle check to observe the final target geometry")
+assert_equal(settled.focused, "Slide", "expected settle polling not to change apply semantics")

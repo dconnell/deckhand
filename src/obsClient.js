@@ -10,16 +10,132 @@ function createNoopLogger() {
 }
 
 /**
+ * Name of the Color Correction filter applied to the freeze image source.
+ *
+ * @type {string}
+ */
+const FREEZE_DIM_FILTER_NAME = 'Deckhand_Dim';
+
+/**
+ * OBS's built-in "Color Correction" filter kind, used to dim the freeze frame.
+ *
+ * @type {string}
+ */
+const COLOR_CORRECTION_FILTER_KIND = 'color_filter';
+const SOURCE_STABILITY_SAMPLE_WIDTH = 320;
+const SOURCE_STABILITY_SAMPLE_HEIGHT = 208;
+const SOURCE_STABILITY_SAMPLE_QUALITY = 60;
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function waitForNamedScene({ getCurrentName, expectedName, logger, timeoutMs = 2000, pollIntervalMs = 50, kind }) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    if (await getCurrentName() === expectedName) {
+      return;
+    }
+
+    await delay(pollIntervalMs);
+  }
+
+  logger.warn(`Timed out waiting for OBS ${kind} scene; continuing`, {
+    expectedName,
+    timeoutMs,
+  });
+}
+
+/**
  * Create a thin OBS v5 wrapper used by the coordinator.
  *
  * @param {{ url: string, password: string, OBSWebSocketClass?: new () => { connect(url: string, password?: string): Promise<unknown>, disconnect(): Promise<unknown>, call(method: string, payload?: Record<string, unknown>): Promise<unknown>, on?(event: string, handler: (data: unknown) => void): void, off?(event: string, handler: (data: unknown) => void): void }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Adapter options.
- * @returns {{ connect(): Promise<unknown>, disconnect(): Promise<void>, setScene(sceneName: string): Promise<void>, applyInputSettings(inputName: string, inputSettings: Record<string, unknown>): Promise<void>, isConnected(): boolean, getClient(): unknown, getCurrentProgramScene(): Promise<string>, getCurrentTransitionName(): Promise<string>, captureProgramScreenshot(filePath: string): Promise<void>, setCurrentTransition(name: string, durationMs?: number): Promise<void>, switchProgramScene(sceneName: string, options?: { waitForEvent?: boolean, timeoutMs?: number }): Promise<void>, waitForSceneTransitionEnd(options?: { timeoutMs?: number }): Promise<void>, ensureFreezeAssets(options: { sceneName: string, inputName: string, imagePath: string }): Promise<void> }}
+ * @returns {{ connect(): Promise<unknown>, disconnect(): Promise<void>, setScene(sceneName: string): Promise<void>, applyInputSettings(inputName: string, inputSettings: Record<string, unknown>): Promise<void>, isConnected(): boolean, getClient(): unknown, getCurrentProgramScene(): Promise<string>, getCurrentPreviewScene(): Promise<string>, getCurrentTransitionName(): Promise<string>, getStudioModeEnabled(): Promise<boolean>, setStudioModeEnabled(enabled: boolean): Promise<void>, setPreviewScene(sceneName: string, options?: { timeoutMs?: number, pollIntervalMs?: number }): Promise<void>, triggerStudioModeTransition(options?: { targetSceneName?: string, timeoutMs?: number, pollIntervalMs?: number }): Promise<void>, getSourceScreenshotData(sourceName: string): Promise<string>, captureProgramScreenshot(filePath: string): Promise<void>, setCurrentTransition(name: string, durationMs?: number): Promise<void>, switchProgramScene(sceneName: string, options?: { waitForEvent?: boolean, timeoutMs?: number }): Promise<void>, waitForSceneTransitionEnd(options?: { timeoutMs?: number }): Promise<void>, waitForSourceScreenshotStable(sourceName: string, options?: { differentFromData?: string | null, pollIntervalMs?: number, stableSamples?: number, timeoutMs?: number }): Promise<void>, ensureFreezeAssets(options: { sceneName: string, inputName: string, imagePath: string, dimPercent?: number }): Promise<void> }}
  */
 export function createObsClient(options) {
   const logger = options.logger ?? createNoopLogger();
   const OBSWebSocketClass = options.OBSWebSocketClass ?? OBSWebSocket;
   const client = new OBSWebSocketClass();
   let connected = false;
+
+  /**
+   * Ensure the freeze image source carries a Color Correction filter dimmed by
+   * `dimPercent`. The filter lives on the freeze image source, which only
+   * appears in the freeze scene, so the dim is visible only while the freeze
+   * masks a slide change — giving the presenter an immediate cue that the
+   * advance registered. Idempotent: creates the filter if absent, otherwise
+   * rewrites its opacity to match the configured value. A `dimPercent` of `0`
+   * (or omitting it) leaves the source's filters untouched.
+   *
+   * @param {string} sourceName The freeze image input name.
+   * @param {number | undefined} dimPercent Reduction in 0..100 applied as opacity.
+   * @returns {Promise<void>}
+   */
+  async function ensureFreezeDimFilter(sourceName, dimPercent) {
+    if (typeof dimPercent !== 'number' || dimPercent <= 0) {
+      return;
+    }
+
+    const opacity = Math.round(100 - dimPercent);
+
+    let filters = [];
+    try {
+      const list = await client.call('GetSourceFilterList', { sourceName });
+      filters = Array.isArray(list?.filters) ? list.filters : [];
+    } catch (error) {
+      logger.warn('Failed to read OBS freeze image filters; skipping dim ensure', {
+        error: error instanceof Error ? error.message : String(error),
+        sourceName,
+      });
+      return;
+    }
+
+    const hasDimFilter = filters.some((filter) => filter?.filterName === FREEZE_DIM_FILTER_NAME);
+
+    try {
+      if (!hasDimFilter) {
+        await client.call('CreateSourceFilter', {
+          sourceName,
+          filterName: FREEZE_DIM_FILTER_NAME,
+          filterKind: COLOR_CORRECTION_FILTER_KIND,
+          filterSettings: { opacity },
+        });
+        logger.info('Created OBS freeze dim filter', { sourceName, opacity });
+      } else {
+        await client.call('SetSourceFilterSettings', {
+          sourceName,
+          filterName: FREEZE_DIM_FILTER_NAME,
+          filterSettings: { opacity },
+          overlay: false,
+        });
+      }
+    } catch (error) {
+      logger.warn('Failed to apply OBS freeze dim filter', {
+        error: error instanceof Error ? error.message : String(error),
+        sourceName,
+      });
+    }
+  }
+
+  async function getSourceScreenshotData(sourceName, { sample = false } = {}) {
+    const payload = {
+      sourceName,
+      imageFormat: sample ? 'jpg' : 'png',
+    };
+
+    if (sample) {
+      payload.imageCompressionQuality = SOURCE_STABILITY_SAMPLE_QUALITY;
+      payload.imageHeight = SOURCE_STABILITY_SAMPLE_HEIGHT;
+      payload.imageWidth = SOURCE_STABILITY_SAMPLE_WIDTH;
+    }
+
+    const screenshot = await client.call('GetSourceScreenshot', payload);
+
+    return typeof screenshot?.imageData === 'string' ? screenshot.imageData : '';
+  }
 
   return {
     async connect() {
@@ -103,6 +219,32 @@ export function createObsClient(options) {
       return list.currentProgramSceneName;
     },
 
+    async getCurrentPreviewScene() {
+      if (!connected) {
+        throw new Error('OBS client is not connected');
+      }
+
+      const list = await client.call('GetSceneList');
+      return list.currentPreviewSceneName;
+    },
+
+    async getStudioModeEnabled() {
+      if (!connected) {
+        throw new Error('OBS client is not connected');
+      }
+
+      const state = await client.call('GetStudioModeEnabled');
+      return state.studioModeEnabled === true;
+    },
+
+    async setStudioModeEnabled(enabled) {
+      if (!connected) {
+        throw new Error('OBS client is not connected');
+      }
+
+      await client.call('SetStudioModeEnabled', { studioModeEnabled: enabled === true });
+    },
+
     async getCurrentTransitionName() {
       if (!connected) {
         throw new Error('OBS client is not connected');
@@ -147,6 +289,14 @@ export function createObsClient(options) {
       }
     },
 
+    async getSourceScreenshotData(sourceName) {
+      if (!connected) {
+        throw new Error('OBS client is not connected');
+      }
+
+      return getSourceScreenshotData(sourceName);
+    },
+
     async setCurrentTransition(name, durationMs) {
       if (!connected) {
         throw new Error('OBS client is not connected');
@@ -162,6 +312,59 @@ export function createObsClient(options) {
         logger.error('Failed to set OBS current transition', {
           error: error instanceof Error ? error.message : String(error),
           transitionName: name,
+        });
+        throw error;
+      }
+    },
+
+    async setPreviewScene(sceneName, { timeoutMs = 2000, pollIntervalMs = 50 } = {}) {
+      if (!connected) {
+        throw new Error('OBS client is not connected');
+      }
+
+      try {
+        await client.call('SetCurrentPreviewScene', { sceneName });
+        await waitForNamedScene({
+          expectedName: sceneName,
+          getCurrentName: () => this.getCurrentPreviewScene(),
+          kind: 'preview',
+          logger,
+          pollIntervalMs,
+          timeoutMs,
+        });
+      } catch (error) {
+        logger.error('Failed to switch OBS preview scene', {
+          error: error instanceof Error ? error.message : String(error),
+          sceneName,
+        });
+        throw error;
+      }
+    },
+
+    async triggerStudioModeTransition({ targetSceneName, timeoutMs = 2000, pollIntervalMs = 50 } = {}) {
+      if (!connected) {
+        throw new Error('OBS client is not connected');
+      }
+
+      const expectedScene = targetSceneName ?? null;
+
+      try {
+        await client.call('TriggerStudioModeTransition');
+
+        if (expectedScene !== null) {
+          await waitForNamedScene({
+            expectedName: expectedScene,
+            getCurrentName: () => this.getCurrentProgramScene(),
+            kind: 'program',
+            logger,
+            pollIntervalMs,
+            timeoutMs,
+          });
+        }
+      } catch (error) {
+        logger.error('Failed to trigger OBS studio-mode transition', {
+          error: error instanceof Error ? error.message : String(error),
+          targetSceneName: expectedScene,
         });
         throw error;
       }
@@ -256,7 +459,7 @@ export function createObsClient(options) {
           clearTimeout(timer);
 
           if (typeof client.off === 'function') {
-            client.off('CurrentSceneTransitionEnded', handler);
+            client.off('SceneTransitionEnded', handler);
           }
         };
 
@@ -282,12 +485,61 @@ export function createObsClient(options) {
         };
 
         if (typeof client.on === 'function') {
-          client.on('CurrentSceneTransitionEnded', handler);
+          client.on('SceneTransitionEnded', handler);
         }
       });
     },
 
-    async ensureFreezeAssets({ sceneName, inputName, imagePath }) {
+    async waitForSourceScreenshotStable(sourceName, {
+      differentFromData = null,
+      pollIntervalMs = 10,
+      stableSamples = 2,
+      timeoutMs = 2000,
+    } = {}) {
+      if (!connected) {
+        throw new Error('OBS client is not connected');
+      }
+
+      const startedAt = Date.now();
+      let previous = null;
+      let unchangedSamples = 0;
+      let totalSamples = 0;
+
+      while (Date.now() - startedAt <= timeoutMs) {
+        const current = await getSourceScreenshotData(sourceName, { sample: true });
+        totalSamples += 1;
+
+        const isMeaningfullyDifferent = differentFromData === null || current !== differentFromData;
+
+        if (current !== '' && current === previous && isMeaningfullyDifferent) {
+          unchangedSamples += 1;
+        } else {
+          unchangedSamples = isMeaningfullyDifferent ? 1 : 0;
+          previous = current;
+        }
+
+        if (unchangedSamples >= stableSamples) {
+          logger.info('OBS source screenshot stabilized', {
+            sourceName,
+            stableSamples,
+            totalSamples,
+          });
+          return;
+        }
+
+        await delay(pollIntervalMs);
+      }
+
+      logger.warn('Timed out waiting for OBS source screenshot to stabilize; continuing', {
+        pollIntervalMs,
+        sourceName,
+        stableSamples,
+        timeoutMs,
+        totalSamples,
+      });
+    },
+
+    async ensureFreezeAssets({ sceneName, inputName, imagePath, dimPercent }) {
       if (!connected) {
         throw new Error('OBS client is not connected');
       }
@@ -319,6 +571,8 @@ export function createObsClient(options) {
           overlay: true,
         });
       }
+
+      await ensureFreezeDimFilter(inputName, dimPercent);
     },
   };
 }

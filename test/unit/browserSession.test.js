@@ -54,6 +54,9 @@ function createFakeCdpClient() {
     async navigateTab({ targetId, url }) {
       calls.push({ type: 'navigateTab', targetId, url });
     },
+    async waitForTabPaint({ targetId }) {
+      calls.push({ type: 'waitForTabPaint', targetId });
+    },
     async setWindowTitle({ targetId, title }) {
       calls.push({ type: 'setWindowTitle', targetId, title });
     },
@@ -177,6 +180,10 @@ test('activateTab routes through the recorded target handle without URL lookup a
     cdpClient.calls.filter((call) => call.type === 'activateTab' && call.targetId === 'TARGET_2'),
     [{ type: 'activateTab', targetId: 'TARGET_2' }],
   );
+  assert.deepEqual(
+    cdpClient.calls.filter((call) => call.type === 'waitForTabPaint' && call.targetId === 'TARGET_2'),
+    [{ type: 'waitForTabPaint', targetId: 'TARGET_2' }],
+  );
   assert.equal(session.getRegistry().sources.BrowserA.activeTab, 'checkout');
 });
 
@@ -200,6 +207,37 @@ test('navigateTab routes to the recorded target handle for the named tab', async
   assert.deepEqual(
     cdpClient.calls.filter((call) => call.type === 'navigateTab'),
     [{ type: 'navigateTab', targetId: 'TARGET_2', url: 'https://example.com/checkout/v2' }],
+  );
+  assert.deepEqual(
+    cdpClient.calls.filter((call) => call.type === 'waitForTabPaint' && call.targetId === 'TARGET_2'),
+    [],
+  );
+});
+
+test('navigateTab waits for paint when navigating the active tab', async () => {
+  const cdpClient = createFakeCdpClient();
+  const sources = createSources(
+    createBrowserSource(
+      'BrowserA',
+      {
+        home: { url: 'https://example.com/home' },
+        checkout: { url: 'https://example.com/checkout' },
+      },
+      { initialTab: 'home' },
+    ),
+  );
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await session.start();
+  await session.navigateTab('BrowserA', 'home', 'https://example.com/home/v2');
+
+  assert.deepEqual(
+    cdpClient.calls.filter((call) => call.type === 'navigateTab'),
+    [{ type: 'navigateTab', targetId: 'TARGET_1', url: 'https://example.com/home/v2' }],
+  );
+  assert.deepEqual(
+    cdpClient.calls.filter((call) => call.type === 'waitForTabPaint' && call.targetId === 'TARGET_1'),
+    [{ type: 'waitForTabPaint', targetId: 'TARGET_1' }],
   );
 });
 

@@ -339,6 +339,9 @@ Optional (with defaults):
 - `durationMs`: slide transition duration in milliseconds (`300`)
 - `settleMs`: pause after the freeze appears and after pure-resize mutates,
   before revealing (`200`)
+- `freezeDimPercent`: opacity reduction (0–100) applied to the freeze still
+  while a slide change is masked behind it (`5`); gives the presenter a subtle
+  visual cue that the advance registered. `0` disables the dim entirely.
 - `navigationWaitMs`: cap waited behind the freeze for slides that navigate a
   tab, before revealing regardless of load state (`1000`)
 

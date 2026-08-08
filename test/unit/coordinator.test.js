@@ -429,7 +429,7 @@ test('coordinator republishes sticky presentation state when observer window bin
 
   assert.equal(hub.state.stickyPublishes.length, 2);
   assert.equal(hub.state.stickyPublishes[1].payload.seq, 2);
-  assert.deepEqual(obs.state.inputSettings.at(-2), {
+  assert.deepEqual(obs.state.inputSettings.at(-1), {
     inputName: 'Deckhand_BrowserA',
     inputSettings: {
       owner_name: 'Google Chrome',
@@ -480,7 +480,7 @@ test('coordinator clears runtime window binding overrides and republishes bootst
 
   assert.equal(hub.state.stickyPublishes.length, 3);
   assert.equal(hub.state.stickyPublishes[2].payload.seq, 3);
-  assert.deepEqual(obs.state.inputSettings.at(-2), {
+  assert.deepEqual(obs.state.inputSettings.at(-1), {
     inputName: 'Deckhand_BrowserA',
     inputSettings: {
       owner_name: 'Google Chrome',
@@ -651,6 +651,7 @@ function createTransitionsConfig(overrides = {}) {
     navigationWaitMs: 1,
     windowSettleMs: 1,
     durationMs: 50,
+    freezeDimPercent: 10,
     ...overrides,
   };
   return config;
@@ -710,8 +711,8 @@ function createTracingObs(trace, { failCapture = false } = {}) {
     async waitForSceneTransitionEnd() {
       trace.push('waitForSceneTransitionEnd');
     },
-    async ensureFreezeAssets() {
-      trace.push('ensureFreezeAssets');
+    async ensureFreezeAssets(options) {
+      trace.push(`ensureFreezeAssets:${options?.dimPercent ?? 'none'}`);
     },
   };
 }
@@ -738,7 +739,161 @@ test('coordinator ensures freeze assets at startup when transitions are configur
 
   await coordinator.start();
 
-  assert.ok(trace.includes('ensureFreezeAssets'));
+  assert.ok(trace.includes('ensureFreezeAssets:10'), 'ensures freeze assets with the configured dim percent');
+});
+
+test('coordinator enables OBS Studio Mode for the Deckhand session and restores it on stop', async () => {
+  const trace = [];
+  const obs = {
+    async connect() {
+      trace.push('connect');
+    },
+    async disconnect() {
+      trace.push('disconnect');
+    },
+    isConnected() {
+      return true;
+    },
+    async getCurrentTransitionName() {
+      return 'Fade';
+    },
+    async captureProgramScreenshot() {},
+    async applyInputSettings() {},
+    async ensureFreezeAssets() {},
+    async getStudioModeEnabled() {
+      trace.push('getStudioModeEnabled');
+      return false;
+    },
+    async setStudioModeEnabled(enabled) {
+      trace.push(`setStudioModeEnabled:${enabled}`);
+    },
+    async setPreviewScene() {},
+    async triggerStudioModeTransition() {},
+  };
+
+  const coordinator = createCoordinator({
+    config: createTransitionsConfig(),
+    obs,
+    hub: createTracingHub(trace),
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+  assert.ok(trace.includes('getStudioModeEnabled'));
+  assert.ok(trace.includes('setStudioModeEnabled:true'));
+
+  trace.length = 0;
+  await coordinator.stop();
+  assert.ok(trace.includes('setStudioModeEnabled:false'));
+});
+
+test('coordinator leaves OBS Studio Mode on if it was already on at startup', async () => {
+  const trace = [];
+  const obs = {
+    async connect() {},
+    async disconnect() {},
+    isConnected() {
+      return true;
+    },
+    async getCurrentTransitionName() {
+      return 'Fade';
+    },
+    async captureProgramScreenshot() {},
+    async applyInputSettings() {},
+    async ensureFreezeAssets() {},
+    async getStudioModeEnabled() {
+      return true;
+    },
+    async setStudioModeEnabled(enabled) {
+      trace.push(`setStudioModeEnabled:${enabled}`);
+    },
+    async setPreviewScene() {},
+    async triggerStudioModeTransition() {},
+  };
+
+  const coordinator = createCoordinator({
+    config: createTransitionsConfig(),
+    obs,
+    hub: createTracingHub(trace),
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+
+  trace.length = 0;
+  await coordinator.stop();
+  assert.ok(trace.includes('setStudioModeEnabled:true'), 'restores to the original on state');
+});
+
+test('coordinator alternates freeze image file paths so OBS reloads each re-arm', async () => {
+  const appliedFiles = [];
+  const config = createTransitionsConfig({ freezeImagePath: '/tmp/deckhand-freeze-frame.png' });
+  config.presenter = null;
+
+  const obs = {
+    async connect() {},
+    async disconnect() {},
+    isConnected() {
+      return true;
+    },
+    async applyInputSettings(name, settings) {
+      if (name === 'Freeze Frame' && typeof settings.file === 'string') {
+        appliedFiles.push(settings.file);
+      }
+    },
+    async getCurrentTransitionName() {
+      return 'Fade';
+    },
+    async captureProgramScreenshot() {},
+    async setCurrentTransition() {},
+    async switchProgramScene() {},
+    async waitForSceneTransitionEnd() {},
+    async ensureFreezeAssets() {},
+  };
+
+  const coordinator = createCoordinator({
+    config,
+    obs,
+    hub: createTracingHub([]),
+    executor: createTracingExecutor([]),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+  await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+
+  assert.ok(appliedFiles.some((file) => file.endsWith('-0.png')));
+  assert.ok(appliedFiles.some((file) => file.endsWith('-1.png')));
+});
+
+test('coordinator does not re-apply identical OBS window bindings across slide changes', async () => {
+  const trace = [];
+  const coordinator = createCoordinator({
+    config: createTransitionsConfig(),
+    obs: createTracingObs(trace),
+    hub: createTracingHub(trace),
+    executor: createTracingExecutor(trace),
+    getManagedBrowserPid: () => 47213,
+    getManagedWindowBindings: () => ({
+      BrowserA: { app: 'Google Chrome', titleIncludes: 'Primary', macWindowId: 12345, pid: 47213, strict: true },
+    }),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+
+  const firstCount = trace.filter((entry) => entry === 'applyInputSettings:Deckhand_BrowserA').length;
+  assert.equal(firstCount, 1, 'applies the window binding on the first slide change');
+
+  trace.length = 0;
+  await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 2, v: 0 }, meta: {} });
+
+  const secondCount = trace.filter((entry) => entry === 'applyInputSettings:Deckhand_BrowserA').length;
+  assert.equal(secondCount, 0, 'skips re-applying an identical window binding to avoid resetting the OBS capture');
 });
 
 test('coordinator runs freeze -> mutate -> directional reveal for a forward jump', async () => {
@@ -764,8 +919,14 @@ test('coordinator runs freeze -> mutate -> directional reveal for a forward jump
   assert.ok(freezeIndex < publishIndex, 'state publishes only after the freeze scene is showing');
   assert.ok(publishIndex < revealIndex, 'dirty work completes before the reveal');
 
-  assert.ok(trace.includes('captureProgramScreenshot'), 'captures the outgoing frame');
-  assert.ok(trace.includes('applyInputSettings:Freeze Frame'), 'loads the freeze image source');
+  const captureIndex = trace.indexOf('captureProgramScreenshot');
+  const freezeLoadIndex = trace.indexOf('applyInputSettings:Freeze Frame');
+  assert.ok(captureIndex !== -1, 're-arms the freeze after the reveal');
+  assert.ok(freezeLoadIndex !== -1, 'loads the freeze image source when re-arming');
+
+  const captureCount = trace.filter((entry) => entry === 'captureProgramScreenshot').length;
+  assert.equal(captureCount, 1, 're-arms exactly once after the reveal');
+
   assert.ok(trace.includes('setCurrentTransition:Cut'), 'cuts to the freeze instantly');
   assert.ok(trace.includes('setCurrentTransition:Slide Right'), 'reveals with the forward transition');
 
@@ -773,12 +934,10 @@ test('coordinator runs freeze -> mutate -> directional reveal for a forward jump
   const forwardIndex = trace.indexOf('setCurrentTransition:Slide Right');
   assert.ok(cutIndex < forwardIndex, 'cut happens before the directional reveal');
 
-  // The freeze re-arm must capture AFTER the slide animation settles, otherwise
-  // the next freeze frame is a half-slid composite.
   const transitionEndIndex = trace.indexOf('waitForSceneTransitionEnd');
-  const rearmCaptureIndex = trace.lastIndexOf('captureProgramScreenshot');
   assert.ok(transitionEndIndex > revealIndex, 'waits for the transition to end after the reveal');
-  assert.ok(rearmCaptureIndex > transitionEndIndex, 're-arms the freeze only after the transition settles');
+  assert.ok(captureIndex > transitionEndIndex, 'captures the next freeze frame only after the reveal settles');
+  assert.ok(freezeLoadIndex > captureIndex, 'loads the re-armed freeze image after capturing it');
 });
 
 test('coordinator picks the backward transition for a prev jump and restores the operator transition', async () => {
@@ -852,6 +1011,234 @@ test('coordinator gates the reveal on the presenter window-settle ack', async ()
   await pending;
 
   assert.equal(trace.includes('switchProgramScene:Deckhand_Dual Browser'), true, 'reveal proceeds once the ack arrives');
+});
+
+test('coordinator gates the reveal on the driver position-settle ack', async () => {
+  const trace = [];
+  const config = createTransitionsConfig({ windowSettleMs: 2000 });
+  config.presenter = null;
+
+  const handlers = new Map();
+  const hub = {
+    on(eventName, handler) {
+      handlers.set(eventName, handler);
+    },
+    emit(eventName, payload) {
+      return handlers.get(eventName)?.(payload);
+    },
+    async start() {},
+    async stop() {},
+    async sendCommand() {},
+    async publishSticky() {
+      trace.push('publishSticky');
+    },
+    getSnapshot() {
+      return { activeDriver: null, observers: [], sticky: {} };
+    },
+  };
+
+  const coordinator = createCoordinator({
+    config,
+    obs: createTracingObs(trace),
+    hub,
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+
+  const pending = coordinator.handleDriverPositionChanged({
+    id: 'intro',
+    index: { h: 0, v: 0 },
+    meta: { driverEventId: 17 },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(trace.includes('switchProgramScene:Deckhand_Full Slide'), false, 'reveal must wait for the driver settle ack');
+
+  hub.emit('driverPositionSettled', { eventId: 17 });
+  await pending;
+
+  assert.equal(trace.includes('switchProgramScene:Deckhand_Full Slide'), true, 'reveal proceeds once the driver settle ack arrives');
+});
+
+test('coordinator processes only the latest staged driver position once it settles', async () => {
+  const trace = [];
+  const config = createTransitionsConfig({ windowSettleMs: 2000 });
+  config.presenter = null;
+
+  const handlers = new Map();
+  const hub = {
+    on(eventName, handler) {
+      handlers.set(eventName, handler);
+    },
+    emit(eventName, payload) {
+      return handlers.get(eventName)?.(payload);
+    },
+    async start() {},
+    async stop() {},
+    async sendCommand() {},
+    async publishSticky() {
+      trace.push('publishSticky');
+    },
+    getSnapshot() {
+      return { activeDriver: null, observers: [], sticky: {} };
+    },
+  };
+
+  const coordinator = createCoordinator({
+    config,
+    obs: createTracingObs(trace),
+    hub,
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+
+  const first = hub.emit('driverPositionChanged', {
+    id: 'intro',
+    index: { h: 0, v: 0 },
+    meta: { driverEventId: 1 },
+  });
+  const second = hub.emit('driverPositionChanged', {
+    id: 'demo',
+    index: { h: 1, v: 0 },
+    meta: { driverEventId: 2 },
+  });
+  const third = hub.emit('driverPositionChanged', {
+    id: 'demo',
+    index: { h: 1, v: 0 },
+    meta: { driverEventId: 3 },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(trace.includes('switchProgramScene:Deckhand_Dual Browser'), false, 'staged positions do not reveal before settle');
+  assert.equal(trace.includes('switchProgramScene:Deckhand_Full Slide'), false, 'older staged positions do not reveal before settle');
+
+  hub.emit('driverPositionSettled', { eventId: 3 });
+  await Promise.all([first, second, third]);
+
+  assert.equal(trace.filter((entry) => entry === 'publishSticky').length, 1, 'only one staged position is processed');
+  assert.equal(trace.includes('switchProgramScene:Deckhand_Dual Browser'), true, 'the latest settled position is revealed');
+  assert.equal(trace.includes('switchProgramScene:Deckhand_Full Slide'), false, 'older staged positions are skipped');
+});
+
+test('coordinator cuts to the freeze before forwarding observer driver commands', async () => {
+  const trace = [];
+  const config = createTransitionsConfig({ windowSettleMs: 2000 });
+  config.presenter = null;
+
+  const handlers = new Map();
+  const hub = {
+    on(eventName, handler) {
+      handlers.set(eventName, handler);
+    },
+    emit(eventName, payload) {
+      return handlers.get(eventName)?.(payload);
+    },
+    async start() {},
+    async stop() {},
+    async sendCommand(_target, command) {
+      trace.push(`sendCommand:${command.type}`);
+      return [{ role: 'driver', sessionId: 'driver-1' }];
+    },
+    async publishSticky() {
+      trace.push('publishSticky');
+    },
+    getSnapshot() {
+      return {
+        activeDriver: { role: 'driver', sessionId: 'driver-1' },
+        observers: [],
+        sticky: {},
+      };
+    },
+  };
+
+  const coordinator = createCoordinator({
+    config,
+    obs: createTracingObs(trace),
+    hub,
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+  trace.length = 0;
+
+  await hub.emit('observerDriverCommand', {
+    command: { type: 'next' },
+    sender: { role: 'observer', sessionId: 'observer-1' },
+  });
+
+  const freezeIndex = trace.indexOf('switchProgramScene:Freeze');
+  const sendCommandIndex = trace.indexOf('sendCommand:next');
+
+  assert.ok(freezeIndex !== -1 && sendCommandIndex !== -1, 'freeze and driver command both occur');
+  assert.ok(freezeIndex < sendCommandIndex, 'freeze is shown before the driver deck advances');
+
+  const pending = hub.emit('driverPositionChanged', {
+    id: 'demo',
+    index: { h: 1, v: 0 },
+    meta: { driverEventId: 17 },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  hub.emit('driverPositionSettled', { eventId: 17 });
+  await pending;
+});
+
+test('coordinator waits for visible audience-source screenshots to stabilize before reveal', async () => {
+  const trace = [];
+  const config = createTransitionsConfig();
+  config.presenter = null;
+
+  const obs = {
+    async connect() {},
+    async disconnect() {},
+    isConnected() {
+      return true;
+    },
+    async applyInputSettings(name) {
+      trace.push(`applyInputSettings:${name}`);
+    },
+    async getCurrentTransitionName() {
+      return 'Fade';
+    },
+    async captureProgramScreenshot() {
+      trace.push('captureProgramScreenshot');
+    },
+    async setCurrentTransition(name) {
+      trace.push(`setCurrentTransition:${name}`);
+    },
+    async switchProgramScene(name) {
+      trace.push(`switchProgramScene:${name}`);
+    },
+    async waitForSceneTransitionEnd() {
+      trace.push('waitForSceneTransitionEnd');
+    },
+    async ensureFreezeAssets() {},
+    async waitForSourceScreenshotStable(sourceName) {
+      trace.push(`waitForSourceScreenshotStable:${sourceName}`);
+    },
+  };
+
+  const coordinator = createCoordinator({
+    config,
+    obs,
+    hub: createTracingHub(trace),
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+  trace.length = 0;
+  await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+
+  assert.ok(trace.includes('waitForSourceScreenshotStable:Deckhand_BrowserA'));
+  assert.ok(trace.includes('waitForSourceScreenshotStable:Deckhand_BrowserB'));
+  assert.equal(trace.includes('switchProgramScene:Deckhand_Dual Browser'), true, 'reveal still lands on the target program scene after source stabilization');
 });
 
 test('coordinator reveals via the window-settle timeout fallback when no ack arrives', async () => {

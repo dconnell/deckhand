@@ -325,7 +325,7 @@ test('obs client ensureFreezeAssets creates a missing freeze scene and image sou
   });
 });
 
-test('obs client waitForSceneTransitionEnd awaits the CurrentSceneTransitionEnded event', async () => {
+test('obs client waitForSceneTransitionEnd awaits the SceneTransitionEnded event', async () => {
   const Fake = createEventedFakeObsWebSocket();
   const obs = createObsClient({
     url: 'ws://127.0.0.1:4455',
@@ -347,7 +347,7 @@ test('obs client waitForSceneTransitionEnd awaits the CurrentSceneTransitionEnde
   await Promise.resolve();
   assert.equal(resolved, false, 'must not resolve before the transition ends');
 
-  instance.emit('CurrentSceneTransitionEnded', {});
+  instance.emit('SceneTransitionEnded', {});
   await pending;
 
   assert.equal(resolved, true);
@@ -366,6 +366,169 @@ test('obs client waitForSceneTransitionEnd falls back to the timeout when no eve
   await obs.connect();
 
   await assert.doesNotReject(obs.waitForSceneTransitionEnd({ timeoutMs: 15 }));
+});
+
+test('obs client waitForSourceScreenshotStable resolves once consecutive screenshots match', async () => {
+  const frames = ['frame-a', 'frame-b', 'frame-b'];
+  const Fake = createEventedFakeObsWebSocket((method) => {
+    if (method === 'GetSourceScreenshot') {
+      return { imageData: frames.shift() ?? 'frame-b' };
+    }
+
+    return {};
+  });
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+  await obs.waitForSourceScreenshotStable('Deckhand_Full Slide', {
+    pollIntervalMs: 1,
+    stableSamples: 2,
+    timeoutMs: 100,
+  });
+
+  assert.equal(
+    obs.getClient().calls.filter((call) => call.method === 'GetSourceScreenshot').length,
+    3,
+  );
+});
+
+test('obs client waitForSourceScreenshotStable can require the frame to differ from the outgoing scene first', async () => {
+  const frames = ['outgoing', 'outgoing', 'incoming', 'incoming'];
+  const Fake = createEventedFakeObsWebSocket((method) => {
+    if (method === 'GetSourceScreenshot') {
+      return { imageData: frames.shift() ?? 'incoming' };
+    }
+
+    return {};
+  });
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+  await obs.waitForSourceScreenshotStable('Deckhand_Full Slide', {
+    differentFromData: 'outgoing',
+    pollIntervalMs: 1,
+    stableSamples: 2,
+    timeoutMs: 100,
+  });
+
+  assert.equal(
+    obs.getClient().calls.filter((call) => call.method === 'GetSourceScreenshot').length,
+    4,
+  );
+});
+
+test('obs client waitForSourceScreenshotStable resolves via timeout fallback when the frame never stabilizes', async () => {
+  let index = 0;
+  const Fake = createEventedFakeObsWebSocket((method) => {
+    if (method === 'GetSourceScreenshot') {
+      index += 1;
+      return { imageData: `frame-${index}` };
+    }
+
+    return {};
+  });
+  const logger = { info() {}, error() {}, warn() {} };
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger,
+  });
+
+  await obs.connect();
+  await assert.doesNotReject(obs.waitForSourceScreenshotStable('Deckhand_Full Slide', {
+    pollIntervalMs: 1,
+    stableSamples: 3,
+    timeoutMs: 10,
+  }));
+  assert.ok(index > 1);
+});
+
+test('obs client setPreviewScene switches preview and waits until OBS reports it active', async () => {
+  let currentProgramSceneName = 'Deckhand_Freeze';
+  let currentPreviewSceneName = 'Deckhand_Full Slide';
+  const Fake = createEventedFakeObsWebSocket((method, payload) => {
+    if (method === 'SetCurrentPreviewScene') {
+      currentPreviewSceneName = payload.sceneName;
+      return {};
+    }
+
+    if (method === 'GetSceneList') {
+      return {
+        currentProgramSceneName,
+        currentPreviewSceneName,
+        scenes: [
+          { sceneName: 'Deckhand_Freeze' },
+          { sceneName: 'Deckhand_Full Slide' },
+          { sceneName: 'Deckhand_Dual Browser' },
+        ],
+      };
+    }
+
+    return {};
+  });
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+  await obs.setPreviewScene('Deckhand_Dual Browser', { timeoutMs: 50, pollIntervalMs: 1 });
+
+  assert.deepEqual(obs.getClient().calls[0], {
+    method: 'SetCurrentPreviewScene',
+    payload: { sceneName: 'Deckhand_Dual Browser' },
+  });
+});
+
+test('obs client triggerStudioModeTransition waits until program matches the preview target', async () => {
+  let currentProgramSceneName = 'Deckhand_Freeze';
+  let currentPreviewSceneName = 'Deckhand_Dual Browser';
+  const Fake = createEventedFakeObsWebSocket((method) => {
+    if (method === 'TriggerStudioModeTransition') {
+      currentProgramSceneName = currentPreviewSceneName;
+      return {};
+    }
+
+    if (method === 'GetSceneList') {
+      return {
+        currentProgramSceneName,
+        currentPreviewSceneName,
+        scenes: [
+          { sceneName: 'Deckhand_Freeze' },
+          { sceneName: 'Deckhand_Dual Browser' },
+        ],
+      };
+    }
+
+    return {};
+  });
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+  await obs.triggerStudioModeTransition({ targetSceneName: 'Deckhand_Dual Browser', timeoutMs: 50, pollIntervalMs: 1 });
+
+  assert.deepEqual(obs.getClient().calls[0], {
+    method: 'TriggerStudioModeTransition',
+    payload: undefined,
+  });
 });
 
 test('obs client ensureFreezeAssets re-points an existing image source at the freeze path', async () => {
@@ -396,4 +559,126 @@ test('obs client ensureFreezeAssets re-points an existing image source at the fr
     inputSettings: { file: '/tmp/freeze.png' },
     overlay: true,
   });
+});
+
+test('obs client ensureFreezeAssets creates a dim color-correction filter when dimPercent is set', async () => {
+  const Fake = createEventedFakeObsWebSocket((method) => {
+    if (method === 'GetSceneList') {
+      return { scenes: [{ sceneName: 'Freeze' }] };
+    }
+
+    if (method === 'GetInputList') {
+      return { inputs: [{ inputName: 'Freeze Frame', inputKind: 'image_source' }] };
+    }
+
+    if (method === 'GetSourceFilterList') {
+      return { filters: [] };
+    }
+
+    return {};
+  });
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+  await obs.ensureFreezeAssets({
+    sceneName: 'Freeze',
+    inputName: 'Freeze Frame',
+    imagePath: '/tmp/freeze.png',
+    dimPercent: 10,
+  });
+
+  const calls = obs.getClient().calls.map((call) => call.method);
+  const filterIndex = calls.indexOf('CreateSourceFilter');
+  assert.ok(filterIndex !== -1, 'creates the dim filter');
+  assert.deepEqual(obs.getClient().calls[filterIndex].payload, {
+    sourceName: 'Freeze Frame',
+    filterName: 'Deckhand_Dim',
+    filterKind: 'color_filter',
+    filterSettings: { opacity: 90 },
+  });
+});
+
+test('obs client ensureFreezeAssets updates an existing dim filter to the configured opacity', async () => {
+  const Fake = createEventedFakeObsWebSocket((method) => {
+    if (method === 'GetSceneList') {
+      return { scenes: [{ sceneName: 'Freeze' }] };
+    }
+
+    if (method === 'GetInputList') {
+      return { inputs: [{ inputName: 'Freeze Frame', inputKind: 'image_source' }] };
+    }
+
+    if (method === 'GetSourceFilterList') {
+      return {
+        filters: [
+          { filterName: 'Deckhand_Dim', filterKind: 'color_filter', filterEnabled: true, filterSettings: { opacity: 100 } },
+        ],
+      };
+    }
+
+    return {};
+  });
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+  await obs.ensureFreezeAssets({
+    sceneName: 'Freeze',
+    inputName: 'Freeze Frame',
+    imagePath: '/tmp/freeze.png',
+    dimPercent: 15,
+  });
+
+  const calls = obs.getClient().calls.map((call) => call.method);
+  assert.equal(calls.includes('CreateSourceFilter'), false, 'does not recreate an existing filter');
+  const settingsIndex = calls.indexOf('SetSourceFilterSettings');
+  assert.ok(settingsIndex !== -1, 'updates the existing filter');
+  assert.deepEqual(obs.getClient().calls[settingsIndex].payload, {
+    sourceName: 'Freeze Frame',
+    filterName: 'Deckhand_Dim',
+    filterSettings: { opacity: 85 },
+    overlay: false,
+  });
+});
+
+test('obs client ensureFreezeAssets skips the dim filter when dimPercent is 0', async () => {
+  const Fake = createEventedFakeObsWebSocket((method) => {
+    if (method === 'GetSceneList') {
+      return { scenes: [{ sceneName: 'Freeze' }] };
+    }
+
+    if (method === 'GetInputList') {
+      return { inputs: [{ inputName: 'Freeze Frame', inputKind: 'image_source' }] };
+    }
+
+    return {};
+  });
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+  await obs.ensureFreezeAssets({
+    sceneName: 'Freeze',
+    inputName: 'Freeze Frame',
+    imagePath: '/tmp/freeze.png',
+    dimPercent: 0,
+  });
+
+  const calls = obs.getClient().calls.map((call) => call.method);
+  assert.equal(calls.includes('GetSourceFilterList'), false, 'leaves filters untouched when dim is disabled');
+  assert.equal(calls.includes('CreateSourceFilter'), false);
+  assert.equal(calls.includes('SetSourceFilterSettings'), false);
 });

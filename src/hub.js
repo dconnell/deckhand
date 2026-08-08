@@ -292,6 +292,19 @@ export function createHub(options) {
       return;
     }
 
+    if (message.type === 'positionSettled') {
+      if (client.role !== 'driver') {
+        await sendProtocolError(socket, 'invalid_message', 'Only driver clients can send positionSettled messages');
+        return;
+      }
+
+      await events.emit('driverPositionSettled', {
+        eventId: message.eventId,
+        sender: serializeClient(client),
+      });
+      return;
+    }
+
     if (message.type === 'transcript') {
       if (client.role !== 'observer') {
         await sendProtocolError(socket, 'invalid_message', 'Only observer clients can send transcript messages');
@@ -312,12 +325,10 @@ export function createHub(options) {
           return;
         }
 
-      if (activeDriver === null) {
-        await sendProtocolError(socket, 'driver_unavailable', 'No active driver connected');
-        return;
-      }
-
-        await sendMessage(activeDriver.socket, createCommandMessage(message.command));
+        await events.emit('observerDriverCommand', {
+          command: message.command,
+          sender: serializeClient(client),
+        });
         return;
       }
 

@@ -369,5 +369,12 @@ export function validateClientMessage(message) {
     };
   }
 
+  if (type === 'positionSettled') {
+    return {
+      type,
+      eventId: normalizePositiveInteger(message.eventId, 'eventId'),
+    };
+  }
+
   throw new TypeError(`Unsupported message type: ${type}`);
 }

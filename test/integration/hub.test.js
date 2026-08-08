@@ -216,9 +216,13 @@ test('hub rejects non-observer transcript senders and malformed messages without
   }
 });
 
-test('hub routes observer driverCommand messages to the active driver', async () => {
+test('hub emits observer driverCommand events for the coordinator to forward', async () => {
   const logger = createLogger();
   const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+  const events = [];
+  hub.on('observerDriverCommand', (payload) => {
+    events.push(payload);
+  });
 
   await hub.start();
   const { port } = hub.getAddress();
@@ -231,12 +235,37 @@ test('hub routes observer driverCommand messages to the active driver', async ()
     await observer.send({ type: 'driverCommand', command: { type: 'next' } });
     await flushMessages();
 
-    assert.deepEqual(
-      driver.messages.filter((message) => message.type === 'command').map((message) => message.command),
-      [{ type: 'next' }],
-    );
+    assert.equal(events.length, 1);
+    assert.deepEqual(events[0].command, { type: 'next' });
+    assert.equal(events[0].sender.role, 'observer');
   } finally {
     await Promise.all([driver.close(), observer.close()]);
+    await hub.stop();
+  }
+});
+
+test('hub emits driver position-settled events from registered drivers', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+  const events = [];
+  hub.on('driverPositionSettled', (payload) => {
+    events.push(payload);
+  });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const driver = await createClient(port);
+
+  try {
+    await driver.send({ type: 'register', role: 'driver', capabilities: ['next', 'prev', 'goTo'] });
+    await driver.send({ type: 'positionSettled', eventId: 7 });
+    await flushMessages();
+
+    assert.equal(events.length, 1);
+    assert.equal(events[0].eventId, 7);
+    assert.equal(events[0].sender.role, 'driver');
+  } finally {
+    await driver.close();
     await hub.stop();
   }
 });
