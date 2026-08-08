@@ -2,7 +2,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { access, readFile } from 'node:fs/promises';
 
-import { ConfigError, normalizeConfig } from './config.js';
+import { ConfigError, assertOwnedAppFilesExist, normalizeConfig } from './config.js';
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -121,8 +121,11 @@ export async function loadPresentationConfig(options) {
     }
   }
 
+  const config = normalizeConfig(mergedConfig, { baseDir: paths.root });
+  await assertOwnedAppFilesExist(config);
+
   return {
-    config: normalizeConfig(mergedConfig),
+    config,
     filePath,
     paths,
   };

@@ -194,17 +194,35 @@ exact `macWindowId` (not the whole app process). If the app shows an
 unsaved-changes sheet, Deckhand attempts to press Don't Save/Discard for that
 tracked window so shutdown can complete without manual prompts.
 
+#### What the app opens
+
+An `app` source launches as `open -n -a <app>`. Three optional fields control
+what follows the app name — **pick one**; `args`, `files`, and `openArgs` are
+mutually exclusive:
+
+| Field | Use when | How Deckhand passes it to `open` |
+| --- | --- | --- |
+| `args` | The app reads its own flags at launch (VS Code's `--new-window`) | After `--args`, forwarded to the app's `main()`: `… --args <args…>` |
+| `files` | The app opens documents by path (Preview, QuickTime Player, TextEdit) | As positional args: `… <files…>`. Relative paths resolve to the presentation directory; existence is checked at load |
+| `openArgs` | You need exact `open` grammar the other two can't express (`-g`, `--env`, a URL for Safari) | Verbatim: `… <openArgs…>`. No `--args`, no path resolution, no existence check |
+
+With none of them, Deckhand opens a bare new window. The split exists because
+macOS `open` treats positional files and `--args`-forwarded values differently:
+document-centric apps ignore `--args`, so `files` is the only way to make
+Preview, TextEdit, or QuickTime Player actually open anything.
+
 ```json
-"Editor": {
-  "kind": "app",
-  "app": "Visual Studio Code",
-  "args": ["--new-window", "/repos/demo"]
+"sources": {
+  "Editor": { "kind": "app", "app": "Visual Studio Code", "args": ["--new-window", "/repos/demo"] },
+  "Photo":  { "kind": "app", "app": "Preview", "files": ["image.jpg"] },
+  "Site":   { "kind": "app", "app": "Safari", "openArgs": ["https://example.com"] }
 }
 ```
 
+#### Other app fields
+
 - `app` — required macOS app name as `open -a` expects it (e.g.
-  `Visual Studio Code`, `iTerm2`)
-- `args` — optional array of launch arguments passed after `--args`
+  `Visual Studio Code`, `iTerm2`, `Preview`)
 - `cwd` — optional absolute working directory where relevant
 - `command` — optional shell command run inside the new window (used by
   terminal apps like iTerm2; ignored by apps that don't need it)
@@ -426,7 +444,9 @@ The config loader returns path-based errors for invalid input, including:
 - missing or invalid `driver.type`
 - missing or empty `sources`
 - unknown source `kind`
-- `app` sources with invalid `command`/`args`/`cwd`/`app` fields
+- `app` sources with invalid `command`/`args`/`cwd`/`files`/`openArgs`/`app`
+  fields, or `openArgs` combined with `args` or `files`
+- `app` source `files` paths that do not exist on disk at load time
 - missing `layouts`
 - unknown `slides.<id>.layout`
 - layout slots that reference unknown sources

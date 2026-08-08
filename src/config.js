@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const BUILTIN_DRIVER_TYPES = ['revealjs'];
@@ -77,6 +77,35 @@ function normalizeAbsolutePath(value, pathName) {
   }
 
   return resolved;
+}
+
+/**
+ * Validate an array of filesystem paths for an app source `files` field.
+ *
+ * Each entry must be a non-empty string. Absolute entries are kept as-is;
+ * relative entries are resolved against `baseDir` (falling back to
+ * `process.cwd()`) so a presentation may commit assets next to its config and
+ * reference them portably. Unlike `cwd`/`args` — where a stale placeholder
+ * still opens a window — a missing `files` path makes `open` exit non-zero
+ * with no window, so resolving relative paths against the presentation
+ * directory is what lets a shipped sample image open out of the box.
+ *
+ * @param {unknown} value The raw value.
+ * @param {string} pathName The config path used in errors.
+ * @param {string} [baseDir] Directory to resolve relative entries against.
+ * @returns {string[]}
+ */
+function normalizeAbsolutePathArray(value, pathName, baseDir) {
+  const entries = normalizeStringArray(value, pathName);
+  const resolveAgainst = baseDir ?? process.cwd();
+
+  return entries.map((entry, index) => {
+    if (!path.isAbsolute(entry)) {
+      return path.resolve(resolveAgainst, entry);
+    }
+
+    return entry;
+  });
 }
 
 function normalizeStringArray(value, pathName) {
@@ -216,9 +245,10 @@ function normalizeBrowserCatalog(browser, pathName) {
  *
  * @param {string} sourceId The source ID key from the catalog.
  * @param {unknown} entry The raw source descriptor.
- * @returns {{ id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[] }}
+ * @param {string} [baseDir] Directory to resolve relative `files` paths against.
+ * @returns {{ id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[], files?: string[] }}
  */
-function normalizeSourceEntry(sourceId, entry) {
+function normalizeSourceEntry(sourceId, entry, baseDir) {
   const pathName = `sources.${sourceId}`;
   const value = assertPlainObject(entry, pathName);
   const kind = assertNonEmptyString(value.kind, `${pathName}.kind`);
@@ -236,7 +266,10 @@ function normalizeSourceEntry(sourceId, entry) {
     source.browser = normalizeBrowserCatalog(value.browser, `${pathName}.browser`);
   } else if (kind === APP_SOURCE_KIND) {
     source.app = assertNonEmptyString(value.app, `${pathName}.app`);
-    normalizeOwnedLaunchFields(value, source, pathName, ['args', 'cwd', 'command']);
+    if (value.openArgs !== undefined && (value.args !== undefined || value.files !== undefined)) {
+      throw new ConfigError(`${pathName}.openArgs`, 'is mutually exclusive with args and files');
+    }
+    normalizeOwnedLaunchFields(value, source, pathName, ['args', 'cwd', 'command', 'files', 'openArgs'], baseDir);
   }
 
   return source;
@@ -245,16 +278,16 @@ function normalizeSourceEntry(sourceId, entry) {
 /**
  * Normalize the optional launch fields shared by owned app-window sources.
  *
- * `command`/`args`/`cwd` are only meaningful to the launch layer; here we only
- * validate their shape. Per-kind required fields (e.g. `app`) are handled by
- * the caller.
+ * `command`/`args`/`cwd`/`files` are only meaningful to the launch layer; here
+ * we only validate their shape. Per-kind required fields (e.g. `app`) are
+ * handled by the caller.
  *
  * @param {Record<string, unknown>} value The raw source descriptor.
  * @param {Record<string, unknown>} source The normalized source being built.
  * @param {string} pathName The config path of the source entry.
- * @param {Array<'command' | 'args' | 'cwd'>} fields The optional fields to copy.
+ * @param {Array<'command' | 'args' | 'cwd' | 'files'>} fields The optional fields to copy.
  */
-function normalizeOwnedLaunchFields(value, source, pathName, fields) {
+function normalizeOwnedLaunchFields(value, source, pathName, fields, baseDir) {
   for (const field of fields) {
     if (value[field] === undefined) {
       continue;
@@ -266,6 +299,10 @@ function normalizeOwnedLaunchFields(value, source, pathName, fields) {
       source.cwd = normalizeAbsolutePath(value.cwd, `${pathName}.cwd`);
     } else if (field === 'command') {
       source.command = assertNonEmptyString(value.command, `${pathName}.command`);
+    } else if (field === 'files') {
+      source.files = normalizeAbsolutePathArray(value.files, `${pathName}.files`, baseDir);
+    } else if (field === 'openArgs') {
+      source.openArgs = normalizeStringArray(value.openArgs, `${pathName}.openArgs`);
     }
   }
 }
@@ -274,9 +311,10 @@ function normalizeOwnedLaunchFields(value, source, pathName, fields) {
  * Normalize the authoritative `sources` catalog.
  *
  * @param {unknown} sources The raw sources object.
- * @returns {Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[] }>}
+ * @param {string} [baseDir] Directory to resolve relative `files` paths against.
+ * @returns {Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[], files?: string[] }>}
  */
-function normalizeSources(sources) {
+function normalizeSources(sources, baseDir) {
   const value = assertPlainObject(sources, 'sources');
   const entries = Object.entries(value);
 
@@ -284,7 +322,7 @@ function normalizeSources(sources) {
     throw new ConfigError('sources', 'must define at least one source');
   }
 
-  return Object.fromEntries(entries.map(([sourceId, entry]) => [sourceId, normalizeSourceEntry(sourceId, entry)]));
+  return Object.fromEntries(entries.map(([sourceId, entry]) => [sourceId, normalizeSourceEntry(sourceId, entry, baseDir)]));
 }
 
 function normalizeObsTransitions(value) {
@@ -784,11 +822,14 @@ export class ConfigError extends Error {
  * Normalize a raw config object into the coordinator's internal model.
  *
  * @param {unknown} rawConfig The parsed config JSON.
- * @returns {{ driver: { type: string }, obs: { url: string, password: string, prune: boolean, transitions: null | { forward: string, backward: string, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number, windowSettleMs: number, freezeDimPercent: number } }, hub: { host: string, port: number }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[] }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, profileName?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, chunkSeconds: number, language?: string }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
+ * @param {{ baseDir?: string }} [options] Loader options. `baseDir` resolves
+ *   relative `files` paths (e.g. a presentation's committed image assets)
+ *   against the presentation directory.
+ * @returns {{ driver: { type: string }, obs: { url: string, password: string, prune: boolean, transitions: null | { forward: string, backward: string, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number, windowSettleMs: number, freezeDimPercent: number } }, hub: { host: string, port: number }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[], files?: string[] }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, profileName?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, chunkSeconds: number, language?: string }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
  */
-export function normalizeConfig(rawConfig) {
+export function normalizeConfig(rawConfig, { baseDir } = {}) {
   const root = assertPlainObject(rawConfig, 'config');
-  const sources = normalizeSources(root.sources);
+  const sources = normalizeSources(root.sources, baseDir);
   const layouts = normalizeLayouts(root.layouts, sources);
   const slides = normalizeSlides(root.slides, layouts, sources);
 
@@ -806,6 +847,34 @@ export function normalizeConfig(rawConfig) {
     chrome: normalizeChrome(root.chrome),
     presenter: normalizePresenter(root.presenter, layouts, slides, sources),
   };
+}
+
+/**
+ * Verify that every resolved `files` path for owned app sources exists on disk.
+ *
+ * `normalizeConfig` only validates shape (and resolves relative paths against
+ * the presentation directory); it never touches the filesystem so it stays
+ * unit-testable. A missing `files` path, unlike a stale `cwd`/`args`
+ * placeholder, makes `open` exit non-zero with no window, so this load-time
+ * check surfaces typos and placeholders as a clear `sources.<id>.files[i]`
+ * error instead of a confusing launch-time `open ... exited with code 1`.
+ *
+ * @param {{ sources: Record<string, { kind: string, files?: string[] }> }} config Normalized config.
+ */
+export async function assertOwnedAppFilesExist(config) {
+  for (const [sourceId, source] of Object.entries(config.sources)) {
+    if (source?.kind !== 'app' || !Array.isArray(source.files)) {
+      continue;
+    }
+
+    for (let index = 0; index < source.files.length; index += 1) {
+      try {
+        await access(source.files[index]);
+      } catch {
+        throw new ConfigError(`sources.${sourceId}.files[${index}]`, `file does not exist: ${source.files[index]}`);
+      }
+    }
+  }
 }
 
 /**
@@ -831,5 +900,7 @@ export async function loadConfig(options) {
     throw new ConfigError('config', `must be valid JSON: ${error.message}`);
   }
 
-  return normalizeConfig(parsed);
+  const normalized = normalizeConfig(parsed, { baseDir: path.dirname(options.filePath) });
+  await assertOwnedAppFilesExist(normalized);
+  return normalized;
 }

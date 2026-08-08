@@ -169,11 +169,14 @@ function createOwnedWindowResolutionEntries({
       snapshot: () => enumerateWindowsByOwnerNameFn(adapter.cgWindowOwnerName(source)),
       launch: () => (typeof adapter.launch === 'function'
         ? adapter.launch(source, { launchIterm2Window: launchIterm2WindowFn })
-        : launchAppWindowFn({
-            app: source.app,
-            args: adapter.buildLaunchArgs ? adapter.buildLaunchArgs(source) : source.args,
-            cwd: source.cwd,
-          })),
+        : launchAppWindowFn(source.openArgs
+          ? { app: source.app, cwd: source.cwd, openArgs: source.openArgs }
+          : {
+              app: source.app,
+              args: adapter.buildLaunchArgs ? adapter.buildLaunchArgs(source) : source.args,
+              cwd: source.cwd,
+              files: source.files,
+            })),
       confirm: adapter.confirm,
     });
   }

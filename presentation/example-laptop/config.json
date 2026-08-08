@@ -53,6 +53,11 @@
           }
         }
       }
+    },
+    "Photo": {
+      "kind": "app",
+      "app": "Preview",
+      "files": ["pexels-marin-tulard-1632272-9931969.jpg"]
     }
   },
   "layouts": {
@@ -106,6 +111,22 @@
       ],
       "overlays": [
         { "source": "Presenter", "rect": { "x": 1650, "y": 0, "w": 150, "h": 584 } }
+      ]
+    },
+    "left-slide-right-photo": {
+      "audienceScene": "Left Slide Right Photo",
+      "slots": [
+        {
+          "source": "Slide",
+          "position": "left"
+        },
+        {
+          "source": "Photo",
+          "position": "right"
+        }
+      ],
+      "overlays": [
+        { "source": "Presenter", "rect": { "x": 0, "y": 0, "w": 150, "h": 584 } }
       ]
     },
     "right-terminal-left-slide": {
@@ -215,6 +236,11 @@
         { "source": "BrowserA", "action": "navigate", "tab": "home", "url": "https://example.com/demo/full" }
       ]
     },
+    "photo-split": {
+      "layout": "left-slide-right-photo",
+      "focus": "Photo",
+      "script": "Slide on the left, full-bleed photo on the right.\nThe photo is a generic app source: Deckhand launches Preview on the image and captures the window, with no tab or navigation control."
+    },
     "dual-demo": {
       "layout": "dual-browser",
       "focus": "BrowserB",
@@ -254,6 +280,9 @@
       "BrowserB": {
         "app": "Google Chrome",
         "titleIncludes": "Deckhand Demo Secondary"
+      },
+      "Photo": {
+        "app": "Preview"
       }
     },
     "stt": {

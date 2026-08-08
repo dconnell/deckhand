@@ -466,6 +466,104 @@ test('normalizeConfig accepts app sources with only an owner name', () => {
   assert.deepEqual(normalized.sources.Editor, { id: 'Editor', kind: 'app', app: 'Visual Studio Code' });
 });
 
+test('normalizeConfig normalizes app source files as absolute paths', () => {
+  const config = createValidConfig();
+  config.sources.Image = { kind: 'app', app: 'Preview', files: ['/abs/image.jpg', '/abs/second.png'] };
+  config.layouts['full-image'] = {
+    audienceScene: 'Full Image',
+    slots: [{ source: 'Image', position: 'full' }],
+  };
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.sources.Image, {
+    id: 'Image',
+    kind: 'app',
+    app: 'Preview',
+    files: ['/abs/image.jpg', '/abs/second.png'],
+  });
+});
+
+test('normalizeConfig rejects app sources with non-array files', () => {
+  const config = createValidConfig();
+  config.sources.Image = { kind: 'app', app: 'Preview', files: '/abs/image.jpg' };
+  config.layouts['full-image'] = {
+    audienceScene: 'Full Image',
+    slots: [{ source: 'Image', position: 'full' }],
+  };
+
+  assertConfigError(() => normalizeConfig(config), 'sources.Image.files', /array of non-empty strings/i);
+});
+
+test('normalizeConfig resolves relative file paths against the presentation base dir', () => {
+  const config = createValidConfig();
+  config.sources.Image = { kind: 'app', app: 'Preview', files: ['image.jpg', 'nested/second.png'] };
+  config.layouts['full-image'] = {
+    audienceScene: 'Full Image',
+    slots: [{ source: 'Image', position: 'full' }],
+  };
+
+  const normalized = normalizeConfig(config, { baseDir: '/repos/example-laptop' });
+
+  assert.deepEqual(normalized.sources.Image.files, [
+    '/repos/example-laptop/image.jpg',
+    '/repos/example-laptop/nested/second.png',
+  ]);
+});
+
+test('normalizeConfig leaves absolute file paths untouched when a base dir is provided', () => {
+  const config = createValidConfig();
+  config.sources.Image = { kind: 'app', app: 'Preview', files: ['/abs/image.jpg'] };
+  config.layouts['full-image'] = {
+    audienceScene: 'Full Image',
+    slots: [{ source: 'Image', position: 'full' }],
+  };
+
+  const normalized = normalizeConfig(config, { baseDir: '/repos/example-laptop' });
+
+  assert.deepEqual(normalized.sources.Image.files, ['/abs/image.jpg']);
+});
+
+test('normalizeConfig normalizes app source openArgs as a verbatim string array', () => {
+  const config = createValidConfig();
+  config.sources.Site = { kind: 'app', app: 'Safari', openArgs: ['-g', 'https://example.com'] };
+  config.layouts['full-site'] = {
+    audienceScene: 'Full Site',
+    slots: [{ source: 'Site', position: 'full' }],
+  };
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.sources.Site, {
+    id: 'Site',
+    kind: 'app',
+    app: 'Safari',
+    openArgs: ['-g', 'https://example.com'],
+  });
+});
+
+test('normalizeConfig rejects app sources that set openArgs alongside args', () => {
+  const config = createValidConfig();
+  config.sources.Site = { kind: 'app', app: 'Safari', openArgs: ['-g'], args: ['--flag'] };
+  config.layouts['full-site'] = {
+    audienceScene: 'Full Site',
+    slots: [{ source: 'Site', position: 'full' }],
+  };
+
+  assertConfigError(() => normalizeConfig(config), 'sources.Site.openArgs', /mutually exclusive/i);
+});
+
+test('normalizeConfig rejects app sources that set openArgs alongside files', () => {
+  const config = createValidConfig();
+  config.sources.Site = { kind: 'app', app: 'Preview', openArgs: ['-F'], files: ['/abs/image.jpg'] };
+  config.layouts['full-site'] = {
+    audienceScene: 'Full Site',
+    slots: [{ source: 'Site', position: 'full' }],
+  };
+
+  assertConfigError(() => normalizeConfig(config), 'sources.Site.openArgs', /mutually exclusive/i);
+});
+
 test('normalizeConfig rejects browser sources that omit the tab catalog', () => {
   const config = createValidConfig();
   delete config.sources.BrowserA.browser;
@@ -723,6 +821,56 @@ test('loadConfig reads JSON from disk and returns the normalized model', async (
 
     assert.equal(config.driver.type, 'revealjs');
     assert.equal(config.layouts['full-slide'].audienceScene, 'Full Slide');
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('loadConfig rejects an app source files path that does not exist on disk', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-files-exist-'));
+  const configPath = path.join(tempDir, 'config.json');
+  const config = createValidConfig();
+  config.sources.Image = { kind: 'app', app: 'Preview', files: ['/abs/does-not-exist.jpg'] };
+  config.layouts['full-image'] = {
+    audienceScene: 'Full Image',
+    slots: [{ source: 'Image', position: 'full' }],
+  };
+
+  try {
+    await writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
+
+    await assert.rejects(
+      () => loadConfig({ filePath: configPath }),
+      (error) => {
+        assert.ok(error instanceof ConfigError, 'should be a ConfigError');
+        assert.equal(error.path, 'sources.Image.files[0]');
+        assert.match(error.message, /does not exist/i);
+        return true;
+      },
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('loadConfig accepts an app source files path that exists on disk', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-files-exist-'));
+  const configPath = path.join(tempDir, 'config.json');
+  const imagePath = path.join(tempDir, 'image.jpg');
+  const config = createValidConfig();
+  config.sources.Image = { kind: 'app', app: 'Preview', files: [imagePath] };
+  config.layouts['full-image'] = {
+    audienceScene: 'Full Image',
+    slots: [{ source: 'Image', position: 'full' }],
+  };
+
+  try {
+    await writeFile(imagePath, 'data', 'utf8');
+    await writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
+
+    const normalized = await loadConfig({ filePath: configPath });
+
+    assert.deepEqual(normalized.sources.Image.files, [imagePath]);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

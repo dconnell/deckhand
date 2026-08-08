@@ -61,6 +61,48 @@ test('buildOpenArgs omits --args when no launch args are configured', () => {
   );
 });
 
+test('buildOpenArgs places files as direct open args before --args', () => {
+  assert.deepEqual(
+    buildOpenArgs({ app: 'Preview', files: ['/abs/image.jpg'], args: ['--foo'] }),
+    ['-n', '-a', 'Preview', '/abs/image.jpg', '--args', '--foo'],
+  );
+});
+
+test('buildOpenArgs places files without --args when no launch args are configured', () => {
+  assert.deepEqual(
+    buildOpenArgs({ app: 'Preview', files: ['/abs/image.jpg', '/abs/second.png'] }),
+    ['-n', '-a', 'Preview', '/abs/image.jpg', '/abs/second.png'],
+  );
+});
+
+test('buildOpenArgs ignores a non-array files value', () => {
+  assert.deepEqual(
+    buildOpenArgs({ app: 'Preview', files: '/abs/image.jpg' }),
+    ['-n', '-a', 'Preview'],
+  );
+});
+
+test('buildOpenArgs passes openArgs verbatim after -a with no --args insertion', () => {
+  assert.deepEqual(
+    buildOpenArgs({ app: 'Safari', openArgs: ['-g', 'https://example.com'] }),
+    ['-n', '-a', 'Safari', '-g', 'https://example.com'],
+  );
+});
+
+test('buildOpenArgs prefers openArgs over args and files when both are supplied', () => {
+  assert.deepEqual(
+    buildOpenArgs({ app: 'Safari', openArgs: ['-g'], args: ['--flag'], files: ['/abs/image.jpg'] }),
+    ['-n', '-a', 'Safari', '-g'],
+  );
+});
+
+test('buildOpenArgs ignores a non-array openArgs value', () => {
+  assert.deepEqual(
+    buildOpenArgs({ app: 'Safari', openArgs: '-g' }),
+    ['-n', '-a', 'Safari'],
+  );
+});
+
 test('isVisualStudioCodeApp matches Visual Studio Code aliases', () => {
   assert.equal(isVisualStudioCodeApp('Visual Studio Code'), true);
   assert.equal(isVisualStudioCodeApp('Code'), true);

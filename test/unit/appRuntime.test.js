@@ -60,13 +60,65 @@ test('createOwnedWindowResolutionEntries uses adapter CGWindow owner names and c
     { type: 'snapshot', ownerName: 'iTerm' },
     { type: 'snapshot', ownerName: 'Code' },
     { type: 'iterm2', options: { command: 'npm run dev', cwd: '/repos/demo' } },
-    { type: 'open', options: { app: 'Visual Studio Code', args: ['--new-window', '/repos/demo'], cwd: undefined } },
+    { type: 'open', options: { app: 'Visual Studio Code', args: ['--new-window', '/repos/demo'], cwd: undefined, files: undefined } },
   ]);
   const terminalEntry = entries.find((entry) => entry.sourceId === 'Terminal');
   const editorEntry = entries.find((entry) => entry.sourceId === 'Editor');
 
   assert.deepEqual(terminalEntry?.confirm, undefined);
   assert.deepEqual(editorEntry?.confirm, { stableSamples: 2 });
+});
+
+test('createOwnedWindowResolutionEntries forwards source files to the generic launcher', async () => {
+  const logger = createLogger();
+  const launches = [];
+  const entries = createOwnedWindowResolutionEntries({
+    config: {
+      sources: {
+        Image: { id: 'Image', kind: 'app', app: 'Preview', files: ['/abs/image.jpg'] },
+      },
+    },
+    logger,
+    enumerateWindowsByOwnerNameFn() {
+      return [];
+    },
+    launchAppWindowFn(options) {
+      launches.push(options);
+      return Promise.resolve({ ownerName: options.app });
+    },
+  });
+
+  await entries[0].launch();
+
+  assert.deepEqual(launches, [
+    { app: 'Preview', args: undefined, cwd: undefined, files: ['/abs/image.jpg'] },
+  ]);
+});
+
+test('createOwnedWindowResolutionEntries forwards openArgs verbatim and skips args/files', async () => {
+  const logger = createLogger();
+  const launches = [];
+  const entries = createOwnedWindowResolutionEntries({
+    config: {
+      sources: {
+        Site: { id: 'Site', kind: 'app', app: 'Safari', openArgs: ['-g', 'https://example.com'] },
+      },
+    },
+    logger,
+    enumerateWindowsByOwnerNameFn() {
+      return [];
+    },
+    launchAppWindowFn(options) {
+      launches.push(options);
+      return Promise.resolve({ ownerName: options.app });
+    },
+  });
+
+  await entries[0].launch();
+
+  assert.deepEqual(launches, [
+    { app: 'Safari', cwd: undefined, openArgs: ['-g', 'https://example.com'] },
+  ]);
 });
 
 test('buildBootstrapBinding uses adapter bootstrap app names while preserving titleIncludes', () => {

@@ -100,7 +100,10 @@ Each adapter implements:
   config supplies `titleIncludes`
 - `launch(source, ctx)` / `buildLaunchArgs(source)` — custom launch (iTerm2
   AppleScript, invoked via the `ctx.launchIterm2Window` primitive the runtime
-  injects) or extra args for the default `open -a` path
+  injects) or shaping `args` for the default `open -a` path. The default
+  launcher already handles `files` (positional documents) and `openArgs`
+  (verbatim `open` args), so adapters only need these hooks for genuinely
+  custom launch behavior; see [Config: App sources](CONFIG.md#what-the-app-opens)
 - `confirm` — optional identity-confirmation options (e.g. `stableSamples: 2`
   for Electron splash rejection)
 - `close(entry, ctx)` — optional custom close; the runtime injects the matching
