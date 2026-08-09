@@ -375,7 +375,7 @@ test('waitForTabPaint attaches to the target session and awaits a painted frame'
   await pending;
 });
 
-test('setWindowTitle attaches once per target then applies the persistent title script on the session', async () => {
+test('setWindowTitle attaches once per target then applies a one-shot title script with no polling', async () => {
   const transport = createFakeTransport();
   const client = createCdpClient({
     discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://browser', chromePid: 1 }),
@@ -402,7 +402,8 @@ test('setWindowTitle attaches once per target then applies the persistent title 
   assert.equal(transport.sent[1].method, 'Page.addScriptToEvaluateOnNewDocument');
   assert.equal(transport.sent[1].sessionId, 'SESSION_HOME');
   assert.equal(typeof transport.sent[1].params?.source, 'string');
-  assert.match(transport.sent[1].params.source, /const deckhandTitle = "Deckhand BrowserA"/);
+  assert.doesNotMatch(transport.sent[1].params.source, /setInterval/);
+  assert.match(transport.sent[1].params.source, /Deckhand BrowserA/);
 
   respondTo(transport, 2, { identifier: 'deckhand-title-script' });
   await new Promise((resolve) => setImmediate(resolve));

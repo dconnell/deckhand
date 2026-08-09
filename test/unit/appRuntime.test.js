@@ -6,6 +6,7 @@ import {
   buildObsWindowBindings,
   closeOwnedAppWindows,
   createOwnedWindowResolutionEntries,
+  seedBrowserMacWindowBindings,
 } from '../../src/appRuntime.js';
 
 function createLogger() {
@@ -211,4 +212,45 @@ test('closeOwnedAppWindows warns and does not escalate when tracked app close do
 
   assert.equal(logger.warns.length, 1);
   assert.match(logger.warns[0].message, /leaving app process running/i);
+});
+
+test('seedBrowserMacWindowBindings seeds macWindowId from the browser-session registry', () => {
+  const browserSession = {
+    getStatus() { return { chromePid: 47213 }; },
+    getRegistry() {
+      return {
+        sources: {
+          Slide: { macWindowId: 11111 },
+          BrowserA: { macWindowId: 12345 },
+          BrowserB: { macWindowId: null },
+        },
+      };
+    },
+  };
+
+  const result = seedBrowserMacWindowBindings({
+    browserSession,
+    browserSourceIds: ['Slide', 'BrowserA', 'BrowserB'],
+  });
+
+  assert.deepEqual(result, {
+    Slide: { macWindowId: 11111, pid: 47213 },
+    BrowserA: { macWindowId: 12345, pid: 47213 },
+  });
+});
+
+test('seedBrowserMacWindowBindings omits pid when chromePid is unknown', () => {
+  const browserSession = {
+    getStatus() { return { chromePid: null }; },
+    getRegistry() {
+      return { sources: { Slide: { macWindowId: 11111 } } };
+    },
+  };
+
+  const result = seedBrowserMacWindowBindings({
+    browserSession,
+    browserSourceIds: ['Slide'],
+  });
+
+  assert.deepEqual(result, { Slide: { macWindowId: 11111 } });
 });

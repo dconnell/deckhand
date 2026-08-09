@@ -1,3 +1,6 @@
+import { diffNewWindows } from './macWindows.js';
+import { delay } from './lifecycle/waitFor.js';
+
 function createNoopLogger() {
   return {
     error() {},
@@ -22,6 +25,68 @@ function defaultWindowTitle(sourceId) {
   return `Deckhand ${sourceId}`;
 }
 
+const DEFAULT_MAC_WINDOW_MAX_ATTEMPTS = 30;
+const DEFAULT_MAC_WINDOW_RETRY_MS = 500;
+
+function boundsArea(window) {
+  return (typeof window.width === 'number' ? window.width : 0)
+    * (typeof window.height === 'number' ? window.height : 0);
+}
+
+/**
+ * Pick the window with the largest bounds area from a non-empty set.
+ *
+ * Mirrors the heuristic in {@link resolveOwnedWindowBindings}: when a launch
+ * surfaces several new CGWindowID entries (transient helper/toolbar windows),
+ * the largest-bounds entry is the real application window. Ties break toward
+ * the higher `windowId` (the more recently created window).
+ *
+ * @param {Array<{ windowId: number, width?: number, height?: number }>} windows Non-empty candidate list.
+ * @returns {{ windowId: number, width?: number, height?: number }}
+ */
+function pickLargestBoundsWindow(windows) {
+  return windows.reduce((best, candidate) => {
+    const candidateArea = boundsArea(candidate);
+    const bestArea = boundsArea(best);
+
+    if (candidateArea === bestArea) {
+      return candidate.windowId > best.windowId ? candidate : best;
+    }
+
+    return candidateArea > bestArea ? candidate : best;
+  });
+}
+
+/**
+ * Resolve the macOS `CGWindowID` of a browser window Deckhand just created.
+ *
+ * Snapshots are taken by the caller (before creation) and here (after, polled):
+ * the diff finds the new window purely by CGWindowID, with no dependence on
+ * window titles or the Accessibility API. Returns `null` (with a warning) when
+ * no new window appears within the attempt budget, so the caller can fall back
+ * to title-based resolution.
+ *
+ * @param {{ pid: number, before: Array<{ windowId: number }>, enumerateFn: (pid: number) => Array<{ windowId: number, width?: number, height?: number }>, delayFn: (ms: number) => Promise<void>, logger: { warn(message: string, context?: Record<string, unknown>): void }, sourceId: string, maxAttempts: number, retryDelayMs: number }} options Resolution options.
+ * @returns {Promise<number | null>}
+ */
+async function resolveNewMacWindowId({ pid, before, enumerateFn, delayFn, logger, sourceId, maxAttempts, retryDelayMs }) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const after = enumerateFn(pid);
+    const newWindows = diffNewWindows(before, after);
+
+    if (newWindows.length > 0) {
+      return pickLargestBoundsWindow(newWindows).windowId;
+    }
+
+    if (attempt < maxAttempts) {
+      await delayFn(retryDelayMs);
+    }
+  }
+
+  logger.warn('Browser source window did not appear in CGWindowList; leaving macWindowId unresolved', { source: sourceId });
+  return null;
+}
+
 /**
  * Own the Deckhand browser session and the authoritative source/tab registry.
  *
@@ -34,6 +99,12 @@ function defaultWindowTitle(sourceId) {
  */
 export function createBrowserSession(options) {
   const logger = options.logger ?? createNoopLogger();
+  const enumerateWindowIdsByPidFn = typeof options.enumerateWindowIdsByPidFn === 'function'
+    ? options.enumerateWindowIdsByPidFn
+    : null;
+  const delayFn = options.delayFn ?? delay;
+  const macWindowMaxAttempts = options.resolveMacWindowMaxAttempts ?? DEFAULT_MAC_WINDOW_MAX_ATTEMPTS;
+  const macWindowRetryMs = options.resolveMacWindowRetryMs ?? DEFAULT_MAC_WINDOW_RETRY_MS;
   let cdpClient = null;
   let registry = createEmptyRegistry();
   let stopping = false;
@@ -85,10 +156,29 @@ export function createBrowserSession(options) {
       }
     }
 
+    const chromePid = cdpClient.getChromePid();
+    const canResolveMacWindow = enumerateWindowIdsByPidFn !== null
+      && Number.isInteger(chromePid) && chromePid > 0;
+    const before = canResolveMacWindow ? enumerateWindowIdsByPidFn(chromePid) : [];
+
     const windowResult = await cdpClient.createWindow({ url: initialTab.url });
+
+    const macWindowId = canResolveMacWindow
+      ? await resolveNewMacWindowId({
+        pid: chromePid,
+        before,
+        enumerateFn: enumerateWindowIdsByPidFn,
+        delayFn,
+        logger,
+        sourceId: source.id,
+        maxAttempts: macWindowMaxAttempts,
+        retryDelayMs: macWindowRetryMs,
+      })
+      : null;
 
     const sourceRegistry = {
       cdpWindowId: windowResult.windowId,
+      macWindowId,
       mainTargetId: windowResult.targetId,
       title: defaultWindowTitle(source.id),
       tabs: {

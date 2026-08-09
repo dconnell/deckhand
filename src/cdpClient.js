@@ -350,15 +350,7 @@ export function createCdpClient(options) {
     async setWindowTitle({ targetId, title }) {
       const sessionId = await ensureSession(targetId);
 
-      const expression = `(() => {
-        const deckhandTitle = ${JSON.stringify(title)};
-        document.title = deckhandTitle;
-        setInterval(() => {
-          if (document.title !== deckhandTitle) {
-            document.title = deckhandTitle;
-          }
-        }, 250);
-      })();`;
+      const expression = `document.title = ${JSON.stringify(title)};`;
 
       await send('Page.addScriptToEvaluateOnNewDocument', {
         source: expression,

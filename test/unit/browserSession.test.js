@@ -439,3 +439,70 @@ test('start resets state after a cdp client connect failure so a later retry can
   await assert.doesNotReject(session.start());
   assert.equal(session.getStatus().connected, true);
 });
+
+test('start resolves macWindowId per browser source by diffing window ids around createWindow', async () => {
+  const cdpClient = createFakeCdpClient();
+  const windows = [{ windowId: 100, x: 0, y: 0, width: 800, height: 600 }];
+  const enumerateWindowIdsByPidFn = (pid) => {
+    assert.equal(pid, 47213);
+    return [...windows];
+  };
+  const realCreateWindow = cdpClient.createWindow;
+  cdpClient.createWindow = async (details) => {
+    const result = await realCreateWindow(details);
+    windows.push({ windowId: 5000, x: 0, y: 0, width: 1280, height: 800 });
+    return result;
+  };
+  const sources = createSources(createBrowserSource('BrowserA', { home: { url: 'https://example.com/home' } }));
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient, enumerateWindowIdsByPidFn });
+
+  await session.start();
+
+  assert.equal(session.getRegistry().sources.BrowserA.macWindowId, 5000);
+});
+
+test('start picks the largest-bounds window when createWindow surfaces several new entries', async () => {
+  const cdpClient = createFakeCdpClient();
+  const windows = [{ windowId: 100, x: 0, y: 0, width: 800, height: 600 }];
+  const enumerateWindowIdsByPidFn = () => [...windows];
+  const realCreateWindow = cdpClient.createWindow;
+  cdpClient.createWindow = async (details) => {
+    const result = await realCreateWindow(details);
+    windows.push({ windowId: 5001, x: 0, y: 0, width: 100, height: 30 });
+    windows.push({ windowId: 5002, x: 0, y: 0, width: 1280, height: 800 });
+    return result;
+  };
+  const sources = createSources(createBrowserSource('BrowserA', { home: { url: 'https://example.com/home' } }));
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient, enumerateWindowIdsByPidFn });
+
+  await session.start();
+
+  assert.equal(session.getRegistry().sources.BrowserA.macWindowId, 5002);
+});
+
+test('start leaves macWindowId unresolved when the new window never appears in CGWindowList', async () => {
+  const cdpClient = createFakeCdpClient();
+  const enumerateWindowIdsByPidFn = () => [{ windowId: 100, x: 0, y: 0, width: 800, height: 600 }];
+  const sources = createSources(createBrowserSource('BrowserA', { home: { url: 'https://example.com/home' } }));
+  const session = createBrowserSession({
+    sources,
+    createCdpClient: () => cdpClient,
+    enumerateWindowIdsByPidFn,
+    resolveMacWindowMaxAttempts: 2,
+    resolveMacWindowRetryMs: 1,
+  });
+
+  await session.start();
+
+  assert.equal(session.getRegistry().sources.BrowserA.macWindowId, null);
+});
+
+test('start leaves macWindowId null when window enumeration is not wired', async () => {
+  const cdpClient = createFakeCdpClient();
+  const sources = createSources(createBrowserSource('BrowserA', { home: { url: 'https://example.com/home' } }));
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await session.start();
+
+  assert.equal(session.getRegistry().sources.BrowserA.macWindowId, null);
+});

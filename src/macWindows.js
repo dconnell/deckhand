@@ -127,7 +127,19 @@ function getWindowTitlesViaAccessibility(pid) {
  * @param {number} pid Process ID.
  * @returns {Array<{ windowId: number, x: number, y: number }>}
  */
-function getWindowIdsViaCGList(pid) {
+/**
+ * Get CGWindowIDs for a process via CGWindowListCopyWindowInfo.
+ *
+ * Returns on-screen, layer-0 windows for a PID with their bounds. Title-free by
+ * design: callers that resolve window identity by CGWindowID diff (browser
+ * sources) do not need the Accessibility API title fetch that
+ * {@link enumerateWindowsByPid} performs, so they avoid the osascript
+ * subprocess and Accessibility-permission dependency.
+ *
+ * @param {number} pid Process ID.
+ * @returns {Array<{ windowId: number, x: number, y: number, width: number, height: number }>}
+ */
+export function getWindowIdsViaCGList(pid) {
   if (process.platform !== 'darwin') {
     return [];
   }
@@ -330,31 +342,6 @@ export function diffNewWindows(before, after, options = {}) {
 
     return true;
   });
-}
-
-/**
- * Match macOS windows to managed browser source titles.
- *
- * @param {number} pid Chrome process PID.
- * @param {Record<string, { title: string }>} sourceTitles Map of source ID to expected title.
- * @returns {Record<string, { macWindowId: number, pid: number }>}
- */
-export function resolveMacWindowIds(pid, sourceTitles) {
-  const windows = enumerateWindowsByPid(pid);
-  const result = {};
-
-  for (const [sourceId, expected] of Object.entries(sourceTitles)) {
-    const match = windows.find((w) => w.title === expected.title);
-
-    if (match) {
-      result[sourceId] = {
-        macWindowId: match.windowId,
-        pid,
-      };
-    }
-  }
-
-  return result;
 }
 
 const SWIFT_DISCARD_UNSAVED_HELPERS = `

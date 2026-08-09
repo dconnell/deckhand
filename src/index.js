@@ -19,7 +19,6 @@ import {
   buildBootstrapBinding,
   buildObsWindowBindings,
   closeOwnedAppWindows,
-  defaultResolveMacWindowBindings,
   defaultResolveOwnedWindowBindings,
   getSourceOwnerName,
   hasBrowserSources,
@@ -27,6 +26,7 @@ import {
   listBrowserSourceIds,
   listOwnedAppSourceEntries,
   resolvePresenterTeleprompterBinding,
+  seedBrowserMacWindowBindings,
   shouldDiscardUnsavedChanges,
   terminateProcessGroup,
 } from './appRuntime.js';
@@ -34,7 +34,7 @@ import { createCdpClient } from './cdpClient.js';
 import { createBrowserSession, createBrowserCommandExecutor } from './browserSession.js';
 import { createWsTransport, discoverCdpEndpoint, launchChromeSession } from './chromeLauncher.js';
 import { waitForFirstDriverPosition, waitForPresentationObserver } from './lifecycle/waitFor.js';
-import { closeMacWindow } from './macWindows.js';
+import { closeMacWindow, getWindowIdsViaCGList } from './macWindows.js';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 
@@ -298,6 +298,7 @@ export async function run(options = {}) {
       browserSession = (options.createBrowserSessionFn ?? createBrowserSession)({
         sources: config.sources,
         createCdpClient: () => cdpClient,
+        enumerateWindowIdsByPidFn: options.enumerateWindowIdsByPidFn ?? getWindowIdsViaCGList,
         logger,
       });
 
@@ -456,7 +457,7 @@ export async function run(options = {}) {
 
     const browserSourceIds = listBrowserSourceIds(config);
     if (browserSourceIds.length > 0 && config.presenter !== null) {
-      const windowResolutionFn = options.resolveMacWindowBindingsFn ?? defaultResolveMacWindowBindings;
+      const windowResolutionFn = options.resolveMacWindowBindingsFn ?? seedBrowserMacWindowBindings;
 
       const result = (await windowResolutionFn({
         browserSession,

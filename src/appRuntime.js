@@ -235,73 +235,40 @@ async function resolvePresenterTeleprompterBinding({ browserSession, config, log
   };
 }
 
-async function defaultResolveMacWindowBindings({ browserSession, browserSourceIds, config, logger }) {
-  logger.info('Resolving macOS window IDs for browser sources');
+/**
+ * Seed macOS window bindings for browser sources from the browser-session
+ * registry.
+ *
+ * The registry carries the `macWindowId` each browser source resolved at window
+ * creation (by CGWindowID diff, see `browserSession.js`). This copies those
+ * resolved ids into the runtime binding cache, which is the single live source
+ * of truth that Hammerspoon can later update or invalidate. No title matching,
+ * no Accessibility API, no Chrome-specific window-title heuristics.
+ *
+ * Sources whose registry entry lacks a numeric `macWindowId` (resolution
+ * failed, or enumeration was not wired) are omitted so the caller can detect
+ * and warn about unresolved sources.
+ *
+ * @param {{ browserSession?: { getStatus(): { chromePid: number | null }, getRegistry(): { sources: Record<string, { macWindowId?: number | null }> } } | null, browserSourceIds: string[] }} options Seed options.
+ * @returns {Record<string, { macWindowId: number, pid?: number }>}
+ */
+function seedBrowserMacWindowBindings({ browserSession, browserSourceIds }) {
+  const chromePid = browserSession?.getStatus().chromePid ?? null;
+  const registrySources = browserSession?.getRegistry().sources ?? {};
+  const result = {};
 
-  const sourceTitles = Object.fromEntries(
-    Object.entries(browserSession.getRegistry().sources)
-      .filter(([id]) => browserSourceIds.includes(id))
-      .map(([id, source]) => [id, { title: source.title }]),
-  );
+  for (const sourceId of browserSourceIds) {
+    const macWindowId = registrySources[sourceId]?.macWindowId;
 
-  const chromePid = browserSession.getStatus().chromePid;
-
-  let resolvedBindings = {};
-  const maxAttempts = 10;
-  const retryDelayMs = 500;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    resolvedBindings = {};
-
-    const macWindows = enumerateWindowsByPid(chromePid);
-    const matchedWindowIds = new Set();
-    const unmatchedSources = [];
-    const unmatchedWindows = [];
-
-    for (const sourceId of browserSourceIds) {
-      const expectedTitle = sourceTitles[sourceId]?.title;
-      const match = macWindows.find((w) => !matchedWindowIds.has(w.windowId) && w.title.includes(expectedTitle));
-
-      if (match) {
-        matchedWindowIds.add(match.windowId);
-        resolvedBindings[sourceId] = { macWindowId: match.windowId, pid: chromePid };
-      } else {
-        unmatchedSources.push(sourceId);
-      }
-    }
-
-    for (const w of macWindows) {
-      if (matchedWindowIds.has(w.windowId)) {
-        continue;
-      }
-
-      if (w.title.includes('Presenter') || w.title === 'New Tab - Google Chrome' || w.title === '') {
-        continue;
-      }
-
-      unmatchedWindows.push(w);
-    }
-
-    unmatchedWindows.sort((a, b) => a.windowId - b.windowId);
-    unmatchedSources.sort((a, b) => browserSourceIds.indexOf(a) - browserSourceIds.indexOf(b));
-
-    for (let i = 0; i < unmatchedSources.length && i < unmatchedWindows.length; i += 1) {
-      const sourceId = unmatchedSources[i];
-      const macWindow = unmatchedWindows[i];
-      resolvedBindings[sourceId] = { macWindowId: macWindow.windowId, pid: chromePid };
-    }
-
-    const allResolved = browserSourceIds.every((id) => resolvedBindings[id] !== undefined);
-    if (allResolved) {
-      break;
-    }
-
-    if (attempt < maxAttempts) {
-      await delay(retryDelayMs);
+    if (typeof macWindowId === 'number') {
+      result[sourceId] = {
+        macWindowId,
+        ...(Number.isInteger(chromePid) && chromePid > 0 ? { pid: chromePid } : {}),
+      };
     }
   }
 
-  return resolvedBindings;
+  return result;
 }
 
 async function closeOwnedAppWindows({
@@ -350,7 +317,6 @@ export {
   buildObsWindowBindings,
   closeOwnedAppWindows,
   createOwnedWindowResolutionEntries,
-  defaultResolveMacWindowBindings,
   defaultResolveOwnedWindowBindings,
   getSourceOwnerName,
   hasBrowserSources,
@@ -358,6 +324,7 @@ export {
   listBrowserSourceIds,
   listOwnedAppSourceEntries,
   resolvePresenterTeleprompterBinding,
+  seedBrowserMacWindowBindings,
   shouldDiscardUnsavedChanges,
   terminateProcessGroup,
 };
