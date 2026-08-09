@@ -202,10 +202,35 @@ test('normalizeConfig allows omitting presenter.teleprompter.window when overlay
   assert.equal(normalized.presenter.teleprompter.window, null);
 });
 
-test('normalizeConfig leaves obs.transitions null when slide transitions are not configured', () => {
+test('normalizeConfig enables obs.transitions by default when the block is omitted', () => {
   const config = normalizeConfig(createValidConfig());
 
-  assert.equal(config.obs.transitions, null);
+  assert.deepEqual(config.obs.transitions, {
+    forward: null,
+    backward: null,
+    freezeScene: 'Deckhand_Freeze',
+    freezeImage: 'Deckhand_Freeze Frame',
+    freezeImagePath: null,
+    durationMs: 300,
+    settleMs: 200,
+    navigationWaitMs: 1000,
+    windowSettleMs: 2000,
+    freezeDimPercent: 5,
+  });
+});
+
+test('normalizeConfig disables obs.transitions when set to false', () => {
+  const config = createValidConfig();
+  config.obs.transitions = false;
+
+  assert.equal(normalizeConfig(config).obs.transitions, null);
+});
+
+test('normalizeConfig disables obs.transitions when explicitly set to null', () => {
+  const config = createValidConfig();
+  config.obs.transitions = null;
+
+  assert.equal(normalizeConfig(config).obs.transitions, null);
 });
 
 test('normalizeConfig normalizes the slide-transitions block with defaults', () => {
@@ -228,15 +253,14 @@ test('normalizeConfig normalizes the slide-transitions block with defaults', () 
   });
 });
 
-test('normalizeConfig rejects slide transitions without both directional transition names', () => {
+test('normalizeConfig treats forward/backward as optional, defaulting to null', () => {
   const config = createValidConfig();
   config.obs.transitions = { forward: 'Slide Right' };
 
-  assertConfigError(
-    () => normalizeConfig(config),
-    'obs.transitions.backward',
-    /non-empty/i,
-  );
+  const normalized = normalizeConfig(config).obs.transitions;
+
+  assert.equal(normalized.forward, 'Slide Right');
+  assert.equal(normalized.backward, null);
 });
 
 test('normalizeConfig defaults obs.prune to true so stale Deckhand entities are reconciled', () => {

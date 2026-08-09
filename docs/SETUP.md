@@ -86,17 +86,31 @@ performs a one-time reset of `Deckhand_*` scenes and inputs and retries
 automatically. If OBS authentication fails, runtime startup and smoke checks
 fail until `obs.password` is corrected.
 
-## Whole-frame slide transitions (optional)
+## Whole-frame slide transitions
 
-By default, advancing the deck cuts the audience scene instantly. Optionally
-Deckhand can slide the whole audience frame in directionally (`next` from the
-right, `prev` from the left) while a freeze-frame masks the window resize and
-tab navigation behind a still image. This is off unless you configure it.
+Advancing the deck runs a **freeze → mutate → reveal** sequence: the previous
+audience frame is held as a still image while windows resize and tabs navigate
+behind it, then the new scene is revealed. This is **on by default**.
 
-### 1. Add the slide transitions in OBS (one-time, manual)
+| Config | Behavior |
+| --- | --- |
+| omit `obs.transitions` (or `{}`) | Freeze + plain reveal using OBS's current transition. **Default.** |
+| `obs.transitions: false` | Instant cut; OBS transitions and Studio Mode are never touched. |
+| `obs.transitions: { forward, backward }` | Freeze + **directional slide** reveal (new frame slides in from the side). Needs the one-time OBS setup below. |
 
-OBS WebSocket cannot create transitions, so add them in the OBS UI once per
-scene collection:
+The freeze scene (`Deckhand_Freeze`) and its `image_source` are created
+automatically at startup, so the default freeze tier needs no OBS setup. The
+**directional slide** is opt-in because OBS WebSocket cannot create transitions
+— the `Slide Left` / `Slide Right` transitions must be added in the OBS UI.
+
+### Directional slide reveal setup (one-time, manual)
+
+Only needed if you want the new frame to slide in directionally (`next` from
+one side, `prev` from the other) instead of the default plain reveal.
+
+#### 1. Add the Slide transitions in OBS
+
+Add them in the OBS UI once per scene collection:
 
 1. Open the transitions dropdown (top-center, next to the program switcher) and
    choose **Add**.
@@ -112,9 +126,10 @@ The exact names are yours; Deckhand references them by name from config.
 Deckhand creates the `Deckhand_Freeze` scene and its `image_source` itself at
 startup; do **not** create those manually.
 
-### 2. Enable transitions in config
+#### 2. Reference the transition names in config
 
-Add an `obs.transitions` block (base or local override):
+Add an `obs.transitions` block naming the transitions you created (base or
+local override):
 
 ```json
 "obs": {
@@ -125,15 +140,20 @@ Add an `obs.transitions` block (base or local override):
 }
 ```
 
-`forward` and `backward` are required and must match Slide transition names in
-your OBS scene collection. All other fields are optional (see
+`forward`/`backward` must match Slide transition names in your OBS scene
+collection. All other fields are optional (see
 [CONFIG.md: Slide Transitions](CONFIG.md#slide-transitions)).
 
-With this block present, every slide advance runs the freeze → resize →
-directional-reveal sequence. With it absent, Deckhand uses the instant cut and
-never touches OBS transitions.
+### Disabling transitions entirely
 
-### 3. Disable reveal.js's own slide animation
+Set `obs.transitions: false` for an instant cut with no freeze and no OBS
+interaction:
+
+```json
+"obs": { "transitions": false }
+```
+
+### Disable reveal.js's own slide animation
 
 Set `transition: 'none'` in your deck's `Reveal.initialize` call so OBS owns
 all perceived motion. The shipped sample deck already does this

@@ -121,8 +121,9 @@ model for OBS, the presenter stage, and slide actions.
   presentation no longer references. Non-`Deckhand_*` content is never touched.
   Set `false` to leave stale entities in place. See
   [OBS Reconciliation](#obs-reconciliation).
-- `obs.transitions` — optional block enabling whole-frame slide transitions;
-  absent means the instant cut is used and OBS transitions are never touched.
+- `obs.transitions` — slide transitions are **enabled by default**. Omit the
+  block (or pass an empty object `{}`) to use the defaults; set `false` to
+  disable transitions entirely (instant cut, OBS transitions never touched).
   See [Slide Transitions](#slide-transitions).
 - `hub.port` — localhost WebSocket port for driver and observer clients
 
@@ -321,13 +322,22 @@ reloading it. `navigate` loads a new URL in the named tab.
 
 ## Slide transitions
 
-`obs.transitions` is optional. When present, advancing the deck runs a
-freeze → resize → directional-reveal sequence instead of an instant cut: the
+Slide transitions are **enabled by default**: advancing the deck runs a
+freeze → resize → directional-reveal sequence instead of an instant cut. The
 previous audience frame is held as a still while windows resize and tabs
-navigate behind it, then the new scene slides in. When absent, Deckhand uses
-the instant cut and never touches OBS transitions. See
-[SETUP.md: Whole-frame slide transitions](SETUP.md#whole-frame-slide-transitions-optional)
-for the one-time OBS setup.
+navigate behind it, then the new scene is revealed.
+
+Set `obs.transitions: false` to disable transitions entirely (instant cut,
+OBS transitions and Studio Mode never touched):
+
+```json
+"obs": {
+  "transitions": false
+}
+```
+
+All fields are optional — an empty block `"transitions": {}` enables the
+freeze with defaults. Override only what you want to change:
 
 ```json
 "obs": {
@@ -338,13 +348,13 @@ for the one-time OBS setup.
 }
 ```
 
-Required:
+Optional fields (with defaults):
 
-- `forward` — OBS Slide transition name used for `next`/forward moves
-- `backward` — OBS Slide transition name used for `prev`/backward moves
-
-Optional (with defaults):
-
+- `forward` — OBS transition name used for `next`/forward moves (`null`; when
+  unset, the reveal uses OBS's current transition). Must already exist in OBS —
+  OBS WebSocket cannot create transitions, so add it in the OBS UI once.
+- `backward` — OBS transition name used for `prev`/backward moves (`null`; same
+  rules as `forward`).
 - `freezeScene` — OBS scene name for the freeze still (`Deckhand_Freeze`);
   created automatically at startup
 - `freezeImage` — `image_source` input name inside the freeze scene
@@ -360,10 +370,16 @@ Optional (with defaults):
 - `navigationWaitMs` — cap waited behind the freeze for slides that navigate a
   tab, before revealing regardless of load state (`1000`)
 
+Because transitions default on, run `npm run obs:setup -- <name>` once per
+presentation so OBS has the freeze scene/input (`Deckhand_Freeze` /
+`Deckhand_Freeze Frame`) the sequence expects. See
+[SETUP.md: Whole-frame slide transitions](SETUP.md#whole-frame-slide-transitions)
+for the one-time directional-transition setup.
+
 Behavior notes:
 
-- Every slide advance runs the sequence when this block is present, including
-  same-scene advances, for a consistent experience.
+- Every slide advance runs the sequence while transitions are enabled,
+  including same-scene advances, for a consistent experience.
 - Deckhand captures your default transition at startup and restores it after
   each change, so manual OBS use between advances is unaffected.
 - Set `transition: 'none'` in the deck's `Reveal.initialize` so OBS owns all

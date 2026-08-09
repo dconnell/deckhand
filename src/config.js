@@ -327,12 +327,10 @@ function normalizeSources(sources, baseDir) {
 
 function normalizeObsTransitions(value) {
   const t = assertPlainObject(value, 'obs.transitions');
-  const forward = assertNonEmptyString(t.forward, 'obs.transitions.forward');
-  const backward = assertNonEmptyString(t.backward, 'obs.transitions.backward');
 
   return {
-    forward,
-    backward,
+    forward: typeof t.forward === 'string' && t.forward.trim() !== '' ? t.forward.trim() : null,
+    backward: typeof t.backward === 'string' && t.backward.trim() !== '' ? t.backward.trim() : null,
     freezeScene: typeof t.freezeScene === 'string' && t.freezeScene.trim() !== '' ? t.freezeScene.trim() : 'Deckhand_Freeze',
     freezeImage: typeof t.freezeImage === 'string' && t.freezeImage.trim() !== '' ? t.freezeImage.trim() : 'Deckhand_Freeze Frame',
     freezeImagePath: typeof t.freezeImagePath === 'string' && t.freezeImagePath.trim() !== '' ? t.freezeImagePath.trim() : null,
@@ -369,10 +367,19 @@ function normalizeFreezeDimPercent(value) {
 function normalizeObs(obs) {
   const value = assertPlainObject(obs, 'obs');
 
+  let transitions;
+  if (value.transitions === undefined) {
+    transitions = normalizeObsTransitions({});
+  } else if (value.transitions === false || value.transitions === null) {
+    transitions = null;
+  } else {
+    transitions = normalizeObsTransitions(value.transitions);
+  }
+
   return {
     url: normalizeObsUrl(value.url, 'obs.url'),
     password: typeof value.password === 'string' ? value.password : '',
-    transitions: value.transitions === undefined ? null : normalizeObsTransitions(value.transitions),
+    transitions,
     prune: value.prune === undefined ? true : assertBoolean(value.prune, 'obs.prune'),
   };
 }
@@ -825,7 +832,7 @@ export class ConfigError extends Error {
  * @param {{ baseDir?: string }} [options] Loader options. `baseDir` resolves
  *   relative `files` paths (e.g. a presentation's committed image assets)
  *   against the presentation directory.
- * @returns {{ driver: { type: string }, obs: { url: string, password: string, prune: boolean, transitions: null | { forward: string, backward: string, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number, windowSettleMs: number, freezeDimPercent: number } }, hub: { host: string, port: number }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[], files?: string[] }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, profileName?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, chunkSeconds: number, language?: string }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
+ * @returns {{ driver: { type: string }, obs: { url: string, password: string, prune: boolean, transitions: null | { forward: string | null, backward: string | null, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number, windowSettleMs: number, freezeDimPercent: number } }, hub: { host: string, port: number }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[], files?: string[] }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, profileName?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, chunkSeconds: number, language?: string }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
  */
 export function normalizeConfig(rawConfig, { baseDir } = {}) {
   const root = assertPlainObject(rawConfig, 'config');
