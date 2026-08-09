@@ -121,6 +121,78 @@ Each adapter implements:
 Apps that behave generically need no adapter file — they fall through to
 `default.js`.
 
+### Shared adapter bases
+
+The `src/apps/electron.js` factory produces an adapter for any
+Electron-packaged macOS app: it bakes in the splash-rejection policy
+(`confirm: { stableSamples: 2 }`) every Electron app needs and accepts
+per-app overrides for aliases, CGWindow owner name, bootstrap app name,
+unsaved-changes policy, and arg shaper. Use it instead of duplicating the
+splash-rejection knob. VS Code is built on it; future Electron apps
+(Discord, Notion, Figma, etc.) should be too.
+
+### Slack and other Electron single-instance apps with no CLI surface
+
+Apps whose CGWindow owner name matches their `open -a` name and that have no
+useful CLI or AppleScript handle (Slack is the canonical example) need **no
+adapter when the operator just wants to launch the app** — the default adapter
+already handles that correctly.
+
+Slack **does** need an adapter when the operator wants to open a specific
+channel or DM, because Deckhand cannot own a window the desktop Slack app
+navigates in place. The adapter resolves the operator's config into one of two
+modes and declares each via `ownsWindow(source)`:
+
+- **Navigation mode (default).** `open "slack://channel?…"` activates Slack and
+  switches to the channel in the existing window. The adapter declares
+  `ownsWindow(source) === false`, so the runtime skips the diff resolver and
+  the close path for that source.
+- **Browser mode (`newWindow: true`).** A new Google Chrome window is created
+  via AppleScript `make new window` pointing at the Slack web client. Chrome's
+  `open -n -a "Google Chrome" URL` does **not** work — Chrome forwards the URL
+  to the running instance and opens a tab, so AppleScript is the only reliable
+  way to spawn a fresh, bindable Chrome window with a URL in an existing
+  process. The new window is bindable by CGWindowID diff and closed via the
+  standard AX path on shutdown, so `ownsWindow(source) === true`.
+
+For operator config shapes (`slack` vs `uri`, `target`, and how to find Slack
+team/channel IDs) see [Config: Slack](CONFIG.md#slack).
+
+### Navigation-only sources and the `ownsWindow` contract
+
+Adapters may declare `ownsWindow(source)` returning `false` for sources that
+Deckhand should launch but cannot own (Slack navigation mode is the first
+example). When this returns `false`, the runtime:
+
+- still calls `adapter.launch(source, ctx)` at startup
+- skips the CGWindowID diff resolver for that source (no spurious "window did
+  not appear" warnings)
+- does not attempt to close anything for that source on shutdown
+
+Sources without `ownsWindow` behave exactly as before — the contract is
+strictly opt-in.
+
+## Terminal app prerequisites
+
+iTerm2, Terminal.app, and Ghostty work out of the box — Deckhand drives them
+via AppleScript and captures a stable window id at creation time, so close
+works even when a long-running command is active inside the window.
+
+Alacritty and kitty ship no AppleScript dictionary and rely on IPC instead,
+which imposes an operator-side prerequisite:
+
+- **Alacritty** must already be running with its default IPC socket
+  (`$TMPDIR/Alacritty-<PID>.sock`). Deckhand discovers the socket from the
+  running PID. There is no IPC destroy-window command, so close falls back to
+  the generic AX path using the diff-resolved CGWindowID.
+- **kitty** must be running with `allow_remote_control yes` and a listen
+  address, and the operator must export `KITTY_LISTEN_ON=unix:/tmp/kitty`
+  before starting Deckhand. Both launch and close use `kitty @`, so close
+  targets the exact tracked window even mid-command.
+
+If those prerequisites are not met, the launchers throw a clear error
+naming the missing setup.
+
 ## Protocol extension strategy
 
 - extend browser behavior via new `command.type` values handled by the executor
@@ -130,9 +202,21 @@ Apps that behave generically need no adapter file — they fall through to
 
 ## Current built-ins
 
+For operator config examples see
+[Config: App recipes](CONFIG.md#app-recipes) and
+[Config: Browser recipes](CONFIG.md#browser-recipes).
+
 - driver: `reveal.js`
 - browser session: Deckhand-owned Chrome via CDP
-- app adapters: `default` (generic `open -a`), `vscode`, `iterm2`
+- app adapters:
+  - `default` (generic `open -a`)
+  - `vscode` (built on the shared `electron` factory)
+  - `iterm2` (AppleScript `do script` + session-UUID close)
+  - `appleTerminal` (Terminal.app; AppleScript `do script` + integer window id)
+  - `ghostty` (AppleScript `new window with configuration` + string window id)
+  - `kitty` (`kitty @ launch` / `kitty @ close-window`; requires `KITTY_LISTEN_ON`)
+  - `alacritty` (`alacritty msg create-window`; requires Alacritty already running; close via AX)
+  - `slack` (navigation mode via `slack://` URL; browser mode via Chrome AppleScript with `newWindow: true`)
 - observers: presenter web app, Hammerspoon integration, whisper.cpp STT runner
 
 ## v1 limits

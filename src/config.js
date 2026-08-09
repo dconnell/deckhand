@@ -270,6 +270,7 @@ function normalizeSourceEntry(sourceId, entry, baseDir) {
       throw new ConfigError(`${pathName}.openArgs`, 'is mutually exclusive with args and files');
     }
     normalizeOwnedLaunchFields(value, source, pathName, ['args', 'cwd', 'command', 'files', 'openArgs'], baseDir);
+    normalizeSlackFields(value, source, pathName);
   }
 
   return source;
@@ -304,6 +305,35 @@ function normalizeOwnedLaunchFields(value, source, pathName, fields, baseDir) {
     } else if (field === 'openArgs') {
       source.openArgs = normalizeStringArray(value.openArgs, `${pathName}.openArgs`);
     }
+  }
+}
+
+/**
+ * Normalize Slack-adapter fields (`slack`, `uri`, `newWindow`).
+ *
+ * These are app-source fields the Slack adapter reads; the config layer only
+ * validates their shape and passes them through. The Slack adapter
+ * (`src/apps/slack.js`) is responsible for the structural validation that
+ * actually decides navigation vs. browser mode.
+ *
+ * @param {Record<string, unknown>} value The raw source descriptor.
+ * @param {Record<string, unknown>} source The normalized source being built.
+ * @param {string} pathName The config path of the source entry.
+ */
+function normalizeSlackFields(value, source, pathName) {
+  if (value.slack !== undefined) {
+    source.slack = assertPlainObject(value.slack, `${pathName}.slack`);
+  }
+
+  if (value.uri !== undefined) {
+    source.uri = assertNonEmptyString(value.uri, `${pathName}.uri`);
+  }
+
+  if (value.newWindow !== undefined) {
+    if (typeof value.newWindow !== 'boolean') {
+      throw new ConfigError(`${pathName}.newWindow`, 'must be a boolean');
+    }
+    source.newWindow = value.newWindow;
   }
 }
 

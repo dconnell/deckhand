@@ -1,26 +1,29 @@
-const VSCODE_APP_ALIASES = new Set([
+import { createElectronAdapter } from './electron.js';
+
+const VSCODE_APP_ALIASES = [
   'code',
   'visual studio code',
-]);
+];
 
 function isVisualStudioCodeApp(app) {
   if (typeof app !== 'string') {
     return false;
   }
 
-  return VSCODE_APP_ALIASES.has(app.trim().toLowerCase());
+  return VSCODE_APP_ALIASES.includes(app.trim().toLowerCase());
 }
 
 /**
  * Build launch args for VS Code that guarantee a Deckhand-owned instance.
  *
  * Ensures `--new-window` is always present so a new window is created and can
- * be bound by CGWindowID diff.
+ * be bound by CGWindowID diff. Without it, the Electron single-instance
+ * handoff reuses an existing window and the diff resolver finds nothing.
  *
  * @param {{ args?: string[] }} options Launch options.
  * @returns {string[]}
  */
-export function buildVsCodeLaunchArgs({ args = [] }) {
+export function buildVsCodeLaunchArgs({ args = [] } = {}) {
   const normalized = Array.isArray(args) ? [...args] : [];
   const hasNewWindow = normalized.includes('--new-window');
 
@@ -32,25 +35,13 @@ export function buildVsCodeLaunchArgs({ args = [] }) {
   return [...result, ...normalized];
 }
 
-export const vscodeAdapter = {
+export const vscodeAdapter = createElectronAdapter({
   id: 'vscode',
-  matches(source) {
-    return isVisualStudioCodeApp(source.app);
-  },
-  cgWindowOwnerName() {
-    return 'Code';
-  },
-  buildBootstrapBinding(source, configuredBinding = {}) {
-    return {
-      ...configuredBinding,
-      app: 'Visual Studio Code',
-    };
-  },
-  buildLaunchArgs(source) {
-    return buildVsCodeLaunchArgs({ args: source.args });
-  },
-  confirm: { stableSamples: 2 },
+  aliases: VSCODE_APP_ALIASES,
+  cgWindowOwnerName: 'Code',
+  bootstrapAppName: 'Visual Studio Code',
   discardUnsavedChangesOnClose: true,
-};
+  buildLaunchArgs: (source) => buildVsCodeLaunchArgs({ args: source.args }),
+});
 
 export { isVisualStudioCodeApp };

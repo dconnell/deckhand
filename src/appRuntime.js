@@ -1,6 +1,11 @@
 import { resolveAppAdapter } from './apps/index.js';
+import { launchAlacrittyWindow } from './launchers/alacritty.js';
+import { closeTerminalOwnedWindow, launchTerminalWindow } from './launchers/appleTerminal.js';
 import { launchAppWindow } from './launchers/app.js';
+import { launchChromeWindowWithUrl } from './launchers/chrome.js';
+import { closeGhosttyOwnedWindow, launchGhosttyWindow } from './launchers/ghostty.js';
 import { closeIterm2OwnedWindow, launchIterm2Window } from './launchers/iterm2.js';
+import { closeKittyOwnedWindow, launchKittyWindow } from './launchers/kitty.js';
 import { delay } from './lifecycle/waitFor.js';
 import { diffNewWindows, enumerateWindowsByOwnerName, enumerateWindowsByPid } from './macWindows.js';
 import { resolveOwnedWindowBindings } from './ownedWindows.js';
@@ -158,6 +163,11 @@ function createOwnedWindowResolutionEntries({
   enumerateWindowsByOwnerNameFn = enumerateWindowsByOwnerName,
   launchAppWindowFn = launchAppWindow,
   launchIterm2WindowFn = launchIterm2Window,
+  launchTerminalWindowFn = launchTerminalWindow,
+  launchGhosttyWindowFn = launchGhosttyWindow,
+  launchKittyWindowFn = launchKittyWindow,
+  launchAlacrittyWindowFn = launchAlacrittyWindow,
+  launchChromeWindowWithUrlFn = launchChromeWindowWithUrl,
 }) {
   const entries = [];
 
@@ -168,7 +178,15 @@ function createOwnedWindowResolutionEntries({
       sourceId,
       snapshot: () => enumerateWindowsByOwnerNameFn(adapter.cgWindowOwnerName(source)),
       launch: () => (typeof adapter.launch === 'function'
-        ? adapter.launch(source, { launchIterm2Window: launchIterm2WindowFn })
+        ? adapter.launch(source, {
+          launchIterm2Window: launchIterm2WindowFn,
+          launchTerminalWindow: launchTerminalWindowFn,
+          launchGhosttyWindow: launchGhosttyWindowFn,
+          launchKittyWindow: launchKittyWindowFn,
+          launchAlacrittyWindow: launchAlacrittyWindowFn,
+          launchChromeWindowWithUrl: launchChromeWindowWithUrlFn,
+          launchAppWindow: launchAppWindowFn,
+        })
         : launchAppWindowFn(source.openArgs
           ? { app: source.app, cwd: source.cwd, openArgs: source.openArgs }
           : {
@@ -178,6 +196,7 @@ function createOwnedWindowResolutionEntries({
               files: source.files,
             })),
       confirm: adapter.confirm,
+      skipDiff: typeof adapter.ownsWindow === 'function' && adapter.ownsWindow(source) === false,
     });
   }
 
@@ -189,8 +208,10 @@ function createOwnedWindowResolutionEntries({
  * Default launch+diff resolver for owned app-window sources.
  *
  * Builds an adapter-driven launch strategy per source and resolves each via
- * the generic owned-window resolver. No-ops when there are no owned app
- * sources.
+ * the generic owned-window resolver. Sources whose adapter declares
+ * `ownsWindow(source) === false` (currently only Slack in navigation mode)
+ * are launched but skipped by the diff resolver — they cannot produce a
+ * bindable window so polling for one would just emit misleading warnings.
  *
  * @param {{ config: { sources: Record<string, { kind: string, command?: string, cwd?: string, app?: string, args?: string[] }> } }} options Resolver options.
  * @param {{ info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void }} logger Logger.
@@ -199,8 +220,28 @@ function createOwnedWindowResolutionEntries({
 async function defaultResolveOwnedWindowBindings({ config, logger }) {
   const entries = createOwnedWindowResolutionEntries({ config, logger });
 
+  const navigationEntries = entries.filter((entry) => entry.skipDiff);
+  const diffEntries = entries.filter((entry) => !entry.skipDiff);
+
+  if (navigationEntries.length > 0) {
+    logger.info('Launching navigation-only sources without window ownership', {
+      sources: navigationEntries.map((entry) => entry.sourceId),
+    });
+
+    await Promise.all(navigationEntries.map(async (entry) => {
+      try {
+        await entry.launch();
+      } catch (error) {
+        logger.warn('Navigation-only source launch failed', {
+          source: entry.sourceId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }));
+  }
+
   return resolveOwnedWindowBindings({
-    entries,
+    entries: diffEntries,
     delay,
     maxAttempts: 30,
     logger,
@@ -276,13 +317,25 @@ async function closeOwnedAppWindows({
   logger,
   closeMacWindowFn,
   closeIterm2OwnedWindowFn = closeIterm2OwnedWindow,
+  closeTerminalOwnedWindowFn = closeTerminalOwnedWindow,
+  closeGhosttyOwnedWindowFn = closeGhosttyOwnedWindow,
+  closeKittyOwnedWindowFn = closeKittyOwnedWindow,
 }) {
   for (const entry of entries) {
     const { source, binding } = entry;
     const adapter = resolveAppAdapter(source);
 
+    if (typeof adapter.ownsWindow === 'function' && adapter.ownsWindow(source) === false) {
+      continue;
+    }
+
     if (typeof adapter.close === 'function') {
-      await Promise.resolve(adapter.close({ source, binding }, { closeIterm2OwnedWindow: closeIterm2OwnedWindowFn }));
+      await Promise.resolve(adapter.close({ source, binding }, {
+        closeIterm2OwnedWindow: closeIterm2OwnedWindowFn,
+        closeTerminalOwnedWindow: closeTerminalOwnedWindowFn,
+        closeGhosttyOwnedWindow: closeGhosttyOwnedWindowFn,
+        closeKittyOwnedWindow: closeKittyOwnedWindowFn,
+      }));
       continue;
     }
 

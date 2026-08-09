@@ -70,6 +70,63 @@ test('createOwnedWindowResolutionEntries uses adapter CGWindow owner names and c
   assert.deepEqual(editorEntry?.confirm, { stableSamples: 2 });
 });
 
+test('createOwnedWindowResolutionEntries routes Apple Terminal, Ghostty, kitty, and Alacritty through their dedicated launchers', async () => {
+  const logger = createLogger();
+  const launches = [];
+  const entries = createOwnedWindowResolutionEntries({
+    config: {
+      sources: {
+        AppleTerminal: { id: 'AppleTerminal', kind: 'app', app: 'Terminal', command: 'npm run dev', cwd: '/repos/demo' },
+        Ghostty: { id: 'Ghostty', kind: 'app', app: 'Ghostty', command: 'npm run dev', cwd: '/repos/demo' },
+        Kitty: { id: 'Kitty', kind: 'app', app: 'kitty', command: 'npm run dev', cwd: '/repos/demo' },
+        Alacritty: { id: 'Alacritty', kind: 'app', app: 'Alacritty', command: 'npm run dev', cwd: '/repos/demo' },
+      },
+    },
+    logger,
+    enumerateWindowsByOwnerNameFn(ownerName) {
+      launches.push({ type: 'snapshot', ownerName });
+      return [];
+    },
+    launchAppWindowFn(options) {
+      launches.push({ type: 'open', options });
+      return Promise.resolve({ ownerName: options.app });
+    },
+    launchIterm2WindowFn() { launches.push({ type: 'iterm2' }); return Promise.resolve({}); },
+    launchTerminalWindowFn(options) {
+      launches.push({ type: 'appleTerminal', options });
+      return Promise.resolve({ pid: 100, terminalWindowId: '5000' });
+    },
+    launchGhosttyWindowFn(options) {
+      launches.push({ type: 'ghostty', options });
+      return Promise.resolve({ pid: 200, ghosttyWindowId: 'tab-group-xyz' });
+    },
+    launchKittyWindowFn(options) {
+      launches.push({ type: 'kitty', options });
+      return Promise.resolve({ pid: 300, kittyWindowId: '42' });
+    },
+    launchAlacrittyWindowFn(options) {
+      launches.push({ type: 'alacritty', options });
+      return Promise.resolve({ pid: 400 });
+    },
+  });
+
+  for (const entry of entries) {
+    entry.snapshot();
+    await entry.launch();
+  }
+
+  assert.deepEqual(launches, [
+    { type: 'snapshot', ownerName: 'Terminal' },
+    { type: 'appleTerminal', options: { command: 'npm run dev', cwd: '/repos/demo' } },
+    { type: 'snapshot', ownerName: 'Ghostty' },
+    { type: 'ghostty', options: { command: 'npm run dev', cwd: '/repos/demo' } },
+    { type: 'snapshot', ownerName: 'kitty' },
+    { type: 'kitty', options: { command: 'npm run dev', cwd: '/repos/demo' } },
+    { type: 'snapshot', ownerName: 'Alacritty' },
+    { type: 'alacritty', options: { command: 'npm run dev', cwd: '/repos/demo' } },
+  ]);
+});
+
 test('createOwnedWindowResolutionEntries forwards source files to the generic launcher', async () => {
   const logger = createLogger();
   const launches = [];
@@ -192,6 +249,136 @@ test('closeOwnedAppWindows uses the adapter close path for iTerm2 and AX close f
     pid: 9999,
     options: { discardUnsavedChanges: true },
   }]);
+});
+
+test('closeOwnedAppWindows routes Apple Terminal, Ghostty, and kitty close handles through their dedicated primitives', async () => {
+  const logger = createLogger();
+  const terminalCloses = [];
+  const ghosttyCloses = [];
+  const kittyCloses = [];
+
+  await closeOwnedAppWindows({
+    entries: [
+      {
+        sourceId: 'AppleTerminal',
+        source: { id: 'AppleTerminal', kind: 'app', app: 'Terminal' },
+        binding: { sourceId: 'AppleTerminal', terminalWindowId: '5000', macWindowId: 111, pid: 100 },
+      },
+      {
+        sourceId: 'Ghostty',
+        source: { id: 'Ghostty', kind: 'app', app: 'Ghostty' },
+        binding: { sourceId: 'Ghostty', ghosttyWindowId: 'tab-group-xyz', macWindowId: 222, pid: 200 },
+      },
+      {
+        sourceId: 'Kitty',
+        source: { id: 'Kitty', kind: 'app', app: 'kitty' },
+        binding: { sourceId: 'Kitty', kittyWindowId: '42', macWindowId: 333, pid: 300 },
+      },
+    ],
+    logger,
+    closeMacWindowFn() { return true; },
+    closeIterm2OwnedWindowFn() {},
+    closeTerminalOwnedWindowFn(windowId) { terminalCloses.push(windowId); },
+    closeGhosttyOwnedWindowFn(windowId) { ghosttyCloses.push(windowId); },
+    closeKittyOwnedWindowFn(windowId) { kittyCloses.push(windowId); },
+  });
+
+  assert.deepEqual(terminalCloses, ['5000']);
+  assert.deepEqual(ghosttyCloses, ['tab-group-xyz']);
+  assert.deepEqual(kittyCloses, ['42']);
+});
+
+test('createOwnedWindowResolutionEntries marks Slack navigation-mode sources as skipDiff and routes them through the generic open launcher', async () => {
+  const logger = createLogger();
+  const launches = [];
+  const chromeLaunches = [];
+
+  const entries = createOwnedWindowResolutionEntries({
+    config: {
+      sources: {
+        QnA: {
+          id: 'QnA',
+          kind: 'app',
+          app: 'Slack',
+          slack: { target: 'channel', team: 'T1', id: 'C1' },
+        },
+      },
+    },
+    logger,
+    enumerateWindowsByOwnerNameFn() { return []; },
+    launchAppWindowFn(options) {
+      launches.push(options);
+      return Promise.resolve({});
+    },
+    launchChromeWindowWithUrlFn(url) {
+      chromeLaunches.push(url);
+      return Promise.resolve({});
+    },
+  });
+
+  const qna = entries[0];
+  assert.equal(qna.skipDiff, true);
+  await qna.launch();
+
+  assert.deepEqual(launches, [
+    { app: 'Slack', openArgs: ['slack://channel?team=T1&id=C1'] },
+  ]);
+  assert.deepEqual(chromeLaunches, []);
+});
+
+test('createOwnedWindowResolutionEntries marks Slack browser-mode sources as diff-bound and routes them through the Chrome launcher', async () => {
+  const logger = createLogger();
+  const launches = [];
+  const chromeLaunches = [];
+
+  const entries = createOwnedWindowResolutionEntries({
+    config: {
+      sources: {
+        QnA: {
+          id: 'QnA',
+          kind: 'app',
+          app: 'Slack',
+          slack: { target: 'channel', team: 'T1', id: 'C1', newWindow: true },
+        },
+      },
+    },
+    logger,
+    enumerateWindowsByOwnerNameFn() { return []; },
+    launchAppWindowFn() { launches.push('open'); return Promise.resolve({}); },
+    launchChromeWindowWithUrlFn(url) {
+      chromeLaunches.push(url);
+      return Promise.resolve({ pid: 4242 });
+    },
+  });
+
+  const qna = entries[0];
+  assert.equal(qna.skipDiff, false);
+  await qna.launch();
+
+  assert.deepEqual(launches, []);
+  assert.deepEqual(chromeLaunches, ['https://app.slack.com/client/T1/C1']);
+});
+
+test('closeOwnedAppWindows skips sources whose adapter declares ownsWindow(source) === false', async () => {
+  const logger = createLogger();
+  const closeCalls = [];
+
+  await closeOwnedAppWindows({
+    entries: [
+      {
+        sourceId: 'QnA',
+        source: { id: 'QnA', kind: 'app', app: 'Slack', slack: { team: 'T1', id: 'C1' } },
+        binding: { sourceId: 'QnA', macWindowId: 123, pid: 456 },
+      },
+    ],
+    logger,
+    closeMacWindowFn(macWindowId, pid) {
+      closeCalls.push({ macWindowId, pid });
+      return true;
+    },
+  });
+
+  assert.deepEqual(closeCalls, []);
 });
 
 test('closeOwnedAppWindows warns and does not escalate when tracked app close does not confirm', async () => {

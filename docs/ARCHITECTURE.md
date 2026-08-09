@@ -303,8 +303,11 @@ through a dedicated owned-app seam that is kept out of the coordinator and
   confirmation, and the close strategy.
 - **`src/launchers/`** — generic **launch primitives**. `app.js` does the
   `open -a` spawning (forcing `-n` for a new instance so the diff resolver can
-  find a fresh CGWindowID); `iterm2.js` builds and runs the iTerm2 AppleScript
-  and closes a window by session UUID. No app-specific knowledge lives here.
+  find a fresh CGWindowID). Terminal launchers (`iterm2.js`,
+  `appleTerminal.js`, `ghostty.js`, `alacritty.js`, `kitty.js`) each encode
+  one terminal's launch and close mechanics — AppleScript for iTerm2/Terminal/
+  Ghostty, IPC for Alacritty/kitty. No app-specific knowledge lives in the
+  adapters beyond alias resolution and CGWindow owner name.
 
 The dependency direction is one-way: **adapters call into launchers, never the
 reverse.** An iTerm2 adapter, for example, composes the iTerm2 launcher

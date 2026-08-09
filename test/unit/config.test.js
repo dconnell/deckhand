@@ -588,6 +588,73 @@ test('normalizeConfig rejects app sources that set openArgs alongside files', ()
   assertConfigError(() => normalizeConfig(config), 'sources.Site.openArgs', /mutually exclusive/i);
 });
 
+test('normalizeConfig passes through Slack adapter fields with shape validation', () => {
+  const config = createValidConfig();
+  config.sources.QnA = {
+    kind: 'app',
+    app: 'Slack',
+    slack: { target: 'channel', team: 'T14AN', id: 'C07HV', newWindow: true },
+  };
+  config.layouts['full-qna'] = {
+    audienceScene: 'QnA',
+    slots: [{ source: 'QnA', position: 'full' }],
+  };
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.sources.QnA.slack, { target: 'channel', team: 'T14AN', id: 'C07HV', newWindow: true });
+});
+
+test('normalizeConfig accepts a raw slack:// uri and a sibling newWindow flag', () => {
+  const config = createValidConfig();
+  config.sources.QnA = {
+    kind: 'app',
+    app: 'Slack',
+    uri: 'slack://channel?team=T14AN&id=C07HV',
+    newWindow: false,
+  };
+  config.layouts['full-qna'] = {
+    audienceScene: 'QnA',
+    slots: [{ source: 'QnA', position: 'full' }],
+  };
+
+  const normalized = normalizeConfig(config);
+
+  assert.equal(normalized.sources.QnA.uri, 'slack://channel?team=T14AN&id=C07HV');
+  assert.equal(normalized.sources.QnA.newWindow, false);
+});
+
+test('normalizeConfig rejects a non-boolean newWindow', () => {
+  const config = createValidConfig();
+  config.sources.QnA = {
+    kind: 'app',
+    app: 'Slack',
+    slack: { team: 'T1', id: 'C1' },
+    newWindow: 'yes',
+  };
+  config.layouts['full-qna'] = {
+    audienceScene: 'QnA',
+    slots: [{ source: 'QnA', position: 'full' }],
+  };
+
+  assertConfigError(() => normalizeConfig(config), 'sources.QnA.newWindow', /boolean/i);
+});
+
+test('normalizeConfig rejects a non-object slack field', () => {
+  const config = createValidConfig();
+  config.sources.QnA = {
+    kind: 'app',
+    app: 'Slack',
+    slack: 'channel',
+  };
+  config.layouts['full-qna'] = {
+    audienceScene: 'QnA',
+    slots: [{ source: 'QnA', position: 'full' }],
+  };
+
+  assertConfigError(() => normalizeConfig(config), 'sources.QnA.slack', /object/i);
+});
+
 test('normalizeConfig rejects browser sources that omit the tab catalog', () => {
   const config = createValidConfig();
   delete config.sources.BrowserA.browser;

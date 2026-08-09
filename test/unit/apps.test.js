@@ -10,6 +10,15 @@ test('resolveAppAdapter returns the default adapter for a generic app source', (
   assert.deepEqual(adapter.confirm, { stableSamples: 2 });
 });
 
+test('resolveAppAdapter default keeps CGWindow owner equal to source.app for Slack (verified bundle name)', () => {
+  // Slack's CFBundleName and kCGWindowOwnerName are both `Slack` — no adapter
+  // needed. This test pins that assumption so a future change to default.js
+  // can't silently regress Slack window enumeration.
+  const adapter = resolveAppAdapter({ id: 'Comms', kind: 'app', app: 'Slack' });
+
+  assert.equal(adapter.cgWindowOwnerName({ app: 'Slack' }), 'Slack');
+});
+
 test('resolveAppAdapter matches VS Code aliases', () => {
   assert.equal(resolveAppAdapter({ id: 'Editor', kind: 'app', app: 'Visual Studio Code' }).id, 'vscode');
   assert.equal(resolveAppAdapter({ id: 'Editor', kind: 'app', app: 'Code' }).id, 'vscode');
@@ -18,4 +27,47 @@ test('resolveAppAdapter matches VS Code aliases', () => {
 test('resolveAppAdapter matches iTerm aliases', () => {
   assert.equal(resolveAppAdapter({ id: 'Terminal', kind: 'app', app: 'iTerm2' }).id, 'iterm2');
   assert.equal(resolveAppAdapter({ id: 'Terminal', kind: 'app', app: 'iTerm' }).id, 'iterm2');
+});
+
+test('resolveAppAdapter matches Apple Terminal aliases and maps to the Terminal CGWindow owner', () => {
+  const adapter = resolveAppAdapter({ id: 'Terminal', kind: 'app', app: 'Terminal' });
+
+  assert.equal(adapter.id, 'appleTerminal');
+  assert.equal(adapter.cgWindowOwnerName(), 'Terminal');
+  assert.deepEqual(
+    adapter.buildBootstrapBinding({ kind: 'app', app: 'Terminal' }, { titleIncludes: 'demo' }),
+    { app: 'Terminal', titleIncludes: 'demo' },
+  );
+
+  assert.equal(resolveAppAdapter({ id: 'Terminal', kind: 'app', app: 'terminal.app' }).id, 'appleTerminal');
+  assert.equal(resolveAppAdapter({ id: 'Terminal', kind: 'app', app: 'Apple Terminal' }).id, 'appleTerminal');
+});
+
+test('resolveAppAdapter matches Ghostty and maps to the Ghostty CGWindow owner', () => {
+  const adapter = resolveAppAdapter({ id: 'Terminal', kind: 'app', app: 'Ghostty' });
+
+  assert.equal(adapter.id, 'ghostty');
+  assert.equal(adapter.cgWindowOwnerName(), 'Ghostty');
+  assert.deepEqual(
+    adapter.buildBootstrapBinding({ kind: 'app', app: 'Ghostty' }, { titleIncludes: 'demo' }),
+    { app: 'Ghostty', titleIncludes: 'demo' },
+  );
+});
+
+test('resolveAppAdapter matches Alacritty and maps to the Alacritty CGWindow owner', () => {
+  const adapter = resolveAppAdapter({ id: 'Terminal', kind: 'app', app: 'Alacritty' });
+
+  assert.equal(adapter.id, 'alacritty');
+  assert.equal(adapter.cgWindowOwnerName(), 'Alacritty');
+  assert.equal(adapter.discardUnsavedChangesOnClose, false);
+  assert.equal(typeof adapter.launch, 'function');
+  assert.equal('close' in adapter, false);
+});
+
+test('resolveAppAdapter matches kitty and maps to the lowercase kitty CGWindow owner', () => {
+  const adapter = resolveAppAdapter({ id: 'Terminal', kind: 'app', app: 'kitty' });
+
+  assert.equal(adapter.id, 'kitty');
+  assert.equal(adapter.cgWindowOwnerName(), 'kitty');
+  assert.equal(typeof adapter.close, 'function');
 });
