@@ -35,6 +35,7 @@ import { createBrowserSession, createBrowserCommandExecutor } from './browserSes
 import { createWsTransport, discoverCdpEndpoint, launchChromeSession } from './chromeLauncher.js';
 import { waitForFirstDriverPosition, waitForPresentationObserver } from './lifecycle/waitFor.js';
 import { closeMacWindow, getWindowIdsViaCGList } from './macWindows.js';
+import { runSttObserver } from './presenter/stt/runner.js';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 
@@ -104,6 +105,7 @@ export async function run(options = {}) {
   let browserSession = null;
   let chromeLaunch = null;
   let presentationServer = null;
+  let sttAbortController = null;
   let phase = 'starting';
   const resolvedMacWindowBindings = {};
 
@@ -152,6 +154,9 @@ export async function run(options = {}) {
   }
 
   async function stopBrowserRuntime() {
+    sttAbortController?.abort();
+    sttAbortController = null;
+
     if (coordinator === undefined || coordinator === null || typeof coordinator.stop !== 'function') {
       return;
     }
@@ -446,6 +451,23 @@ export async function run(options = {}) {
     await presentationServer.start();
     await coordinator.start();
 
+    if (config.presenter !== null && config.presenter.stt !== null) {
+      sttAbortController = new AbortController();
+      const runSttObserverFn = options.runSttObserverFn ?? runSttObserver;
+      runSttObserverFn({
+        hubUrl: `ws://${config.hub.host}:${config.hub.port}`,
+        logger,
+        restartDelayMs: 1000,
+        signal: sttAbortController.signal,
+        stt: config.presenter.stt,
+      }).catch((error) => {
+        logger.warn('STT observer exited', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      logger.info('Auto-started presenter STT observer');
+    }
+
     if (presenterHttp !== null) {
       await presenterHttp.start();
 
@@ -465,6 +487,18 @@ export async function run(options = {}) {
             error: error instanceof Error ? error.message : String(error),
           });
         });
+
+        try {
+          await browserSession.openAuxWindow({
+            key: 'presenter-console',
+            title: 'Deckhand Console',
+            url: `http://${config.presenter.http.host}:${config.presenter.http.port}/presenter/`,
+          });
+        } catch (error) {
+          logger.warn('Failed to open presenter console window', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
     }
 

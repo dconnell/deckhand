@@ -188,6 +188,7 @@ test('run starts the presenter HTTP server when presenter mode is enabled', asyn
       waitForPresentationObserverFn: async () => {
         lifecycle.push('waitForPresentationObserver');
       },
+      runSttObserverFn: async () => {},
       resolveMacWindowBindingsFn: async () => {
         lifecycle.push('resolveMacWindowBindings');
       },
@@ -353,6 +354,7 @@ test('run discovers the actual DevTools port from the launched Chrome session', 
       },
       waitForDriverPositionFn: async () => {},
       waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
       resolveMacWindowBindingsFn: async () => {},
       resolveOwnedWindowBindingsFn: async () => ({}),
     });
@@ -913,6 +915,7 @@ test('run fails startup in presenter mode when no presentation observer connects
       waitForPresentationObserverFn: async () => {
         throw new Error('Timed out waiting for a presenter observer');
       },
+      runSttObserverFn: async () => {},
       resolveMacWindowBindingsFn: async () => {},
     });
 
@@ -936,6 +939,7 @@ function createBrowserSessionMock(chromePid) {
     async start() {},
     async stop() {},
     async openWindow() { return { windowId: 999 }; },
+    async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
     getStatus() {
       return { connected: true, chromePid, sources: {} };
     },
@@ -1063,6 +1067,7 @@ test('run caches startup window resolution and returns macWindowId from getManag
       reconcileObsFn: async () => {},
       waitForDriverPositionFn: async () => {},
       waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
       resolvePresenterTeleprompterBindingFn: async () => null,
       resolveMacWindowBindingsFn: async () => ({
         Slide: { macWindowId: 11111, pid: 47213 },
@@ -1144,6 +1149,7 @@ test('run seeds browser macWindowId bindings from the browser-session registry b
       reconcileObsFn: async () => {},
       waitForDriverPositionFn: async () => {},
       waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
       resolvePresenterTeleprompterBindingFn: async () => null,
       resolveOwnedWindowBindingsFn: async () => ({}),
     });
@@ -1243,6 +1249,7 @@ test('run resolves and caches the presenter teleprompter window binding without 
       },
       waitForDriverPositionFn: async () => {},
       waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
       resolvePresenterTeleprompterBindingFn: async () => ({ macWindowId: 22222, pid: 47213 }),
       resolveMacWindowBindingsFn: async () => ({
         Slide: { macWindowId: 11111, pid: 47213 },
@@ -1355,6 +1362,7 @@ test('run invalidates cached macWindowId when Hammerspoon reports clearedBinding
       reconcileObsFn: async () => {},
       waitForDriverPositionFn: async () => {},
       waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
       resolveMacWindowBindingsFn: async () => ({
         Slide: { macWindowId: 11111, pid: 47213 },
         BrowserA: { macWindowId: 12345, pid: 47213 },
@@ -1449,7 +1457,7 @@ test('run derives owner names and publishes strict macWindowId bindings for owne
       createCdpClientFn() { return createCdpClientMock(47213); },
       createBrowserSessionFn() {
         return {
-          async start() {}, async stop() {}, async openWindow() {},
+          async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -1470,6 +1478,7 @@ test('run derives owner names and publishes strict macWindowId bindings for owne
       },
       waitForDriverPositionFn: async () => {},
       waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
       resolveMacWindowBindingsFn: async () => ({
         Slide: { macWindowId: 11111, pid: 47213 },
       }),
@@ -1570,7 +1579,7 @@ test('run requests stability confirmation for owned app-window binding resolutio
       createCdpClientFn() { return createCdpClientMock(47213); },
       createBrowserSessionFn() {
         return {
-          async start() {}, async stop() {}, async openWindow() {},
+          async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -1588,6 +1597,7 @@ test('run requests stability confirmation for owned app-window binding resolutio
       reconcileObsFn: async () => {},
       waitForDriverPositionFn: async () => {},
       waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
       resolveMacWindowBindingsFn: async () => ({
         Slide: { macWindowId: 11111, pid: 47213 },
       }),
@@ -1681,7 +1691,7 @@ test('run closes owned app windows on shutdown via closeOwnedWindowsFn', async (
       createCdpClientFn() { return createCdpClientMock(47213); },
       createBrowserSessionFn() {
         return {
-          async start() {}, async stop() {}, async openWindow() {},
+          async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -1699,6 +1709,7 @@ test('run closes owned app windows on shutdown via closeOwnedWindowsFn', async (
       reconcileObsFn: async () => {},
       waitForDriverPositionFn: async () => {},
       waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
       resolveMacWindowBindingsFn: async () => ({
         Slide: { macWindowId: 11111, pid: 47213 },
       }),
@@ -1804,7 +1815,7 @@ test('run requests discardUnsavedChanges when shutting down owned app windows', 
       createCdpClientFn() { return createCdpClientMock(47213); },
       createBrowserSessionFn() {
         return {
-          async start() {}, async stop() {}, async openWindow() {},
+          async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -1822,6 +1833,7 @@ test('run requests discardUnsavedChanges when shutting down owned app windows', 
       reconcileObsFn: async () => {},
       waitForDriverPositionFn: async () => {},
       waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
       resolveMacWindowBindingsFn: async () => ({
         Slide: { macWindowId: 11111, pid: 47213 },
       }),
@@ -1928,7 +1940,7 @@ test('run does not terminate the owned app process when tracked window close doe
       createCdpClientFn() { return createCdpClientMock(47213); },
       createBrowserSessionFn() {
         return {
-          async start() {}, async stop() {}, async openWindow() {},
+          async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -1946,6 +1958,7 @@ test('run does not terminate the owned app process when tracked window close doe
       reconcileObsFn: async () => {},
       waitForDriverPositionFn: async () => {},
       waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
       resolveMacWindowBindingsFn: async () => ({
         Slide: { macWindowId: 11111, pid: 47213 },
       }),
@@ -2047,7 +2060,7 @@ test('run app shutdown closes only tracked macWindowId and never invokes process
       createCdpClientFn() { return createCdpClientMock(47213); },
       createBrowserSessionFn() {
         return {
-          async start() {}, async stop() {}, async openWindow() {},
+          async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -2065,6 +2078,7 @@ test('run app shutdown closes only tracked macWindowId and never invokes process
       reconcileObsFn: async () => {},
       waitForDriverPositionFn: async () => {},
       waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
       resolveMacWindowBindingsFn: async () => ({
         Slide: { macWindowId: 11111, pid: 47213 },
       }),
