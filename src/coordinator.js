@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 
+import { createPresenterSession } from './presenter/session.js';
 import { buildPresentationState } from './scenes.js';
 import { buildMacWindowCaptureSettings } from './setupObs.js';
 import { deckhandInputName, deckhandSceneName } from './obsNames.js';
@@ -114,6 +115,12 @@ export function createCoordinator(options) {
   let executorStarted = false;
   let presentationSeq = 0;
   let currentPresentationState = null;
+  const presenterSession = options.config.presenter === null
+    ? null
+    : createPresenterSession({
+        followEnabledByDefault: options.config.presenter.teleprompter.followEnabledByDefault,
+        tracking: options.config.presenter.teleprompter.tracking,
+      });
   let previousSlideIndex = null;
   let freezeArmed = false;
   let nextFreezeFramePathIndex = 0;
@@ -169,9 +176,31 @@ export function createCoordinator(options) {
     return state;
   }
 
+  async function publishPresenterState(nowMs = Date.now()) {
+    if (presenterSession === null) {
+      return null;
+    }
+
+    presenterSession.tick(nowMs);
+    const presenterState = presenterSession.getState();
+    await options.hub.publishSticky('presenterState', presenterState);
+    return presenterState;
+  }
+
+  async function syncPresenterStateFromPresentation(presentationState, nowMs = Date.now()) {
+    if (presenterSession === null) {
+      return null;
+    }
+
+    presenterSession.applyPresentationState(presentationState, nowMs);
+    await options.hub.publishSticky('presenterState', presenterSession.getState());
+    return presenterSession.getState();
+  }
+
   async function publishPresentationState(slideId) {
     const state = preparePresentationState(slideId);
     await options.hub.publishSticky('presentationState', state);
+    await syncPresenterStateFromPresentation(state, Date.now());
     return state;
   }
 
@@ -198,6 +227,67 @@ export function createCoordinator(options) {
         slideId: presentationState.slideId,
       });
     }
+  }
+
+  async function handleDriverSlideManifest(payload) {
+    if (presenterSession === null || !payload?.manifest) {
+      return;
+    }
+
+    try {
+      presenterSession.applySlideManifest(payload.manifest, Date.now());
+      await options.hub.publishSticky('presenterState', presenterSession.getState());
+      logger.info('Updated presenter state from driver slide manifest', {
+        slideCount: payload.manifest.slides.length,
+      });
+    } catch (error) {
+      logger.error('Failed to reduce driver slide manifest into presenter state', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  async function handleObserverTranscript(payload) {
+    if (presenterSession === null || payload?.transcript === undefined) {
+      return;
+    }
+
+    presenterSession.applyTranscript(payload.transcript, payload.transcript.capturedAtMs);
+    await options.hub.publishSticky('presenterState', presenterSession.getState());
+  }
+
+  async function processObserverPresenterCommand(payload) {
+    if (presenterSession === null || payload?.command === undefined) {
+      return;
+    }
+
+    const command = payload.command;
+
+    if (command.op === 'focusTeleprompter' || command.op === 'reopenTeleprompter') {
+      if (typeof options.focusPresenterTeleprompter !== 'function') {
+        logger.warn('Presenter teleprompter focus requested but no browser-session hook is available', {
+          op: command.op,
+        });
+        return;
+      }
+
+      try {
+        await options.focusPresenterTeleprompter({ reopen: command.op === 'reopenTeleprompter' });
+      } catch (error) {
+        logger.error('Failed to focus or reopen tracked teleprompter window', {
+          error: error instanceof Error ? error.message : String(error),
+          op: command.op,
+        });
+      }
+      return;
+    }
+
+    presenterSession.applyCommand(command, Date.now());
+    await options.hub.publishSticky('presenterState', presenterSession.getState());
+  }
+
+  function handleObserverPresenterCommand(payload) {
+    return enqueueSlideOperation(() => processObserverPresenterCommand(payload));
   }
 
   function observerCanResolveSource(source) {
@@ -301,6 +391,7 @@ export function createCoordinator(options) {
   async function publishAndApplyBindings(presentationState, slideId) {
     try {
       await options.hub.publishSticky('presentationState', presentationState);
+      await syncPresenterStateFromPresentation(presentationState, Date.now());
       logger.info('Published presentation state for slide', {
         layoutId: presentationState.layoutId,
         seq: presentationState.seq,
@@ -1009,7 +1100,10 @@ export function createCoordinator(options) {
 
   options.hub.on('driverPositionChanged', handleDriverPositionChanged);
   options.hub.on('driverPositionSettled', handleDriverPositionSettled);
+  options.hub.on('driverSlideManifest', handleDriverSlideManifest);
   options.hub.on('observerDriverCommand', handleObserverDriverCommand);
+  options.hub.on('observerPresenterCommand', handleObserverPresenterCommand);
+  options.hub.on('observerTranscript', handleObserverTranscript);
   options.hub.on('driverRegistered', () => logSnapshot('Driver client registered'));
   options.hub.on('observerRegistered', () => logSnapshot('Observer client registered'));
   options.hub.on('observerWindowBindings', handleObserverWindowBindings);
@@ -1105,8 +1199,16 @@ export function createCoordinator(options) {
       return currentPresentationState;
     },
 
+    getCurrentPresenterState() {
+      return presenterSession === null ? null : presenterSession.getState();
+    },
+
     getRuntimeWindowBindings() {
       return { ...runtimeWindowBindings };
+    },
+
+    async refreshCurrentPresentationState(reason = 'refresh') {
+      await republishCurrentPresentationState(reason);
     },
 
     handleDriverPositionChanged,

@@ -16,6 +16,51 @@
     return cleanString(slide && slide.dataset ? slide.dataset.deckhandId : null);
   }
 
+  function readSlideTitle(slide) {
+    const datasetTitle = cleanString(slide && slide.dataset ? slide.dataset.title : null);
+
+    if (datasetTitle !== null) {
+      return datasetTitle;
+    }
+
+    if (slide && typeof slide.getAttribute === 'function') {
+      const dataTitle = cleanString(slide.getAttribute('data-title'));
+
+      if (dataTitle !== null) {
+        return dataTitle;
+      }
+
+      return cleanString(slide.getAttribute('title'));
+    }
+
+    return cleanString(slide ? slide.title : null);
+  }
+
+  function readSlideHeading(slide) {
+    if (!slide || typeof slide.querySelector !== 'function') {
+      return null;
+    }
+
+    const heading = slide.querySelector('h1, h2, h3, h4, h5, h6');
+    return cleanString(heading && typeof heading.textContent === 'string' ? heading.textContent : null);
+  }
+
+  function getDeckSlides(deck) {
+    if (deck && typeof deck.getSlides === 'function') {
+      const slides = deck.getSlides();
+
+      if (Array.isArray(slides)) {
+        return slides;
+      }
+
+      if (slides && typeof slides.length === 'number') {
+        return Array.prototype.slice.call(slides);
+      }
+    }
+
+    return Array.prototype.slice.call(document.querySelectorAll('.slides section'));
+  }
+
   function deriveSlideId(event) {
     const indexh = Number.isInteger(event.indexh) ? event.indexh : 0;
     const indexv = Number.isInteger(event.indexv) ? event.indexv : 0;
@@ -88,6 +133,39 @@
     return duplicates;
   }
 
+  function buildSlideManifestMessage(deck) {
+    return {
+      type: 'slideManifest',
+      slides: getDeckSlides(deck).map(function mapSlide(slide, fallbackIndexh) {
+        const indices = typeof deck.getIndices === 'function' ? deck.getIndices(slide) : null;
+        const normalized = deriveSlideId({
+          currentSlide: slide,
+          indexh: indices && Number.isInteger(indices.h) ? indices.h : fallbackIndexh,
+          indexv: indices && Number.isInteger(indices.v) ? indices.v : 0,
+        });
+        var manifestSlide = {
+          id: normalized.id,
+          index: {
+            h: normalized.indexh,
+            v: normalized.indexv,
+          },
+        };
+        const title = readSlideTitle(slide);
+        const heading = readSlideHeading(slide);
+
+        if (title !== null) {
+          manifestSlide.title = title;
+        }
+
+        if (heading !== null) {
+          manifestSlide.heading = heading;
+        }
+
+        return manifestSlide;
+      }),
+    };
+  }
+
   function resolveGoTo(deck, id) {
     const fallbackMatch = /^(\d+)\.(\d+)$/.exec(String(id));
 
@@ -98,7 +176,7 @@
       };
     }
 
-    const slides = Array.prototype.slice.call(document.querySelectorAll('.slides section'));
+    const slides = getDeckSlides(deck);
     const slide = slides.find(function findByDeckhandId(entry) {
       return readDeckhandId(entry) === id;
     });
@@ -131,6 +209,7 @@
         let socket = null;
         let reconnectTimer = null;
         let lastPositionEvent = null;
+        let slideManifest = null;
         let driverRegistered = false;
         let nextDriverEventId = 1;
 
@@ -156,6 +235,17 @@
           if (socket !== null && socket.readyState === globalScope.WebSocket.OPEN) {
             socket.send(JSON.stringify(payload));
           }
+        }
+
+        function reportSlideManifest() {
+          if (!driverRegistered || slideManifest === null) {
+            return;
+          }
+
+          send(slideManifest);
+          log('info', 'Reported slideManifest', {
+            slideCount: slideManifest.slides.length,
+          });
         }
 
         function afterNextPaint(callback) {
@@ -231,12 +321,14 @@
         }
 
         function reportCurrentPosition() {
-          if (lastPositionEvent === null) {
-            report(buildCurrentPositionEvent());
+          if (!driverRegistered) {
             return;
           }
 
-          if (!driverRegistered) {
+          reportSlideManifest();
+
+          if (lastPositionEvent === null) {
+            report(buildCurrentPositionEvent());
             return;
           }
 
@@ -337,11 +429,15 @@
         }
 
         deck.on('ready', function onReady(event) {
-          const duplicates = findDuplicateDeckhandIds(Array.prototype.slice.call(document.querySelectorAll('.slides section')));
+          const slides = getDeckSlides(deck);
+          const duplicates = findDuplicateDeckhandIds(slides);
+          slideManifest = buildSlideManifestMessage(deck);
 
           if (duplicates.length > 0) {
             log('warn', 'Duplicate data-deckhand-id values detected', duplicates);
           }
+
+          reportSlideManifest();
 
           report(event);
         });

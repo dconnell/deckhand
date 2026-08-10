@@ -5,6 +5,7 @@ import {
   createCommandMessage,
   createErrorMessage,
   createPresentationStateMessage,
+  createPresenterStateMessage,
   createRegisteredMessage,
   createTranscriptMessage,
   validateClientMessage,
@@ -62,6 +63,18 @@ function serializeClient(client) {
   }
 
   return payload;
+}
+
+function createProtocolMessage(channel, payload) {
+  if (channel === 'presentationState') {
+    return createPresentationStateMessage(payload);
+  }
+
+  if (channel === 'presenterState') {
+    return createPresenterStateMessage(payload);
+  }
+
+  return createTranscriptMessage(payload);
 }
 
 function sendMessage(socket, payload) {
@@ -211,13 +224,9 @@ export function createHub(options) {
   }
 
   async function publishToObservers(channel, payload, publishOptions = {}) {
-    let protocolMessage;
-
-    if (channel === 'presentationState') {
-      protocolMessage = createPresentationStateMessage(payload);
-    } else {
-      protocolMessage = createTranscriptMessage(payload);
-    }
+    const protocolMessage = payload?.type === channel
+      ? payload
+      : createProtocolMessage(channel, payload);
 
     const delivered = [];
     let firstError = null;
@@ -305,6 +314,19 @@ export function createHub(options) {
       return;
     }
 
+    if (message.type === 'slideManifest') {
+      if (client.role !== 'driver') {
+        await sendProtocolError(socket, 'invalid_message', 'Only driver clients can send slideManifest messages');
+        return;
+      }
+
+      await events.emit('driverSlideManifest', {
+        manifest: message,
+        sender: serializeClient(client),
+      });
+      return;
+    }
+
     if (message.type === 'transcript') {
       if (client.role !== 'observer') {
         await sendProtocolError(socket, 'invalid_message', 'Only observer clients can send transcript messages');
@@ -319,7 +341,20 @@ export function createHub(options) {
       return;
     }
 
-     if (message.type === 'driverCommand') {
+    if (message.type === 'presenterCommand') {
+      if (client.role !== 'observer') {
+        await sendProtocolError(socket, 'invalid_message', 'Only observer clients can send presenterCommand messages');
+        return;
+      }
+
+      await events.emit('observerPresenterCommand', {
+        command: message,
+        sender: serializeClient(client),
+      });
+      return;
+    }
+
+      if (message.type === 'driverCommand') {
         if (client.role !== 'observer') {
           await sendProtocolError(socket, 'invalid_message', 'Only observer clients can send driverCommand messages');
           return;
@@ -464,7 +499,7 @@ export function createHub(options) {
     },
 
     async publishSticky(channel, payload) {
-      const protocolMessage = createPresentationStateMessage(payload);
+      const protocolMessage = createProtocolMessage(channel, payload);
       stickyMessages.set(channel, protocolMessage);
       return publishToObservers(channel, protocolMessage);
     },

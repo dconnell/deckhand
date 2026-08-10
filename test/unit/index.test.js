@@ -1210,7 +1210,7 @@ test('run resolves and caches the presenter teleprompter window binding without 
         return {
           async start() {},
           async stop() {},
-          async openWindow() { return { windowId: 777 }; },
+          async openAuxWindow() { return { key: 'presenter-teleprompter', targetId: 'TARGET_1', cdpWindowId: 777, macWindowId: 22222, title: 'Deckhand Presenter', url: 'http://127.0.0.1:3001/presenter/teleprompter.html' }; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() {
             return {
@@ -1219,6 +1219,7 @@ test('run resolves and caches the presenter teleprompter window binding without 
                 BrowserA: { title: 'Deckhand Demo Primary' },
                 BrowserB: { title: 'Deckhand Demo Secondary' },
               },
+              auxWindows: {},
             };
           },
           async activateTab() {},

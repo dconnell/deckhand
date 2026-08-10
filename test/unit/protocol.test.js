@@ -6,6 +6,7 @@ import {
   createCommandMessage,
   createErrorMessage,
   createPresentationStateMessage,
+  createPresenterStateMessage,
   createRegisteredMessage,
   createTranscriptMessage,
   validateClientMessage,
@@ -15,12 +16,12 @@ test('createRegisteredMessage includes observer subscriptions', () => {
   assert.deepEqual(createRegisteredMessage({
     role: 'observer',
     sessionId: 'observer-1',
-    subscriptions: ['presentationState', 'transcript'],
+    subscriptions: ['presentationState', 'presenterState', 'transcript'],
   }), {
     type: 'registered',
     role: 'observer',
     sessionId: 'observer-1',
-    subscriptions: ['presentationState', 'transcript'],
+    subscriptions: ['presentationState', 'presenterState', 'transcript'],
   });
 });
 
@@ -75,6 +76,53 @@ test('createTranscriptMessage normalizes transcript payloads', () => {
   });
 });
 
+test('createPresenterStateMessage wraps a resolved presenter state payload', () => {
+  assert.deepEqual(createPresenterStateMessage({
+    type: 'presenterState',
+    seq: 9,
+    presentationSeq: 7,
+    current: {
+      slideId: 'intro',
+      layoutId: 'full-slide',
+      focus: null,
+      hidden: false,
+      lines: [],
+    },
+    next: null,
+    teleprompter: {
+      followEnabled: true,
+      activeLineIndex: 0,
+      trackingState: 'idle',
+      recentTranscript: [],
+    },
+    timer: {
+      running: false,
+      elapsedMs: 0,
+      remainingMs: null,
+      targetDurationMs: null,
+    },
+    obs: {
+      preview: {
+        available: false,
+        path: '/presenter/program.jpg',
+        revision: 0,
+        capturedAtMs: null,
+        stale: true,
+      },
+    },
+    stream: {
+      active: false,
+      reconnecting: false,
+      bitrateKbps: null,
+      droppedFrames: 0,
+      congestion: null,
+      lastUpdateMs: null,
+      warning: 'disconnected',
+    },
+    updatedAtMs: 1720000000000,
+  }).type, 'presenterState');
+});
+
 test('createErrorMessage includes the protocol error code', () => {
   assert.deepEqual(createErrorMessage('invalid_message', 'Bad message'), {
     type: 'error',
@@ -95,13 +143,55 @@ test('validateClientMessage accepts observer registrations with subscriptions', 
     validateClientMessage({
       type: 'register',
       role: 'observer',
-      subscriptions: ['presentationState', 'transcript', 'presentationState'],
+      subscriptions: ['presentationState', 'presenterState', 'transcript', 'presentationState'],
     }),
     {
       type: 'register',
       role: 'observer',
-      subscriptions: ['presentationState', 'transcript'],
+      subscriptions: ['presentationState', 'presenterState', 'transcript'],
       capabilities: [],
+    },
+  );
+});
+
+test('validateClientMessage accepts observer presenterCommand messages', () => {
+  assert.deepEqual(
+    validateClientMessage({
+      type: 'presenterCommand',
+      op: 'nudge',
+      source: 'teleprompter',
+      delta: 1,
+    }),
+    {
+      type: 'presenterCommand',
+      op: 'nudge',
+      source: 'teleprompter',
+      delta: 1,
+    },
+  );
+});
+
+test('validateClientMessage accepts driver slideManifest messages', () => {
+  assert.deepEqual(
+    validateClientMessage({
+      type: 'slideManifest',
+      slides: [
+        {
+          id: 'intro',
+          index: { h: 0, v: 0 },
+          heading: 'Intro',
+        },
+      ],
+    }),
+    {
+      type: 'slideManifest',
+      slides: [
+        {
+          id: 'intro',
+          index: { h: 0, v: 0 },
+          heading: 'Intro',
+        },
+      ],
     },
   );
 });

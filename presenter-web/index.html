@@ -3,55 +3,68 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Deckhand Presenter</title>
+    <title>Deckhand Presenter Console</title>
     <link rel="stylesheet" href="/presenter/styles.css" />
   </head>
-  <body>
-    <main class="presenter-app">
-      <header class="presenter-header">
+  <body class="console-page">
+    <main class="console-app">
+      <header class="console-header">
         <div>
           <p class="eyebrow">Deckhand Presenter</p>
-          <h1 id="slide-title">Waiting for slide state</h1>
+          <h1 id="current-slide">Waiting for presenter state</h1>
         </div>
-        <div class="status-panel">
-          <span id="connection-status" class="status-chip">Connecting</span>
-          <span id="follow-status" class="status-chip status-chip-muted">Follow On</span>
-        </div>
+        <span id="connection-status" class="status-chip">Connecting</span>
       </header>
 
-      <section class="meta-row">
-        <div>
-          <span class="meta-label">Slide</span>
-          <span id="slide-meta">No active slide</span>
-        </div>
-        <div>
-          <span class="meta-label">Focus</span>
-          <span id="focus-meta">-</span>
-        </div>
-      </section>
+      <section class="console-grid">
+        <article class="panel">
+          <p class="panel-label">Next Slide</p>
+          <h2 id="next-slide">No next slide</h2>
+          <p><span class="meta-label">Focus</span> <span id="focus-value">-</span></p>
+        </article>
 
-      <section class="controls">
-        <button id="prev-line" type="button">Prev Line</button>
-        <button id="next-line" type="button">Next Line</button>
-        <button id="reset-lines" type="button">Reset Lines</button>
-        <button id="toggle-follow" type="button">Toggle Follow</button>
-      </section>
+        <article class="panel">
+          <p class="panel-label">Teleprompter</p>
+          <p><span class="meta-label">Follow</span> <span id="follow-value">-</span></p>
+          <p><span class="meta-label">Tracking</span> <span id="tracking-value">-</span></p>
+          <div class="controls">
+            <button id="focus-teleprompter" type="button">Focus Popout</button>
+            <button id="reopen-teleprompter" type="button">Reopen Popout</button>
+          </div>
+        </article>
 
-      <section class="script-shell">
-        <div class="section-header">
-          <h2>Teleprompter</h2>
-          <p>These buttons move the highlighted script line. Slide navigation still comes from the deck or global hotkeys.</p>
-        </div>
-        <ol id="script-lines" class="script-lines"></ol>
-        <p id="empty-state" class="empty-state">Waiting for a scripted slide.</p>
-      </section>
+        <article class="panel timer-panel">
+          <p class="panel-label">Timer</p>
+          <div class="timer-row">
+            <div>
+              <span class="meta-label">Elapsed</span>
+              <strong id="timer-elapsed">00:00</strong>
+            </div>
+            <div>
+              <span class="meta-label">Remaining</span>
+              <strong id="timer-remaining">--:--</strong>
+            </div>
+          </div>
+          <div class="controls">
+            <button id="timer-start" type="button">Start</button>
+            <button id="timer-pause" type="button">Pause</button>
+            <button id="timer-reset" type="button">Reset</button>
+          </div>
+        </article>
 
-      <section class="transcript-shell">
-        <h2>Transcript</h2>
-        <ul id="transcript-items" class="transcript-items"></ul>
+        <article class="panel">
+          <p class="panel-label">OBS Preview</p>
+          <p id="preview-state">Preview unavailable</p>
+          <img class="preview-image" src="/presenter/program.jpg" alt="OBS program preview" />
+        </article>
+
+        <article class="panel">
+          <p class="panel-label">Stream Health</p>
+          <p id="stream-warning">No stream data</p>
+        </article>
       </section>
     </main>
 
-    <script type="module" src="/presenter/app.js"></script>
+    <script type="module" src="/presenter/console.js"></script>
   </body>
 </html>

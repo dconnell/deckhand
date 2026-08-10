@@ -20,6 +20,7 @@ test('presenter HTTP server serves presenter assets and status without exposing 
   const presenterRoot = path.join(tempDir, 'presenter-web');
   await mkdir(path.join(presenterRoot, 'nested'), { recursive: true });
   await writeFile(path.join(presenterRoot, 'index.html'), '<!doctype html><title>Presenter</title>', 'utf8');
+  await writeFile(path.join(presenterRoot, 'teleprompter.html'), '<!doctype html><title>Teleprompter</title>', 'utf8');
   await writeFile(path.join(presenterRoot, 'app.js'), 'console.log("presenter")', 'utf8');
 
   const server = createPresenterHttpServer({
@@ -51,6 +52,10 @@ test('presenter HTTP server serves presenter assets and status without exposing 
     const presenter = await fetch(`http://127.0.0.1:${port}/presenter/`);
     assert.equal(presenter.status, 200);
     assert.match(await presenter.text(), /Presenter/);
+
+    const teleprompter = await fetch(`http://127.0.0.1:${port}/presenter/teleprompter.html`);
+    assert.equal(teleprompter.status, 200);
+    assert.match(await teleprompter.text(), /Teleprompter/);
 
     const bootstrap = await fetch(`http://127.0.0.1:${port}/presenter/bootstrap.json`);
     assert.equal(bootstrap.status, 200);

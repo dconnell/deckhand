@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Deckhand Presenter</title>
+    <link rel="stylesheet" href="/presenter/styles.css" />
+  </head>
+  <body class="teleprompter-page">
+    <main id="teleprompter-shell" class="teleprompter-shell" data-hidden="false">
+      <header class="teleprompter-header">
+        <span id="teleprompter-connection" class="status-chip">Connecting</span>
+        <span id="teleprompter-status" class="status-chip status-chip-muted">Waiting</span>
+      </header>
+      <div class="teleprompter-viewport">
+        <ol id="teleprompter-lines" class="teleprompter-lines"></ol>
+      </div>
+    </main>
+
+    <script type="module" src="/presenter/teleprompter.js"></script>
+  </body>
+</html>

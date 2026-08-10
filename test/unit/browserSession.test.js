@@ -506,3 +506,57 @@ test('start leaves macWindowId null when window enumeration is not wired', async
 
   assert.equal(session.getRegistry().sources.BrowserA.macWindowId, null);
 });
+
+test('openAuxWindow tracks the created auxiliary window and reuses it on focus or reopen', async () => {
+  const cdpClient = createFakeCdpClient();
+  const windows = [{ windowId: 100, x: 0, y: 0, width: 800, height: 600 }];
+  const session = createBrowserSession({
+    sources: {},
+    createCdpClient: () => cdpClient,
+    enumerateWindowIdsByPidFn: () => [...windows],
+  });
+  const realCreateWindow = cdpClient.createWindow;
+  cdpClient.createWindow = async (details) => {
+    const result = await realCreateWindow(details);
+    windows.push({ windowId: 5000, x: 0, y: 0, width: 1280, height: 800 });
+    return result;
+  };
+
+  await session.start();
+  await session.openAuxWindow({
+    key: 'presenter-teleprompter',
+    title: 'Deckhand Presenter',
+    url: 'http://127.0.0.1:3001/presenter/teleprompter.html',
+  });
+  await session.openAuxWindow({
+    key: 'presenter-teleprompter',
+    title: 'Deckhand Presenter',
+    url: 'http://127.0.0.1:3001/presenter/teleprompter.html',
+  });
+
+  assert.deepEqual(cdpClient.calls.filter((call) => call.type === 'createWindow').length, 1);
+  assert.deepEqual(cdpClient.calls.filter((call) => call.type === 'activateTab' && call.targetId === 'TARGET_1').length, 2);
+  assert.deepEqual(session.getRegistry().auxWindows['presenter-teleprompter'], {
+    key: 'presenter-teleprompter',
+    targetId: 'TARGET_1',
+    cdpWindowId: 91,
+    macWindowId: 5000,
+    title: 'Deckhand Presenter',
+    url: 'http://127.0.0.1:3001/presenter/teleprompter.html',
+  });
+});
+
+test('stop explicitly closes tracked auxiliary windows before disconnecting chrome', async () => {
+  const cdpClient = createFakeCdpClient();
+  const session = createBrowserSession({ sources: {}, createCdpClient: () => cdpClient });
+
+  await session.start();
+  await session.openAuxWindow({
+    key: 'presenter-teleprompter',
+    title: 'Deckhand Presenter',
+    url: 'http://127.0.0.1:3001/presenter/teleprompter.html',
+  });
+  await session.stop();
+
+  assert.equal(cdpClient.calls.some((call) => call.type === 'closeTarget' && call.targetId === 'TARGET_1'), true);
+});

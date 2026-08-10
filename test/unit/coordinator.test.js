@@ -176,6 +176,10 @@ function createFakeObs() {
   };
 }
 
+function listPublishesByChannel(hub, channel) {
+  return hub.state.stickyPublishes.filter((entry) => entry.channel === channel);
+}
+
 test('coordinator starts obs then executor then hub', async () => {
   const calls = [];
   const logger = createLogger();
@@ -287,8 +291,9 @@ test('coordinator publishes sticky presentation state for scene-only slides', as
       },
     },
   ]);
-  assert.equal(hub.state.stickyPublishes.length, 1);
-  assert.deepEqual(hub.state.stickyPublishes[0], {
+  assert.equal(listPublishesByChannel(hub, 'presentationState').length, 1);
+  assert.equal(listPublishesByChannel(hub, 'presenterState').length, 1);
+  assert.deepEqual(listPublishesByChannel(hub, 'presentationState')[0], {
     channel: 'presentationState',
     payload: {
       type: 'presentationState',
@@ -330,7 +335,8 @@ test('coordinator dispatches typed slide commands through the injected executor'
   await hub.emit('driverPositionChanged', { id: 'demo', index: { h: 1, v: 0 }, meta: {} });
 
   assert.deepEqual(obs.state.scenes, ['Deckhand_Dual Browser']);
-  assert.equal(hub.state.stickyPublishes[0].payload.seq, 1);
+  assert.equal(listPublishesByChannel(hub, 'presentationState')[0].payload.seq, 1);
+  assert.equal(listPublishesByChannel(hub, 'presenterState')[0].payload.presentationSeq, 1);
   assert.deepEqual(obs.state.inputSettings, [
     {
       inputName: 'Deckhand_BrowserA',
@@ -427,8 +433,9 @@ test('coordinator republishes sticky presentation state when observer window bin
     sender: { role: 'observer', sessionId: 'observer-1' },
   });
 
-  assert.equal(hub.state.stickyPublishes.length, 2);
-  assert.equal(hub.state.stickyPublishes[1].payload.seq, 2);
+  assert.equal(listPublishesByChannel(hub, 'presentationState').length, 2);
+  assert.equal(listPublishesByChannel(hub, 'presenterState').length, 2);
+  assert.equal(listPublishesByChannel(hub, 'presentationState')[1].payload.seq, 2);
   assert.deepEqual(obs.state.inputSettings.at(-1), {
     inputName: 'Deckhand_BrowserA',
     inputSettings: {
@@ -438,7 +445,7 @@ test('coordinator republishes sticky presentation state when observer window bin
       window: 12345,
     },
   });
-  assert.deepEqual(hub.state.stickyPublishes[1].payload.windowBindings, {
+  assert.deepEqual(listPublishesByChannel(hub, 'presentationState')[1].payload.windowBindings, {
     BrowserA: {
       app: 'Google Chrome',
       titleIncludes: 'Primary',
@@ -478,8 +485,9 @@ test('coordinator clears runtime window binding overrides and republishes bootst
     sender: { role: 'observer', sessionId: 'observer-1' },
   });
 
-  assert.equal(hub.state.stickyPublishes.length, 3);
-  assert.equal(hub.state.stickyPublishes[2].payload.seq, 3);
+  assert.equal(listPublishesByChannel(hub, 'presentationState').length, 3);
+  assert.equal(listPublishesByChannel(hub, 'presenterState').length, 3);
+  assert.equal(listPublishesByChannel(hub, 'presentationState')[2].payload.seq, 3);
   assert.deepEqual(obs.state.inputSettings.at(-1), {
     inputName: 'Deckhand_BrowserA',
     inputSettings: {
@@ -488,7 +496,7 @@ test('coordinator clears runtime window binding overrides and republishes bootst
       window: 0,
     },
   });
-  assert.deepEqual(hub.state.stickyPublishes[2].payload.windowBindings, {
+  assert.deepEqual(listPublishesByChannel(hub, 'presentationState')[2].payload.windowBindings, {
     BrowserA: { app: 'Google Chrome', titleIncludes: 'Primary' },
     BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
   });
@@ -519,7 +527,7 @@ test('coordinator ignores observer window bindings for non-browser sources', asy
   await coordinator.start();
   await hub.emit('driverPositionChanged', { id: 'terminal', index: { h: 2, v: 0 }, meta: {} });
 
-  const initialPublishes = hub.state.stickyPublishes.length;
+  const initialPublishes = listPublishesByChannel(hub, 'presentationState').length;
   assert.equal(initialPublishes, 1);
 
   await hub.emit('observerWindowBindings', {
@@ -535,11 +543,74 @@ test('coordinator ignores observer window bindings for non-browser sources', asy
     sender: { role: 'observer', sessionId: 'observer-1' },
   });
 
-  assert.equal(hub.state.stickyPublishes.length, initialPublishes);
+  assert.equal(listPublishesByChannel(hub, 'presentationState').length, initialPublishes);
   assert.equal(
     obs.state.inputSettings.some((entry) => entry.inputName === 'Deckhand_TerminalA' && entry.inputSettings.window === 99999),
     false,
   );
+});
+
+test('coordinator reduces driver manifests and transcripts into sticky presenter state', async () => {
+  const logger = createLogger();
+  const hub = createFakeHub();
+  const obs = createFakeObs();
+  const executor = createFakeExecutor();
+  const coordinator = createCoordinator({ config: createConfig(), obs, hub, executor, logger });
+
+  await coordinator.start();
+  await hub.emit('driverSlideManifest', {
+    manifest: {
+      type: 'slideManifest',
+      slides: [
+        { id: 'intro', index: { h: 0, v: 0 }, heading: 'Intro' },
+        { id: 'demo', index: { h: 1, v: 0 }, title: 'Live Demo' },
+      ],
+    },
+    sender: { role: 'driver', sessionId: 'driver-1' },
+  });
+  await hub.emit('driverPositionChanged', { id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+  await hub.emit('observerTranscript', {
+    transcript: {
+      type: 'transcript',
+      source: 'whisper',
+      text: 'hello audience',
+      capturedAtMs: 2_000_000_000_000,
+    },
+    sender: { role: 'observer', sessionId: 'observer-1' },
+  });
+
+  const presenterPublishes = listPublishesByChannel(hub, 'presenterState');
+  assert.equal(presenterPublishes.length >= 3, true);
+  assert.deepEqual(presenterPublishes.at(-1).payload.next, {
+    slideId: 'demo',
+    title: 'Live Demo',
+    heading: null,
+    index: { h: 1, v: 0 },
+  });
+  assert.deepEqual(presenterPublishes.at(-1).payload.teleprompter.recentTranscript, [{
+    source: 'whisper',
+    text: 'hello audience',
+    capturedAtMs: 2_000_000_000_000,
+  }]);
+});
+
+test('coordinator reduces presenter commands into sticky presenter state', async () => {
+  const logger = createLogger();
+  const hub = createFakeHub();
+  const obs = createFakeObs();
+  const executor = createFakeExecutor();
+  const coordinator = createCoordinator({ config: createConfig(), obs, hub, executor, logger });
+
+  await coordinator.start();
+  await hub.emit('driverPositionChanged', { id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+  await hub.emit('observerPresenterCommand', {
+    command: { type: 'presenterCommand', op: 'nudge', source: 'teleprompter', delta: 1 },
+    sender: { role: 'observer', sessionId: 'observer-1' },
+  });
+
+  const presenterPublishes = listPublishesByChannel(hub, 'presenterState');
+  assert.equal(presenterPublishes.length, 2);
+  assert.equal(presenterPublishes.at(-1).payload.teleprompter.activeLineIndex, 0);
 });
 
 test('coordinator continues after partial executor failures', async () => {

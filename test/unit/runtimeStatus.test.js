@@ -36,6 +36,28 @@ test('buildRuntimeStatus returns a compact operator-facing snapshot with browser
     },
     obsConnected: true,
     presenterEnabled: true,
+    currentPresenterState: {
+      type: 'presenterState',
+      seq: 20,
+      presentationSeq: 12,
+      current: {
+        slideId: 'code-walkthrough',
+        layoutId: 'left-terminal-right-slide',
+        focus: 'Terminal',
+        hidden: false,
+        lines: [{}, {}, {}],
+      },
+      next: { slideId: 'next', title: 'Next', heading: null, index: { h: 2, v: 0 } },
+      teleprompter: {
+        followEnabled: true,
+        activeLineIndex: 1,
+        trackingState: 'listening',
+        recentTranscript: [{ text: 'hello' }],
+      },
+      timer: { running: true, elapsedMs: 1200, remainingMs: null, targetDurationMs: null },
+      obs: { preview: { available: true, path: '/presenter/program.jpg', revision: 2, capturedAtMs: 1720000000000, stale: false } },
+      stream: { active: true, reconnecting: false, bitrateKbps: 3400, droppedFrames: 2, congestion: 12, lastUpdateMs: 1720000000000, warning: null },
+    },
   }), {
     service: 'deckhand',
     phase: 'ready',
@@ -65,6 +87,29 @@ test('buildRuntimeStatus returns a compact operator-facing snapshot with browser
         { source: 'Terminal', position: 'left', rect: { x: 0, y: 0, w: 900, h: 1168 } },
       ],
     },
+    presenter: {
+      seq: 20,
+      presentationSeq: 12,
+      current: {
+        slideId: 'code-walkthrough',
+        layoutId: 'left-terminal-right-slide',
+        focus: 'Terminal',
+        hidden: false,
+        lineCount: 3,
+      },
+      next: { slideId: 'next', title: 'Next', heading: null, index: { h: 2, v: 0 } },
+      teleprompter: {
+        followEnabled: true,
+        activeLineIndex: 1,
+        trackingState: 'listening',
+        recentTranscriptCount: 1,
+      },
+      timer: { running: true, elapsedMs: 1200, remainingMs: null, targetDurationMs: null },
+      obs: {
+        preview: { available: true, path: '/presenter/program.jpg', revision: 2, capturedAtMs: 1720000000000, stale: false },
+      },
+      stream: { active: true, reconnecting: false, bitrateKbps: 3400, droppedFrames: 2, congestion: 12, lastUpdateMs: 1720000000000, warning: null },
+    },
   });
 });
 
@@ -85,6 +130,7 @@ test('buildRuntimeStatus reports degraded browser-session state before the sessi
     },
     obsConnected: false,
     presenterEnabled: false,
+    currentPresenterState: null,
   }), {
     service: 'deckhand',
     phase: 'starting',
@@ -102,6 +148,7 @@ test('buildRuntimeStatus reports degraded browser-session state before the sessi
       sources: {},
     },
     current: null,
+    presenter: null,
   });
 });
 
@@ -120,6 +167,7 @@ test('buildRuntimeStatus surfaces not-ready sources without dropping them', () =
     },
     obsConnected: true,
     presenterEnabled: true,
+    currentPresenterState: null,
   }), {
     service: 'deckhand',
     phase: 'starting',
@@ -134,5 +182,6 @@ test('buildRuntimeStatus surfaces not-ready sources without dropping them', () =
       },
     },
     current: null,
+    presenter: null,
   });
 });

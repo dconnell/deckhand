@@ -95,3 +95,52 @@ test('late presenter observer receives sticky presentation state and live transc
     await hub.stop();
   }
 });
+
+test('late presenter surfaces receive sticky presenter state without subscribing to raw transcript', async () => {
+  const hub = createHub({ host: '127.0.0.1', logger: createLogger(), port: 0 });
+  await hub.start();
+
+  const { port } = hub.getAddress();
+  const presenter = await createClient(port);
+
+  try {
+    await hub.publishSticky('presenterState', {
+      type: 'presenterState',
+      seq: 4,
+      presentationSeq: 3,
+      current: {
+        slideId: 'code-walkthrough',
+        layoutId: 'left-terminal-right-slide',
+        focus: 'Terminal',
+        hidden: false,
+        lines: [],
+      },
+      next: null,
+      teleprompter: {
+        followEnabled: true,
+        activeLineIndex: 0,
+        trackingState: 'idle',
+        recentTranscript: [{ source: 'whisper', text: 'walk through', capturedAtMs: 1720000000000 }],
+      },
+      timer: { running: false, elapsedMs: 0, remainingMs: null, targetDurationMs: null },
+      obs: { preview: { available: false, path: '/presenter/program.jpg', revision: 0, capturedAtMs: null, stale: true } },
+      stream: { active: false, reconnecting: false, bitrateKbps: null, droppedFrames: 0, congestion: null, lastUpdateMs: null, warning: 'disconnected' },
+      updatedAtMs: 1720000000000,
+    });
+
+    await presenter.send({ type: 'register', role: 'observer', subscriptions: ['presenterState'] });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.deepEqual(
+      presenter.messages.filter((message) => message.type === 'presenterState').length,
+      1,
+    );
+    assert.deepEqual(
+      presenter.messages.filter((message) => message.type === 'transcript').length,
+      0,
+    );
+  } finally {
+    await presenter.close();
+    await hub.stop();
+  }
+});

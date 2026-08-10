@@ -41,7 +41,7 @@ class FakeWebSocket {
             type: 'registered',
             role: 'observer',
             sessionId: 'observer-1',
-            subscriptions: ['presentationState'],
+            subscriptions: ['presenterState'],
           }),
         });
       });
@@ -109,7 +109,7 @@ test('runPresenterSmoke validates presenter HTTP surfaces and hub registration',
       cwd: tempDir,
       fetchFn: async (url, init) => {
         if (String(url).endsWith('/status.json')) {
-          return new Response(JSON.stringify({ service: 'deckhand', current: null }), { status: 200 });
+          return new Response(JSON.stringify({ service: 'deckhand', current: null, presenter: null }), { status: 200 });
         }
 
         if (String(url).endsWith('/presenter/bootstrap.json')) {

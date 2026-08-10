@@ -256,22 +256,19 @@ async function resolvePresenterTeleprompterBinding({ browserSession, config, log
     return null;
   }
 
-  const before = enumerateWindowsByPid(chromePid);
-  await browserSession.openWindow(`http://${config.presenter.http.host}:${config.presenter.http.port}/presenter/`);
-  const after = enumerateWindowsByPid(chromePid);
-  const matches = diffNewWindows(before, after, {
-    rejectEmptyTitle: true,
-    titleIncludes: selector.titleIncludes,
+  const auxWindow = await browserSession.openAuxWindow({
+    key: 'presenter-teleprompter',
+    title: selector.titleIncludes ?? 'Deckhand Presenter',
+    url: `http://${config.presenter.http.host}:${config.presenter.http.port}/presenter/teleprompter.html`,
   });
 
-  if (matches.length === 0) {
+  if (typeof auxWindow?.macWindowId !== 'number') {
     logger.warn('Failed to resolve presenter teleprompter window binding at launch');
     return null;
   }
 
-  const match = matches[0];
   return {
-    macWindowId: match.windowId,
+    macWindowId: auxWindow.macWindowId,
     pid: chromePid,
   };
 }

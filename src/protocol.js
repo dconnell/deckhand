@@ -26,6 +26,14 @@ function normalizePositiveInteger(value, fieldName) {
   return value;
 }
 
+function normalizeInteger(value, fieldName) {
+  if (!Number.isInteger(value)) {
+    throw new TypeError(`${fieldName} must be an integer`);
+  }
+
+  return value;
+}
+
 function normalizeCapabilities(value) {
   if (value === undefined) {
     return [];
@@ -38,7 +46,7 @@ function normalizeCapabilities(value) {
   return [...new Set(value.map((entry) => entry.trim()))];
 }
 
-const OBSERVER_SUBSCRIPTIONS = new Set(['presentationState', 'transcript']);
+const OBSERVER_SUBSCRIPTIONS = new Set(['presentationState', 'presenterState', 'transcript']);
 
 function normalizeSubscriptions(value) {
   if (value === undefined) {
@@ -226,6 +234,154 @@ export function createPresentationStateMessage(state) {
   return payload;
 }
 
+function normalizePresenterLine(line, fieldName) {
+  if (!isPlainObject(line)) {
+    throw new TypeError(`${fieldName} must be an object`);
+  }
+
+  if (!Array.isArray(line.tokens)) {
+    throw new TypeError(`${fieldName}.tokens must be an array`);
+  }
+
+  return {
+    tokens: line.tokens.map((token, index) => {
+      if (!isPlainObject(token)) {
+        throw new TypeError(`${fieldName}.tokens[${index}] must be an object`);
+      }
+
+      const normalized = {
+        kind: assertNonEmptyString(token.kind, `${fieldName}.tokens[${index}].kind`),
+      };
+
+      if (token.text !== undefined) {
+        normalized.text = assertNonEmptyString(token.text, `${fieldName}.tokens[${index}].text`);
+      }
+
+      return normalized;
+    }),
+    spokenText: typeof line.spokenText === 'string' ? line.spokenText : '',
+    paragraphIndex: normalizeInteger(line.paragraphIndex ?? 0, `${fieldName}.paragraphIndex`),
+    ...(line.mode === undefined ? {} : { mode: assertNonEmptyString(line.mode, `${fieldName}.mode`) }),
+  };
+}
+
+function normalizePresenterTranscriptItem(item, fieldName) {
+  if (!isPlainObject(item)) {
+    throw new TypeError(`${fieldName} must be an object`);
+  }
+
+  return {
+    source: assertNonEmptyString(item.source, `${fieldName}.source`),
+    text: assertNonEmptyString(item.text, `${fieldName}.text`),
+    capturedAtMs: normalizeInteger(item.capturedAtMs, `${fieldName}.capturedAtMs`),
+  };
+}
+
+/**
+ * Build the protocol `presenterState` message.
+ *
+ * @param {Record<string, unknown>} state The resolved presenter state.
+ * @returns {{ type: 'presenterState', [key: string]: unknown }}
+ */
+export function createPresenterStateMessage(state) {
+  if (!isPlainObject(state) || state.type !== 'presenterState') {
+    throw new TypeError('presenter state must be a resolved presenterState payload');
+  }
+
+  if (!isPlainObject(state.current)) {
+    throw new TypeError('presenter state current must be an object');
+  }
+
+  if (!isPlainObject(state.teleprompter)) {
+    throw new TypeError('presenter state teleprompter must be an object');
+  }
+
+  if (!isPlainObject(state.timer)) {
+    throw new TypeError('presenter state timer must be an object');
+  }
+
+  if (!isPlainObject(state.obs)) {
+    throw new TypeError('presenter state obs must be an object');
+  }
+
+  if (!isPlainObject(state.stream)) {
+    throw new TypeError('presenter state stream must be an object');
+  }
+
+  return {
+    type: 'presenterState',
+    seq: normalizePositiveInteger(state.seq, 'seq'),
+    presentationSeq: normalizeInteger(state.presentationSeq ?? 0, 'presentationSeq'),
+    current: {
+      slideId: typeof state.current.slideId === 'string' ? state.current.slideId : null,
+      layoutId: typeof state.current.layoutId === 'string' ? state.current.layoutId : null,
+      focus: typeof state.current.focus === 'string' ? state.current.focus : null,
+      hidden: normalizeBoolean(state.current.hidden ?? false, 'current.hidden'),
+      lines: Array.isArray(state.current.lines)
+        ? state.current.lines.map((line, index) => normalizePresenterLine(line, `current.lines[${index}]`))
+        : [],
+    },
+    next: state.next === null || state.next === undefined
+      ? null
+      : {
+          slideId: assertNonEmptyString(state.next.slideId, 'next.slideId'),
+          title: typeof state.next.title === 'string' ? state.next.title : null,
+          heading: typeof state.next.heading === 'string' ? state.next.heading : null,
+          index: {
+            h: normalizeInteger(state.next.index?.h ?? 0, 'next.index.h'),
+            v: normalizeInteger(state.next.index?.v ?? 0, 'next.index.v'),
+          },
+        },
+    teleprompter: {
+      followEnabled: normalizeBoolean(state.teleprompter.followEnabled, 'teleprompter.followEnabled'),
+      activeLineIndex: normalizeInteger(state.teleprompter.activeLineIndex ?? 0, 'teleprompter.activeLineIndex'),
+      trackingState: assertNonEmptyString(state.teleprompter.trackingState, 'teleprompter.trackingState'),
+      recentTranscript: Array.isArray(state.teleprompter.recentTranscript)
+        ? state.teleprompter.recentTranscript.map((item, index) => normalizePresenterTranscriptItem(item, `teleprompter.recentTranscript[${index}]`))
+        : [],
+    },
+    timer: {
+      running: normalizeBoolean(state.timer.running ?? false, 'timer.running'),
+      elapsedMs: normalizeInteger(state.timer.elapsedMs ?? 0, 'timer.elapsedMs'),
+      remainingMs: state.timer.remainingMs === null || state.timer.remainingMs === undefined
+        ? null
+        : normalizeInteger(state.timer.remainingMs, 'timer.remainingMs'),
+      targetDurationMs: state.timer.targetDurationMs === null || state.timer.targetDurationMs === undefined
+        ? null
+        : normalizeInteger(state.timer.targetDurationMs, 'timer.targetDurationMs'),
+    },
+    obs: {
+      preview: state.obs.preview === undefined || state.obs.preview === null
+        ? null
+        : {
+            available: normalizeBoolean(state.obs.preview.available ?? false, 'obs.preview.available'),
+            path: assertNonEmptyString(state.obs.preview.path, 'obs.preview.path'),
+            revision: normalizeInteger(state.obs.preview.revision ?? 0, 'obs.preview.revision'),
+            capturedAtMs: state.obs.preview.capturedAtMs === null || state.obs.preview.capturedAtMs === undefined
+              ? null
+              : normalizeInteger(state.obs.preview.capturedAtMs, 'obs.preview.capturedAtMs'),
+            stale: normalizeBoolean(state.obs.preview.stale ?? true, 'obs.preview.stale'),
+          },
+    },
+    stream: {
+      active: normalizeBoolean(state.stream.active ?? false, 'stream.active'),
+      reconnecting: normalizeBoolean(state.stream.reconnecting ?? false, 'stream.reconnecting'),
+      bitrateKbps: state.stream.bitrateKbps === null || state.stream.bitrateKbps === undefined
+        ? null
+        : normalizeInteger(state.stream.bitrateKbps, 'stream.bitrateKbps'),
+      droppedFrames: normalizeInteger(state.stream.droppedFrames ?? 0, 'stream.droppedFrames'),
+      congestion: state.stream.congestion === null || state.stream.congestion === undefined
+        ? null
+        : normalizeInteger(state.stream.congestion, 'stream.congestion'),
+      lastUpdateMs: state.stream.lastUpdateMs === null || state.stream.lastUpdateMs === undefined
+        ? null
+        : normalizeInteger(state.stream.lastUpdateMs, 'stream.lastUpdateMs'),
+      warning: typeof state.stream.warning === 'string' ? state.stream.warning : null,
+    },
+    updatedAtMs: normalizeInteger(state.updatedAtMs ?? 0, 'updatedAtMs'),
+  };
+}
+
 /**
  * Build the protocol `transcript` message.
  *
@@ -238,6 +394,57 @@ export function createTranscriptMessage(transcript) {
     source: assertNonEmptyString(transcript.source, 'source'),
     text: assertNonEmptyString(transcript.text, 'text'),
     capturedAtMs: Number.isInteger(transcript.capturedAtMs) ? transcript.capturedAtMs : Number(transcript.capturedAtMs),
+  };
+}
+
+function normalizePresenterCommand(message) {
+  const normalized = {
+    type: 'presenterCommand',
+    op: assertNonEmptyString(message.op, 'op'),
+    source: assertNonEmptyString(message.source, 'source'),
+  };
+
+  if (message.delta !== undefined) {
+    normalized.delta = normalizeInteger(message.delta, 'delta');
+  }
+
+  if (message.lineIndex !== undefined) {
+    normalized.lineIndex = normalizeInteger(message.lineIndex, 'lineIndex');
+  }
+
+  return normalized;
+}
+
+function normalizeSlideManifest(message) {
+  if (!Array.isArray(message.slides)) {
+    throw new TypeError('slides must be an array');
+  }
+
+  return {
+    type: 'slideManifest',
+    slides: message.slides.map((slide, index) => {
+      if (!isPlainObject(slide)) {
+        throw new TypeError(`slides[${index}] must be an object`);
+      }
+
+      const normalized = {
+        id: assertNonEmptyString(slide.id, `slides[${index}].id`),
+        index: {
+          h: normalizeInteger(slide.index?.h ?? 0, `slides[${index}].index.h`),
+          v: normalizeInteger(slide.index?.v ?? 0, `slides[${index}].index.v`),
+        },
+      };
+
+      if (slide.title !== undefined) {
+        normalized.title = assertNonEmptyString(slide.title, `slides[${index}].title`);
+      }
+
+      if (slide.heading !== undefined) {
+        normalized.heading = assertNonEmptyString(slide.heading, `slides[${index}].heading`);
+      }
+
+      return normalized;
+    }),
   };
 }
 
@@ -356,6 +563,14 @@ export function validateClientMessage(message) {
       type,
       command: message.command,
     };
+  }
+
+  if (type === 'presenterCommand') {
+    return normalizePresenterCommand(message);
+  }
+
+  if (type === 'slideManifest') {
+    return normalizeSlideManifest(message);
   }
 
   if (type === 'windowBindings') {

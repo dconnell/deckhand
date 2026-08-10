@@ -114,6 +114,49 @@ test('hub replays the latest sticky presentation state to late-joining observers
   }
 });
 
+test('hub replays the latest sticky presenter state to late-joining observers with matching subscriptions', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const observer = await createClient(port);
+
+  try {
+    await hub.publishSticky('presenterState', {
+      type: 'presenterState',
+      seq: 2,
+      presentationSeq: 7,
+      current: {
+        slideId: 'intro',
+        layoutId: 'full-slide',
+        focus: null,
+        hidden: false,
+        lines: [],
+      },
+      next: null,
+      teleprompter: {
+        followEnabled: true,
+        activeLineIndex: 0,
+        trackingState: 'idle',
+        recentTranscript: [],
+      },
+      timer: { running: false, elapsedMs: 0, remainingMs: null, targetDurationMs: null },
+      obs: { preview: { available: false, path: '/presenter/program.jpg', revision: 0, capturedAtMs: null, stale: true } },
+      stream: { active: false, reconnecting: false, bitrateKbps: null, droppedFrames: 0, congestion: null, lastUpdateMs: null, warning: 'disconnected' },
+      updatedAtMs: 1720000000000,
+    });
+
+    await observer.send({ type: 'register', role: 'observer', subscriptions: ['presenterState'] });
+    await flushMessages();
+
+    assert.equal(observer.messages.filter((message) => message.type === 'presenterState').length, 1);
+  } finally {
+    await observer.close();
+    await hub.stop();
+  }
+});
+
 test('hub publishes presentation state only to subscribed observers', async () => {
   const logger = createLogger();
   const hub = createHub({ host: '127.0.0.1', port: 0, logger });
@@ -240,6 +283,66 @@ test('hub emits observer driverCommand events for the coordinator to forward', a
     assert.equal(events[0].sender.role, 'observer');
   } finally {
     await Promise.all([driver.close(), observer.close()]);
+    await hub.stop();
+  }
+});
+
+test('hub emits observer presenterCommand events for the coordinator to reduce', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+  const events = [];
+  hub.on('observerPresenterCommand', (payload) => {
+    events.push(payload);
+  });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const observer = await createClient(port);
+
+  try {
+    await observer.send({ type: 'register', role: 'observer', subscriptions: ['presenterState'] });
+    await observer.send({ type: 'presenterCommand', op: 'nudge', source: 'teleprompter', delta: 1 });
+    await flushMessages();
+
+    assert.equal(events.length, 1);
+    assert.deepEqual(events[0].command, {
+      type: 'presenterCommand',
+      op: 'nudge',
+      source: 'teleprompter',
+      delta: 1,
+    });
+    assert.equal(events[0].sender.role, 'observer');
+  } finally {
+    await observer.close();
+    await hub.stop();
+  }
+});
+
+test('hub emits driver slideManifest events from registered drivers', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+  const events = [];
+  hub.on('driverSlideManifest', (payload) => {
+    events.push(payload);
+  });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const driver = await createClient(port);
+
+  try {
+    await driver.send({ type: 'register', role: 'driver', capabilities: ['next', 'prev', 'goTo'] });
+    await driver.send({
+      type: 'slideManifest',
+      slides: [{ id: 'intro', index: { h: 0, v: 0 }, heading: 'Intro' }],
+    });
+    await flushMessages();
+
+    assert.equal(events.length, 1);
+    assert.equal(events[0].manifest.type, 'slideManifest');
+    assert.equal(events[0].sender.role, 'driver');
+  } finally {
+    await driver.close();
     await hub.stop();
   }
 });

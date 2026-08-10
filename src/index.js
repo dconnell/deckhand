@@ -107,6 +107,35 @@ export async function run(options = {}) {
   let phase = 'starting';
   const resolvedMacWindowBindings = {};
 
+  async function focusPresenterTeleprompter({ reopen = false } = {}) {
+    if (config.presenter === null || browserSession === null || config.presenter.teleprompter.window === null) {
+      return null;
+    }
+
+    const auxWindow = await browserSession.openAuxWindow({
+      key: 'presenter-teleprompter',
+      title: config.presenter.teleprompter.window.titleIncludes ?? 'Deckhand Presenter',
+      url: `http://${config.presenter.http.host}:${config.presenter.http.port}/presenter/teleprompter.html`,
+      reopen,
+    });
+    const chromePid = browserSession.getStatus().chromePid;
+
+    if (typeof auxWindow?.macWindowId === 'number') {
+      resolvedMacWindowBindings[PRESENTER_SOURCE_ID] = {
+        macWindowId: auxWindow.macWindowId,
+        ...(Number.isInteger(chromePid) && chromePid > 0 ? { pid: chromePid } : {}),
+      };
+    } else {
+      delete resolvedMacWindowBindings[PRESENTER_SOURCE_ID];
+    }
+
+    if (coordinator !== undefined && coordinator !== null && typeof coordinator.refreshCurrentPresentationState === 'function') {
+      await coordinator.refreshCurrentPresentationState(reopen ? 'teleprompterReopened' : 'teleprompterFocused');
+    }
+
+    return auxWindow;
+  }
+
   async function stopLaunchedChrome() {
     if (chromeLaunch === null) {
       return;
@@ -310,6 +339,7 @@ export async function run(options = {}) {
 
     coordinator = (options.createCoordinatorFn ?? createCoordinator)({
       config,
+      focusPresenterTeleprompter,
       getManagedWindowBindings() {
         if (config.presenter === null) {
           return {};
@@ -379,6 +409,9 @@ export async function run(options = {}) {
           return buildRuntimeStatus({
             phase,
             currentPresentationState: coordinator.getCurrentPresentationState(),
+            currentPresenterState: typeof coordinator.getCurrentPresenterState === 'function'
+              ? coordinator.getCurrentPresenterState()
+              : null,
             hubAddress: hub.getAddress(),
             hubSnapshot: hub.getSnapshot(),
             browserSessionStatus: browserSession === null

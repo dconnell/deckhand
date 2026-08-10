@@ -14,7 +14,7 @@ function listBrowserSources(sources) {
 }
 
 function createEmptyRegistry() {
-  return { sources: {} };
+  return { sources: {}, auxWindows: {} };
 }
 
 function defaultWindowTitle(sourceId) {
@@ -95,7 +95,7 @@ async function resolveNewMacWindowId({ pid, before, enumerateFn, delayFn, logger
  * always a runtime handle created by Deckhand, never URL or title lookup.
  *
  * @param {{ sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }>, createCdpClient(): { connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string, loadTimeoutMs?: number }): Promise<void>, waitForTabPaint(details: { targetId: string, paintTimeoutMs?: number }): Promise<void>, setWindowTitle(details: { targetId: string, title: string }): Promise<void>, closeTarget(details: { targetId: string }): Promise<void> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Session dependencies.
- * @returns {{ start(): Promise<void>, stop(): Promise<void>, openWindow(url: string): Promise<void>, activateTab(sourceId: string, tabAlias: string): Promise<void>, navigateTab(sourceId: string, tabAlias: string, url: string): Promise<void>, getStatus(): { connected: boolean, chromePid: number | null, sources: Record<string, { ready: boolean, activeTab: string | null, tabs: string[] }> }, getRegistry(): { sources: Record<string, { cdpWindowId: number | null, mainTargetId: string | null, title: string, tabs: Record<string, { targetId: string, initialUrl: string }>, activeTab: string | null }> } }}
+ * @returns {{ start(): Promise<void>, stop(): Promise<void>, openWindow(url: string): Promise<void>, openAuxWindow(details: { key: string, title: string, url: string }): Promise<{ key: string, targetId: string, cdpWindowId: number, macWindowId: number | null, title: string, url: string }>, activateTab(sourceId: string, tabAlias: string): Promise<void>, navigateTab(sourceId: string, tabAlias: string, url: string): Promise<void>, getStatus(): { connected: boolean, chromePid: number | null, sources: Record<string, { ready: boolean, activeTab: string | null, tabs: string[] }> }, getRegistry(): { sources: Record<string, { cdpWindowId: number | null, mainTargetId: string | null, title: string, tabs: Record<string, { targetId: string, initialUrl: string }>, activeTab: string | null }>, auxWindows: Record<string, { key: string, targetId: string, cdpWindowId: number, macWindowId: number | null, title: string, url: string }> } }}
  */
 export function createBrowserSession(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -138,7 +138,26 @@ export function createBrowserSession(options) {
       }
     }
 
+    for (const window of Object.values(registry.auxWindows)) {
+      targetIds.add(window.targetId);
+    }
+
     return [...targetIds];
+  }
+
+  async function resolveAuxWindowMacWindowId() {
+    const chromePid = cdpClient.getChromePid();
+
+    if (enumerateWindowIdsByPidFn === null || !Number.isInteger(chromePid) || chromePid <= 0) {
+      return null;
+    }
+
+    const before = enumerateWindowIdsByPidFn(chromePid);
+
+    return {
+      before,
+      chromePid,
+    };
   }
 
   async function buildSource(source) {
@@ -284,6 +303,17 @@ export function createBrowserSession(options) {
 
       stopping = true;
 
+      for (const auxWindow of Object.values(registry.auxWindows)) {
+        try {
+          await cdpClient.closeTarget({ targetId: auxWindow.targetId });
+        } catch (error) {
+          logger.warn('Failed to close tracked auxiliary window', {
+            error: error instanceof Error ? error.message : String(error),
+            key: auxWindow.key,
+          });
+        }
+      }
+
       await cdpClient.disconnect().catch(() => {});
       stopping = false;
       cdpClient = null;
@@ -298,6 +328,56 @@ export function createBrowserSession(options) {
 
       await cdpClient.createWindow({ url });
       logger.info('Opened unmanaged window', { url });
+    },
+
+    async openAuxWindow(details) {
+      if (cdpClient === null) {
+        throw new Error('browser session is not started');
+      }
+
+      const existing = registry.auxWindows[details.key];
+
+      if (existing !== undefined) {
+        try {
+          await cdpClient.activateTab({ targetId: existing.targetId });
+          return existing;
+        } catch (error) {
+          logger.warn('Failed to focus tracked auxiliary window; reopening', {
+            error: error instanceof Error ? error.message : String(error),
+            key: details.key,
+          });
+          delete registry.auxWindows[details.key];
+        }
+      }
+
+      const resolution = await resolveAuxWindowMacWindowId();
+      const windowResult = await cdpClient.createWindow({ url: details.url });
+      await cdpClient.setWindowTitle({ targetId: windowResult.targetId, title: details.title }).catch(() => {});
+      await cdpClient.activateTab({ targetId: windowResult.targetId }).catch(() => {});
+
+      const macWindowId = resolution === null
+        ? null
+        : await resolveNewMacWindowId({
+            pid: resolution.chromePid,
+            before: resolution.before,
+            enumerateFn: enumerateWindowIdsByPidFn,
+            delayFn,
+            logger,
+            sourceId: details.key,
+            maxAttempts: macWindowMaxAttempts,
+            retryDelayMs: macWindowRetryMs,
+          });
+
+      const auxWindow = {
+        key: details.key,
+        targetId: windowResult.targetId,
+        cdpWindowId: windowResult.windowId,
+        macWindowId,
+        title: details.title,
+        url: details.url,
+      };
+      registry.auxWindows[details.key] = auxWindow;
+      return auxWindow;
     },
 
     async activateTab(sourceId, tabAlias) {
