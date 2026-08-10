@@ -722,10 +722,15 @@ function normalizePresenterTeleprompter(teleprompter, { requireWindow = false } 
       followEnabledByDefault: value.followEnabledByDefault === undefined
         ? true
         : assertBoolean(value.followEnabledByDefault, 'presenter.teleprompter.followEnabledByDefault'),
+      tracking: normalizePresenterTracking(value.tracking),
       window: value.window === undefined
         ? null
         : normalizeWindowSelector(value.window, 'presenter.teleprompter.window'),
     };
+  }
+
+  if (normalized.tracking === undefined) {
+    normalized.tracking = normalizePresenterTracking(undefined);
   }
 
   if (requireWindow && normalized.window === null) {
@@ -733,6 +738,29 @@ function normalizePresenterTeleprompter(teleprompter, { requireWindow = false } 
   }
 
   return normalized;
+}
+
+function normalizePresenterTracking(tracking) {
+  if (tracking === undefined) {
+    return {
+      offScriptMs: 3000,
+      lostMs: 8000,
+      minConfidence: 0.35,
+    };
+  }
+
+  const value = assertPlainObject(tracking, 'presenter.teleprompter.tracking');
+  const minConfidence = value.minConfidence === undefined ? 0.35 : value.minConfidence;
+
+  if (typeof minConfidence !== 'number' || Number.isNaN(minConfidence) || minConfidence < 0 || minConfidence > 1) {
+    throw new ConfigError('presenter.teleprompter.tracking.minConfidence', 'must be a number between 0 and 1');
+  }
+
+  return {
+    offScriptMs: normalizePositiveInteger(value.offScriptMs ?? 3000, 'presenter.teleprompter.tracking.offScriptMs'),
+    lostMs: normalizePositiveInteger(value.lostMs ?? 8000, 'presenter.teleprompter.tracking.lostMs'),
+    minConfidence,
+  };
 }
 
 function usesPresenterOverlays(layouts, slides) {

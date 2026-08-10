@@ -202,6 +202,44 @@ test('normalizeConfig allows omitting presenter.teleprompter.window when overlay
   assert.equal(normalized.presenter.teleprompter.window, null);
 });
 
+test('normalizeConfig applies default teleprompter tracking thresholds', () => {
+  const normalized = normalizeConfig(createValidConfig());
+
+  assert.deepEqual(normalized.presenter.teleprompter.tracking, {
+    offScriptMs: 3000,
+    lostMs: 8000,
+    minConfidence: 0.35,
+  });
+});
+
+test('normalizeConfig accepts explicit teleprompter tracking overrides', () => {
+  const config = createValidConfig();
+  config.presenter.teleprompter.tracking = {
+    offScriptMs: 4500,
+    lostMs: 9000,
+    minConfidence: 0.5,
+  };
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.presenter.teleprompter.tracking, {
+    offScriptMs: 4500,
+    lostMs: 9000,
+    minConfidence: 0.5,
+  });
+});
+
+test('normalizeConfig rejects invalid teleprompter tracking values', () => {
+  const config = createValidConfig();
+  config.presenter.teleprompter.tracking = {
+    offScriptMs: 0,
+    lostMs: 9000,
+    minConfidence: 0.5,
+  };
+
+  assertConfigError(() => normalizeConfig(config), 'presenter.teleprompter.tracking.offScriptMs', /positive integer/i);
+});
+
 test('normalizeConfig enables obs.transitions by default when the block is omitted', () => {
   const config = normalizeConfig(createValidConfig());
 

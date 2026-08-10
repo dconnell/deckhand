@@ -32,6 +32,14 @@ function delay(ms) {
   });
 }
 
+function decodeImageDataUri(dataUri) {
+  const base64 = typeof dataUri === 'string'
+    ? dataUri.replace(/^data:image\/\w+;base64,/, '')
+    : '';
+
+  return Buffer.from(base64, 'base64');
+}
+
 async function waitForNamedScene({ getCurrentName, expectedName, logger, timeoutMs = 2000, pollIntervalMs = 50, kind }) {
   const startedAt = Date.now();
 
@@ -53,7 +61,7 @@ async function waitForNamedScene({ getCurrentName, expectedName, logger, timeout
  * Create a thin OBS v5 wrapper used by the coordinator.
  *
  * @param {{ url: string, password: string, OBSWebSocketClass?: new () => { connect(url: string, password?: string): Promise<unknown>, disconnect(): Promise<unknown>, call(method: string, payload?: Record<string, unknown>): Promise<unknown>, on?(event: string, handler: (data: unknown) => void): void, off?(event: string, handler: (data: unknown) => void): void }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Adapter options.
- * @returns {{ connect(): Promise<unknown>, disconnect(): Promise<void>, setScene(sceneName: string): Promise<void>, applyInputSettings(inputName: string, inputSettings: Record<string, unknown>): Promise<void>, isConnected(): boolean, getClient(): unknown, getCurrentProgramScene(): Promise<string>, getCurrentPreviewScene(): Promise<string>, getCurrentTransitionName(): Promise<string>, getStudioModeEnabled(): Promise<boolean>, setStudioModeEnabled(enabled: boolean): Promise<void>, setPreviewScene(sceneName: string, options?: { timeoutMs?: number, pollIntervalMs?: number }): Promise<void>, triggerStudioModeTransition(options?: { targetSceneName?: string, timeoutMs?: number, pollIntervalMs?: number }): Promise<void>, getSourceScreenshotData(sourceName: string): Promise<string>, captureProgramScreenshot(filePath: string): Promise<void>, setCurrentTransition(name: string, durationMs?: number): Promise<void>, switchProgramScene(sceneName: string, options?: { waitForEvent?: boolean, timeoutMs?: number }): Promise<void>, waitForSceneTransitionEnd(options?: { timeoutMs?: number }): Promise<void>, waitForSourceScreenshotStable(sourceName: string, options?: { differentFromData?: string | null, pollIntervalMs?: number, stableSamples?: number, timeoutMs?: number }): Promise<void>, ensureFreezeAssets(options: { sceneName: string, inputName: string, imagePath: string, dimPercent?: number }): Promise<void> }}
+ * @returns {{ connect(): Promise<unknown>, disconnect(): Promise<void>, setScene(sceneName: string): Promise<void>, applyInputSettings(inputName: string, inputSettings: Record<string, unknown>): Promise<void>, isConnected(): boolean, getClient(): unknown, getCurrentProgramScene(): Promise<string>, getCurrentPreviewScene(): Promise<string>, getCurrentTransitionName(): Promise<string>, getStudioModeEnabled(): Promise<boolean>, setStudioModeEnabled(enabled: boolean): Promise<void>, setPreviewScene(sceneName: string, options?: { timeoutMs?: number, pollIntervalMs?: number }): Promise<void>, triggerStudioModeTransition(options?: { targetSceneName?: string, timeoutMs?: number, pollIntervalMs?: number }): Promise<void>, getSourceScreenshotData(sourceName: string): Promise<string>, getProgramScreenshotBuffer(): Promise<Buffer>, getStreamStatus(): Promise<unknown>, captureProgramScreenshot(filePath: string): Promise<void>, setCurrentTransition(name: string, durationMs?: number): Promise<void>, switchProgramScene(sceneName: string, options?: { waitForEvent?: boolean, timeoutMs?: number }): Promise<void>, waitForSceneTransitionEnd(options?: { timeoutMs?: number }): Promise<void>, waitForSourceScreenshotStable(sourceName: string, options?: { differentFromData?: string | null, pollIntervalMs?: number, stableSamples?: number, timeoutMs?: number }): Promise<void>, ensureFreezeAssets(options: { sceneName: string, inputName: string, imagePath: string, dimPercent?: number }): Promise<void> }}
  */
 export function createObsClient(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -276,10 +284,9 @@ export function createObsClient(options) {
       }
 
       const dataUri = typeof shot.imageData === 'string' ? shot.imageData : '';
-      const base64 = dataUri.replace(/^data:image\/\w+;base64,/, '');
 
       try {
-        await writeFile(filePath, Buffer.from(base64, 'base64'));
+        await writeFile(filePath, decodeImageDataUri(dataUri));
       } catch (error) {
         logger.error('Failed to write OBS screenshot to disk', {
           error: error instanceof Error ? error.message : String(error),
@@ -295,6 +302,24 @@ export function createObsClient(options) {
       }
 
       return getSourceScreenshotData(sourceName);
+    },
+
+    async getProgramScreenshotBuffer() {
+      if (!connected) {
+        throw new Error('OBS client is not connected');
+      }
+
+      const sceneName = await this.getCurrentProgramScene();
+      const dataUri = await getSourceScreenshotData(sceneName, { sample: true });
+      return decodeImageDataUri(dataUri);
+    },
+
+    async getStreamStatus() {
+      if (!connected) {
+        throw new Error('OBS client is not connected');
+      }
+
+      return client.call('GetStreamStatus');
     },
 
     async setCurrentTransition(name, durationMs) {

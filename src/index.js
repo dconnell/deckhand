@@ -405,6 +405,11 @@ export async function run(options = {}) {
     if (config.presenter !== null) {
       presenterHttp = (options.createPresenterHttpFn ?? createPresenterHttpServer)({
         assetsRoot: presenterAssetsPath,
+        getProgramPreview() {
+          return typeof coordinator.getProgramPreviewSnapshot === 'function'
+            ? coordinator.getProgramPreviewSnapshot()
+            : null;
+        },
         getStatus() {
           return buildRuntimeStatus({
             phase,

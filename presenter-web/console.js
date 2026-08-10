@@ -1,4 +1,5 @@
 import { createObserverClient, formatDuration } from './shared-client.js';
+import { buildProgramPreviewUrl } from './teleprompterView.js';
 
 function createInitialState() {
   return {
@@ -42,6 +43,9 @@ function render(state) {
   document.getElementById('preview-state').textContent = presenter.obs.preview?.available
     ? `Preview rev ${presenter.obs.preview.revision}`
     : 'Preview unavailable';
+  document.getElementById('program-preview').src = presenter.obs.preview?.available
+    ? buildProgramPreviewUrl(presenter.obs.preview.path, presenter.obs.preview.revision)
+    : presenter.obs.preview?.path ?? '/presenter/program.jpg';
 }
 
 async function main() {

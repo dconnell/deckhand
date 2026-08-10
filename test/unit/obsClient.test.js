@@ -222,6 +222,72 @@ test('obs client captureProgramScreenshot strips the data-uri prefix and writes 
   assert.deepEqual(await readFile(target), fakePng);
 });
 
+test('obs client getProgramScreenshotBuffer returns low-resolution JPEG bytes for the current program scene', async () => {
+  const fakeJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 1, 2, 3, 4]);
+  const dataUri = `data:image/jpeg;base64,${fakeJpeg.toString('base64')}`;
+  const Fake = createEventedFakeObsWebSocket((method, payload) => {
+    if (method === 'GetSceneList') {
+      return { scenes: [{ sceneName: 'Program' }], currentProgramSceneName: 'Program' };
+    }
+
+    if (method === 'GetSourceScreenshot') {
+      return { imageData: dataUri };
+    }
+
+    return {};
+  });
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+
+  assert.deepEqual(await obs.getProgramScreenshotBuffer(), fakeJpeg);
+  assert.deepEqual(obs.getClient().calls, [
+    { method: 'GetSceneList', payload: undefined },
+    {
+      method: 'GetSourceScreenshot',
+      payload: {
+        sourceName: 'Program',
+        imageFormat: 'jpg',
+        imageCompressionQuality: 60,
+        imageHeight: 208,
+        imageWidth: 320,
+      },
+    },
+  ]);
+});
+
+test('obs client getStreamStatus returns the raw OBS stream status payload', async () => {
+  const status = {
+    outputActive: true,
+    outputBytes: 42,
+    outputDuration: 84,
+    outputCongestion: 0.1,
+  };
+  const Fake = createEventedFakeObsWebSocket((method) => {
+    if (method === 'GetStreamStatus') {
+      return status;
+    }
+
+    return {};
+  });
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+
+  assert.deepEqual(await obs.getStreamStatus(), status);
+  assert.deepEqual(obs.getClient().calls, [{ method: 'GetStreamStatus', payload: undefined }]);
+});
+
 test('obs client setCurrentTransition sets transition name and optional duration', async () => {
   const Fake = createEventedFakeObsWebSocket();
   const obs = createObsClient({

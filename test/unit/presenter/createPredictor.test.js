@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createPredictor } from '../../../presenter-web/lib/createPredictor.js';
+import { createPredictor } from '../../../src/presenter/createPredictor.js';
 
 test('createPredictor returns 0 before any anchor exists', () => {
   const predictor = createPredictor({ alpha: 0.5, maxRate: 4, minRate: 0.25 });

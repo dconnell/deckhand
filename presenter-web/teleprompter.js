@@ -1,31 +1,12 @@
 import { createObserverClient } from './shared-client.js';
+import {
+  buildTeleprompterFrame,
+  buildTokenRenderParts,
+  reconcileLineNodes,
+} from './teleprompterView.js';
 
 const LINE_HEIGHT_PX = 58;
 const LINE_GAP_PX = 16;
-
-function assignLineTiers(lines, activeLineIndex) {
-  return lines.map((_, index) => {
-    if (index < activeLineIndex) {
-      return 'past';
-    }
-
-    if (index === activeLineIndex) {
-      return 'current';
-    }
-
-    if (index <= activeLineIndex + 1) {
-      return 'near';
-    }
-
-    return 'future';
-  });
-}
-
-function computeTeleprompterOffset({ activeLineTop, activeLineHeight, viewportHeight, anchorRatio }) {
-  const activeCenter = activeLineTop + (activeLineHeight / 2);
-  const anchorCenter = viewportHeight * anchorRatio;
-  return Math.round(anchorCenter - activeCenter);
-}
 
 function createInitialState() {
   return {
@@ -33,16 +14,18 @@ function createInitialState() {
     presenter: null,
     nodes: [],
     rafScheduled: false,
+    hovered: false,
+    lastTrackingStateChangeAtMs: 0,
   };
 }
 
 function renderTokens(line) {
   const fragment = document.createDocumentFragment();
 
-  for (const token of line.tokens) {
+  for (const token of buildTokenRenderParts(line.tokens)) {
     const span = document.createElement('span');
-    span.className = `token token-${token.kind}`;
-    span.textContent = token.text ?? (token.kind === 'pause' ? '...' : '');
+    span.className = token.className;
+    span.textContent = token.text;
     fragment.append(span, ' ');
   }
 
@@ -50,23 +33,24 @@ function renderTokens(line) {
 }
 
 function ensureLineNodes(state, listEl, presenter) {
-  const lines = presenter.current.lines;
-
-  while (state.nodes.length > lines.length) {
-    state.nodes.pop()?.remove();
-  }
-
-  for (let index = state.nodes.length; index < lines.length; index += 1) {
-    const item = document.createElement('li');
-    item.className = 'teleprompter-line';
-    listEl.append(item);
-    state.nodes.push(item);
-  }
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const item = state.nodes[index];
-    item.replaceChildren(renderTokens(lines[index]));
-  }
+  state.nodes = reconcileLineNodes({
+    nodes: state.nodes,
+    lines: presenter.current.lines,
+    createNode() {
+      const item = document.createElement('li');
+      item.className = 'teleprompter-line';
+      return item;
+    },
+    appendNode(node) {
+      listEl.append(node);
+    },
+    removeNode(node) {
+      node.remove();
+    },
+    renderNode(node, line) {
+      node.replaceChildren(renderTokens(line));
+    },
+  });
 }
 
 function render(state) {
@@ -74,36 +58,43 @@ function render(state) {
   const status = document.getElementById('teleprompter-status');
   const listEl = document.getElementById('teleprompter-lines');
   const shell = document.getElementById('teleprompter-shell');
+  const progress = document.getElementById('teleprompter-progress');
 
   connection.textContent = state.connection;
 
-  if (state.presenter === null || state.presenter.current.hidden) {
-    status.textContent = state.presenter?.current.hidden ? 'Hidden' : 'Waiting';
-    shell.dataset.hidden = state.presenter?.current.hidden ? 'true' : 'false';
+  const frame = buildTeleprompterFrame(state.presenter, {
+    hovered: state.hovered,
+    lastStateChangeAtMs: state.lastTrackingStateChangeAtMs,
+    lineHeight: LINE_HEIGHT_PX,
+    lineGap: LINE_GAP_PX,
+    nowMs: Date.now(),
+    viewportHeight: window.innerHeight,
+  });
+
+  if (frame.hidden) {
+    status.textContent = frame.status.label;
+    status.dataset.tone = frame.status.tone;
+    status.hidden = frame.status.visible === false;
+    shell.dataset.hidden = 'true';
     while (state.nodes.length > 0) {
       state.nodes.pop()?.remove();
     }
     listEl.style.transform = 'translateY(0px)';
+    progress.style.transform = 'scaleX(0)';
     return;
   }
 
   shell.dataset.hidden = 'false';
-  status.textContent = state.presenter.teleprompter.trackingState;
+  status.textContent = frame.status.label;
+  status.dataset.tone = frame.status.tone;
+  status.hidden = frame.status.visible === false;
   ensureLineNodes(state, listEl, state.presenter);
 
-  const tiers = assignLineTiers(state.presenter.current.lines, state.presenter.teleprompter.activeLineIndex);
-  const activeLineTop = state.presenter.teleprompter.activeLineIndex * (LINE_HEIGHT_PX + LINE_GAP_PX);
-  const offset = computeTeleprompterOffset({
-    activeLineTop,
-    activeLineHeight: LINE_HEIGHT_PX,
-    viewportHeight: window.innerHeight,
-    anchorRatio: 0.3,
-  });
-
-  listEl.style.transform = `translateY(${offset}px)`;
+  listEl.style.transform = `translateY(${frame.offsetPx}px)`;
+  progress.style.transform = `scaleX(${frame.progressPercent})`;
 
   state.nodes.forEach((node, index) => {
-    node.dataset.tier = tiers[index];
+    node.dataset.tier = frame.tiers[index];
   });
 }
 
@@ -123,6 +114,19 @@ async function main() {
   const bootstrap = await fetch('/presenter/bootstrap.json').then((response) => response.json());
   const state = createInitialState();
   let client = null;
+  const shell = document.getElementById('teleprompter-shell');
+
+  shell.addEventListener('mouseenter', () => {
+    state.hovered = true;
+    scheduleRender(state);
+  });
+  shell.addEventListener('mouseleave', () => {
+    state.hovered = false;
+    scheduleRender(state);
+  });
+  window.addEventListener('resize', () => {
+    scheduleRender(state);
+  });
 
   function sendCommand(command) {
     client?.send({ type: 'presenterCommand', ...command });
@@ -168,6 +172,9 @@ async function main() {
     },
     onMessage(payload) {
       if (payload.type === 'presenterState') {
+        if (state.presenter?.teleprompter?.trackingState !== payload.teleprompter.trackingState) {
+          state.lastTrackingStateChangeAtMs = Date.now();
+        }
         state.presenter = payload;
         scheduleRender(state);
       }

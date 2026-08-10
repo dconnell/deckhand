@@ -27,6 +27,18 @@ body {
   background: #273849;
 }
 
+#teleprompter-status[data-tone='green'] {
+  background: rgba(50, 165, 103, 0.85);
+}
+
+#teleprompter-status[data-tone='yellow'] {
+  background: rgba(198, 156, 39, 0.9);
+}
+
+#teleprompter-status[data-tone='red'] {
+  background: rgba(186, 57, 57, 0.9);
+}
+
 .controls {
   display: flex;
   gap: 12px;
@@ -150,6 +162,25 @@ body {
 
 .teleprompter-line[data-tier='near'] {
   opacity: 1;
+}
+
+.teleprompter-progress-shell {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  transform-origin: left center;
+}
+
+.teleprompter-progress {
+  height: 100%;
+  width: 100%;
+  background: #3bbaff;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 180ms linear;
 }
 
 .token-stage,

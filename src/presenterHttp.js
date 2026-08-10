@@ -21,7 +21,7 @@ function createNoopLogger() {
 /**
  * Create the local presenter HTTP server.
  *
- * @param {{ assetsRoot: string, getStatus(): Record<string, unknown>, host: string, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void }, presenterBootstrap: Record<string, unknown>, port: number }} options Server options.
+ * @param {{ assetsRoot: string, getProgramPreview?: () => { body: Buffer, etag: string, lastModified?: string } | null, getStatus(): Record<string, unknown>, host: string, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void }, presenterBootstrap: Record<string, unknown>, port: number }} options Server options.
  * @returns {{ start(): Promise<void>, stop(): Promise<void>, getAddress(): { host: string, port: number } }}
  */
 export function createPresenterHttpServer(options) {
@@ -72,6 +72,47 @@ export function createPresenterHttpServer(options) {
       });
       if (req.method !== 'HEAD') {
         res.end(body);
+        return;
+      }
+
+      res.end();
+      return;
+    }
+
+    if (requestUrl.pathname === '/presenter/program.jpg') {
+      const preview = options.getProgramPreview?.() ?? null;
+
+      if (preview === null) {
+        res.writeHead(503, {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'text/plain; charset=utf-8',
+        });
+        res.end('Preview unavailable');
+        return;
+      }
+
+      if (req.headers['if-none-match'] === preview.etag) {
+        res.writeHead(304, {
+          'Cache-Control': 'no-store',
+          ETag: preview.etag,
+        });
+        res.end();
+        return;
+      }
+
+      const headers = {
+        'Cache-Control': 'no-store',
+        'Content-Type': 'image/jpeg',
+        ETag: preview.etag,
+      };
+
+      if (typeof preview.lastModified === 'string') {
+        headers['Last-Modified'] = preview.lastModified;
+      }
+
+      res.writeHead(200, headers);
+      if (req.method !== 'HEAD') {
+        res.end(preview.body);
         return;
       }
 

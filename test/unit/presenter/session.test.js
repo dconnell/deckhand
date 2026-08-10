@@ -138,3 +138,43 @@ test('timer stays idle until started, then preserves elapsed time across pause a
   assert.equal(session.getState().timer.running, false);
   assert.equal(session.getState().timer.elapsedMs, 0);
 });
+
+test('tracking state moves from listening to offScript to lost based on silence thresholds', () => {
+  const session = createPresenterSession({
+    followEnabledByDefault: true,
+    tracking: {
+      offScriptMs: 2_000,
+      lostMs: 5_000,
+      minConfidence: 0.35,
+    },
+  });
+
+  session.applyPresentationState(createPresentationState(1), 1_000);
+  session.applyTranscript(createTranscript('walk through the init flow', 2_000));
+  assert.equal(session.getState().teleprompter.trackingState, 'listening');
+
+  session.tick(4_500);
+  assert.equal(session.getState().teleprompter.trackingState, 'offScript');
+
+  session.tick(8_000);
+  assert.equal(session.getState().teleprompter.trackingState, 'lost');
+});
+
+test('far-jump gate holds the active line on low-context future transcript leaps', () => {
+  const session = createPresenterSession({
+    followEnabledByDefault: true,
+    tracking: {
+      farJumpLines: 1,
+      minConfidence: 0.35,
+    },
+  });
+
+  session.applyPresentationState(createPresentationState(1, {
+    script: 'Line one.\nLine two.\nLine three.\nLine four.\nLine five.',
+  }), 1_000);
+  session.applyTranscript(createTranscript('line one', 2_000));
+  assert.equal(session.getState().teleprompter.activeLineIndex, 0);
+
+  session.applyTranscript(createTranscript('line five', 3_000));
+  assert.equal(session.getState().teleprompter.activeLineIndex, 0);
+});

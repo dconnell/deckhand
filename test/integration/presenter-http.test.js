@@ -64,6 +64,9 @@ test('presenter HTTP server serves presenter assets and status without exposing 
       hubUrl: 'ws://127.0.0.1:8765',
     });
 
+    const previewUnavailable = await fetch(`http://127.0.0.1:${port}/presenter/program.jpg`);
+    assert.equal(previewUnavailable.status, 503);
+
     const status = await fetch(`http://127.0.0.1:${port}/status.json`);
     assert.equal(status.status, 200);
     assert.equal(status.headers.get('cache-control'), 'no-store');
@@ -82,6 +85,51 @@ test('presenter HTTP server serves presenter assets and status without exposing 
 
     const missing = await fetch(`http://127.0.0.1:${port}/presenter/missing.js`);
     assert.equal(missing.status, 404);
+  } finally {
+    await server.stop();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('presenter HTTP server serves the program preview with etag caching', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-presenter-http-preview-'));
+  const presenterRoot = path.join(tempDir, 'presenter-web');
+  await mkdir(presenterRoot, { recursive: true });
+  await writeFile(path.join(presenterRoot, 'index.html'), '<!doctype html><title>Presenter</title>', 'utf8');
+  const preview = Buffer.from([0xff, 0xd8, 0xff, 0xdb]);
+
+  const server = createPresenterHttpServer({
+    assetsRoot: presenterRoot,
+    getProgramPreview() {
+      return {
+        body: preview,
+        etag: '"presenter-preview-1"',
+        lastModified: new Date('2026-08-10T00:00:00.000Z').toUTCString(),
+      };
+    },
+    getStatus() {
+      return { service: 'deckhand', current: null, presenter: null };
+    },
+    host: '127.0.0.1',
+    logger: createLogger(),
+    presenterBootstrap: { followEnabledByDefault: true, hubUrl: 'ws://127.0.0.1:8765' },
+    port: 0,
+  });
+
+  try {
+    await server.start();
+    const { port } = server.getAddress();
+
+    const response = await fetch(`http://127.0.0.1:${port}/presenter/program.jpg`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('etag'), '"presenter-preview-1"');
+    assert.equal(response.headers.get('content-type'), 'image/jpeg');
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), preview);
+
+    const notModified = await fetch(`http://127.0.0.1:${port}/presenter/program.jpg`, {
+      headers: { 'If-None-Match': '"presenter-preview-1"' },
+    });
+    assert.equal(notModified.status, 304);
   } finally {
     await server.stop();
     await rm(tempDir, { recursive: true, force: true });

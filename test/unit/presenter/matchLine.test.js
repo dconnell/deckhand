@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { matchLine } from '../../../presenter-web/lib/matchLine.js';
+import { matchLine } from '../../../src/presenter/matchLine.js';
 
 test('matchLine advances on partial forward matches', () => {
   assert.equal(
@@ -20,4 +20,13 @@ test('matchLine stays put below threshold', () => {
 
 test('matchLine ignores earlier lines and never moves backward', () => {
   assert.equal(matchLine('welcome to the talk', ['Welcome to the talk.', 'Current line'], 1), 1);
+});
+
+test('matchLine uses structured spokenText and ignores non-spoken annotations', () => {
+  assert.equal(matchLine('answer questions now', [
+    { spokenText: '' },
+    { spokenText: 'Show the important bit now.' },
+    { spokenText: '' },
+    { spokenText: 'Answer questions now.' },
+  ], 1), 3);
 });

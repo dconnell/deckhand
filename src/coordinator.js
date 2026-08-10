@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createPresenterSession } from './presenter/session.js';
+import { reduceStreamHealth } from './presenter/reduceStreamHealth.js';
 import { buildPresentationState } from './scenes.js';
 import { buildMacWindowCaptureSettings } from './setupObs.js';
 import { deckhandInputName, deckhandSceneName } from './obsNames.js';
@@ -22,6 +23,7 @@ const FREEZE_CUT_TRANSITION = 'Cut';
 const TRANSITION_END_BUFFER_MS = 300;
 const DRIVER_SETTLE_TIMEOUT_MS = 2000;
 const DRIVER_COMMAND_POSITION_TIMEOUT_MS = 1500;
+const PRESENTER_STATUS_POLL_MS = 5000;
 
 function delay(ms) {
   return new Promise((resolve) => {
@@ -141,6 +143,9 @@ export function createCoordinator(options) {
   const driverSettleWaiters = new Map();
   const completedDriverSettleEvents = new Set();
   const pendingDriverPositions = new Map();
+  let presenterStatusTimer = null;
+  let presenterPreview = null;
+  let previousStreamStatus = null;
 
   function buildResolvedPresentationState(slideId, seq) {
     const bootstrapWindowBindings = options.getManagedWindowBindings?.() ?? {};
@@ -185,6 +190,80 @@ export function createCoordinator(options) {
     const presenterState = presenterSession.getState();
     await options.hub.publishSticky('presenterState', presenterState);
     return presenterState;
+  }
+
+  function createProgramPreviewSnapshot() {
+    if (presenterPreview === null) {
+      return null;
+    }
+
+    return {
+      body: presenterPreview.body,
+      etag: `"presenter-preview-${presenterPreview.revision}"`,
+      lastModified: new Date(presenterPreview.capturedAtMs).toUTCString(),
+    };
+  }
+
+  async function refreshProgramPreview(nowMs = Date.now()) {
+    if (presenterSession === null || typeof options.obs.getProgramScreenshotBuffer !== 'function') {
+      return;
+    }
+
+    try {
+      const body = await options.obs.getProgramScreenshotBuffer();
+      const revision = (presenterPreview?.revision ?? 0) + 1;
+      presenterPreview = { body, revision, capturedAtMs: nowMs };
+      presenterSession.updateObsPreview({
+        available: true,
+        revision,
+        capturedAtMs: nowMs,
+        stale: false,
+      }, nowMs);
+    } catch (error) {
+      presenterSession.updateObsPreview({
+        available: false,
+        capturedAtMs: nowMs,
+        stale: true,
+      }, nowMs);
+      logger.warn('Failed to refresh presenter program preview', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  async function refreshStreamHealth(nowMs = Date.now()) {
+    if (presenterSession === null || typeof options.obs.getStreamStatus !== 'function') {
+      return;
+    }
+
+    try {
+      const status = await options.obs.getStreamStatus();
+      const stream = reduceStreamHealth(status, {
+        previousStatus: previousStreamStatus,
+        previousSummary: presenterSession.getState().stream,
+        nowMs,
+      });
+      previousStreamStatus = status;
+      presenterSession.updateStream(stream, nowMs);
+    } catch (error) {
+      logger.warn('Failed to refresh presenter stream health', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  async function pollPresenterStatus(nowMs = Date.now()) {
+    if (presenterSession === null) {
+      return null;
+    }
+
+    await Promise.all([
+      refreshProgramPreview(nowMs),
+      refreshStreamHealth(nowMs),
+      presenterSession.tick(nowMs),
+    ]);
+
+    return publishPresenterState(nowMs);
   }
 
   async function syncPresenterStateFromPresentation(presentationState, nowMs = Date.now()) {
@@ -1133,6 +1212,22 @@ export function createCoordinator(options) {
         await options.hub.start();
         hubStarted = true;
 
+        if (presenterSession !== null) {
+          await pollPresenterStatus().catch((error) => {
+            logger.warn('Initial presenter status poll failed', {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+          presenterStatusTimer = setInterval(() => {
+            pollPresenterStatus().catch((error) => {
+              logger.warn('Presenter status poll failed', {
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+          }, PRESENTER_STATUS_POLL_MS);
+          presenterStatusTimer.unref?.();
+        }
+
         started = true;
         logger.info('Coordinator started', { driver: options.config.driver.type });
       } catch (error) {
@@ -1182,6 +1277,11 @@ export function createCoordinator(options) {
             hubStarted = false;
           }
         } finally {
+          if (presenterStatusTimer !== null) {
+            clearInterval(presenterStatusTimer);
+            presenterStatusTimer = null;
+          }
+
           await restoreStudioModeIfManaged();
 
           if (obsStarted) {
@@ -1209,6 +1309,24 @@ export function createCoordinator(options) {
 
     async refreshCurrentPresentationState(reason = 'refresh') {
       await republishCurrentPresentationState(reason);
+    },
+
+    async tickPresenterState(nowMs = Date.now()) {
+      if (presenterSession === null) {
+        return null;
+      }
+
+      if (!presenterSession.tick(nowMs)) {
+        return presenterSession.getState();
+      }
+
+      const presenterState = presenterSession.getState();
+      await options.hub.publishSticky('presenterState', presenterState);
+      return presenterState;
+    },
+
+    getProgramPreviewSnapshot() {
+      return createProgramPreviewSnapshot();
     },
 
     handleDriverPositionChanged,

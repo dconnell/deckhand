@@ -1,4 +1,5 @@
 import { createPredictor } from './createPredictor.js';
+import { PROGRAM_PREVIEW_PATH } from './constants.js';
 import { matchLineDetailed } from './matchLine.js';
 import {
   clampToSpokenLine,
@@ -23,7 +24,7 @@ function deepClone(value) {
 function createInitialPreviewState() {
   return {
     available: false,
-    path: '/presenter/program.jpg',
+    path: PROGRAM_PREVIEW_PATH,
     revision: 0,
     capturedAtMs: null,
     stale: true,
