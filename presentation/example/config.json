@@ -152,52 +152,40 @@
   "slides": {
     "welcome": {
       "layout": "full-slide",
-      "script": "Welcome to Deckhand presenter mode.\nThe audience sees OBS while you keep the cockpit local."
+      "script": "Welcome to Deckhand, a local presentation coordinator built for developers who present code.\n\nThe audience sees a polished OBS stream while you keep full control from your own screen.\n\nDeckhand keeps four outputs in sync automatically: your slide deck, OBS scenes, the presenter stage, and the browser windows you need for live demos.\n\nYou drive everything from the keyboard or hotkeys, and the teleprompter tracks your voice in real time.\n\nLet us walk through what that looks like in practice."
     },
     "code-walkthrough": {
       "layout": "left-terminal-right-slide",
       "focus": "Terminal",
-      "script": "Walk through the init flow.\nEmphasize line 42.\nThen run the demo."
+      "script": "Now we walk through the initialization flow in the terminal on the left.\n\nThe entry point is the run function at the top of index dot j s.\n\nNotice how it loads the presentation config first, then composes the hub, the OBS client, and the browser session.\n\nPay particular attention to line forty two, where the coordinator is created with injected dependencies.\n\nThis dependency injection is what makes the whole system testable without a real Chrome process or a live OBS connection.\n\nAfter the coordinator starts, it publishes sticky state that every presenter surface consumes.\n\nLet us run the demo and watch the logs scroll by."
     },
     "architecture": {
       "layout": "right-terminal-left-slide",
-      "script": "One layout model drives OBS, the presenter stage, and the teleprompter."
+      "script": "The architecture follows a single source of truth principle.\n\nOne layout model drives OBS scenes, the presenter stage geometry, and the teleprompter simultaneously.\n\nThe hub sits in the middle as a local WebSocket server that drivers and observers connect to.\n\nThe coordinator owns the canonical runtime state and publishes it as sticky channels.\n\nHammerspoon positions windows on the presenter stage using exact CGWindowID bindings resolved at startup.\n\nThis means no fragile title matching or Accessibility polling in the steady state.\n\nEvery surface, from the console to the teleprompter to the freeze-frame transitions, reads from the same coordinator-owned state."
     },
     "terminal-deep-dive": {
       "layout": "full-terminal",
       "focus": "Terminal",
-      "script": "Stay in the terminal here.\nKeep the presenter focus on live commands."
+      "script": "Let us stay in the terminal for this section and look at the command flow.\n\nThe first thing to notice is how the coordinator enqueues slide operations to avoid overlapping transitions.\n\nEach position change goes through a freeze, mutate, wait, reveal sequence that masks window resizing behind a still frame.\n\nThe reveal direction is computed from the previous and current slide indices, matching reveal deck ordering.\n\nIf the driver reports a settle event, the coordinator waits for it before revealing.\n\nThis ensures the deck has actually painted before the audience sees the new scene.\n\nYou can see the timing in the logs as each step completes."
     },
     "live-demo": {
       "layout": "left-terminal-right-browser",
       "focus": "Terminal",
-      "script": "Open the live demo.\nNarrate the setup before switching to the browser details.",
-      "browser": [
-        { "source": "BrowserA", "action": "activateTab", "tab": "home" }
-      ]
+      "script": "Time for the live demo.\n\nFirst, narrate the setup so the audience understands what we are about to do.\n\nWe start the application in the terminal and watch it boot up.\n\nThen we switch the browser on the right to the home page so everyone can see the landing experience.\n\nNotice how the browser navigation happens behind the freeze frame, so the audience never sees a flash of unstyled content.\n\nThe directional transition slides the whole frame into place once everything is settled.\n\nThis is what makes Deckhand presentations look polished even with live, unpredictable content."
     },
     "api-demo": {
       "layout": "left-browser-right-terminal",
       "focus": "Terminal",
-      "script": "Call the API from the terminal while the audience sees the browser response.",
-      "browser": [
-        { "source": "BrowserA", "action": "navigate", "tab": "home", "url": "https://example.com/demo/api" }
-      ]
+      "script": "In this slide we call the API from the terminal while the audience watches the browser respond.\n\nThe browser on the left has navigated to the API endpoint automatically as part of the slide transition.\n\nWe run a curl command in the terminal on the right and explain each part of the request.\n\nThe response comes back as JSON, and the browser renders it in a readable format.\n\nThis split layout is perfect for showing cause and effect between the terminal and the browser side by side.\n\nThe audience sees the result without you having to alt-tab or switch spaces.\n\nIt is one of the most effective layouts for live coding presentations."
     },
     "browser-fullscreen": {
       "layout": "full-browser",
-      "script": "Full browser for the showcase page.",
-      "browser": [
-        { "source": "BrowserA", "action": "navigate", "tab": "home", "url": "https://example.com/demo/full" }
-      ]
+      "script": "Here we go full screen with the browser to showcase the final product page.\n\nThis layout gives the audience the maximum visual real estate for your web application.\n\nThe browser navigated to the showcase URL automatically when this slide loaded.\n\nTake a moment to scroll through the page and highlight the key features.\n\nThe teleprompter on your screen keeps your place in the script, but the audience only sees the browser.\n\nWhen you are ready, we will switch to the dual browser layout for a comparison view.\n\nThis is where Deckhand really shines, because every transition is smooth and directional."
     },
     "dual-demo": {
       "layout": "dual-browser",
       "focus": "BrowserB",
-      "browser": [
-        { "source": "BrowserA", "action": "activateTab", "tab": "checkout" },
-        { "source": "BrowserB", "action": "activateTab", "tab": "main" }
-      ]
+      "script": "Now we have two browsers side by side for a comparison.\n\nThe browser on the left shows the checkout flow, while the one on the right shows the main dashboard.\n\nBoth tabs were activated automatically when this slide transitioned.\n\nWalk the audience through the differences between the two views.\n\nNotice how the focus indicator tells you which window Deckhand considers the primary one for this slide.\n\nThe freeze frame transition kept both windows hidden while they loaded their new content.\n\nThis dual layout is ideal for before-and-after comparisons or A-B testing demos.\n\nThat concludes the Deckhand walkthrough, thank you for watching."
     }
   },
   "presenter": {
