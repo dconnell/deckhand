@@ -235,6 +235,12 @@ health is reported at `/status.json` under `browserSession`.
 
 ## STT runner (optional)
 
+Download a local whisper.cpp model first:
+
+```bash
+curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
+```
+
 Run the local whisper observer:
 
 ```bash

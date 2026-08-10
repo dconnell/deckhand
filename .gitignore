@@ -2,3 +2,4 @@
 presentation/*/config.local.json
 node_modules/
 plans/
+models/

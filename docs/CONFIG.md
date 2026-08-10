@@ -94,8 +94,8 @@ model for OBS, the presenter stage, and slide actions.
       "BrowserB": { "app": "Google Chrome", "titleIncludes": "Secondary" }
     },
     "stt": {
-      "whisperBin": "/absolute/path/to/whisper-cli",
-      "model": "/absolute/path/to/ggml-base.en.bin",
+      "whisperBin": "/opt/homebrew/bin/whisper-cli",
+      "model": "/absolute/path/to/ggml-large-v3-turbo.bin",
       "chunkSeconds": 2.5,
       "language": "en"
     },

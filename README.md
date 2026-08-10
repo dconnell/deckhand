@@ -59,5 +59,11 @@ primitives and encode each app's quirks. See
 - `node ./src/index.js <name>` — starts the full managed runtime
 - `npm run presenter:doctor -- <name>` — validates local config and environment
 
+Whisper model download:
+
+```bash
+curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
+```
+
 Real OBS output, Hammerspoon Accessibility, microphone permission, and
 whisper.cpp still require manual smoke testing.
