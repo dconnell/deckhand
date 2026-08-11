@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { matchLine } from '../../../src/presenter/matchLine.js';
+import { matchLine, matchLineDetailed } from '../../../src/presenter/matchLine.js';
 
 test('matchLine stays on the current line when it partially matches and no next-line evidence exists', () => {
   assert.equal(
@@ -99,4 +99,27 @@ test('matchLine does not advance when the current line is well-covered but no ne
     'The quick brown fox jumps over the lazy dog.',
     'Now is the time for all good men.',
   ], 0), 0);
+});
+
+test('matchLine anchors on distinctive words instead of ubiquitous filler that inflates earlier lines', () => {
+  // 'the' and 'and' appear in the first two lines only, so they get discounted.
+  // The speaker has moved on to line 2, but the rolling window still holds the
+  // previous line's common words. Bag-of-words F1 keeps score-anchored on line 1
+  // ('the database and the cache server' minus 'server'); TF-IDF weighting lets the
+  // distinctive line-2 words dominate and the tail tie-break resolves to line 2.
+  assert.equal(matchLine('the database and the cache quantum entanglement fields', [
+    'The system and the network.',
+    'The database and the cache server.',
+    'Quantum entanglement fields.',
+  ], 0), 2);
+});
+
+test('matchLineDetailed weights unmatched distinctive words so common-word-only matches stay below threshold', () => {
+  const result = matchLineDetailed('the', [
+    'Quantum the.',
+    'Classical the.',
+  ], 0);
+
+  assert.equal(result.index, 0);
+  assert.ok(result.confidence < 0.35, `expected confidence below 0.35, got ${result.confidence}`);
 });

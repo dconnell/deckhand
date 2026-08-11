@@ -106,8 +106,8 @@ function createValidConfig() {
         model: '/opt/homebrew/share/whisper/ggml-base.en.bin',
         mode: 'step',
         captureId: -1,
-        stepMs: 1500,
-        lengthMs: 6000,
+        stepMs: 1000,
+        lengthMs: 4000,
         keepMs: 250,
         threads: 4,
         audioCtx: 0,
@@ -212,8 +212,8 @@ test('normalizeConfig applies whisper-stream stt defaults when optional fields a
     model: '/opt/homebrew/share/whisper/ggml-base.en.bin',
     mode: 'step',
     captureId: -1,
-    stepMs: 1500,
-    lengthMs: 6000,
+    stepMs: 1000,
+    lengthMs: 4000,
     keepMs: 250,
     threads: 4,
     audioCtx: 0,
@@ -1154,7 +1154,7 @@ test('presentation/example/config.json loads as the shipped sample presentation'
   assert.ok(config.presenter);
   assert.ok(config.layouts['dual-browser']);
   assert.equal(config.presenter.stt.mode, 'step');
-  assert.equal(config.presenter.stt.stepMs, 1500);
+  assert.equal(config.presenter.stt.stepMs, 1000);
 });
 
 test('presentation/example-laptop/config.json ships per-layout teleprompter overlays with one slide override', async () => {

@@ -99,26 +99,21 @@ function resolveLineMetrics({ lineCount, lineHeight, lineGap, lineMetrics }) {
   return normalizedLineMetrics;
 }
 
+/**
+ * Assign visual tiers relative to the active line.
+ *
+ * Only two tiers remain: lines before the active line are `past` (rendered
+ * dimmed); the active line and everything after is `future` (normal text). The
+ * active line is intentionally not distinguished, so a slightly-lagged match
+ * cannot produce a confidently-wrong "you are here" cue — the scrolled position
+ * carries that signal instead, and the gray-out only marks what's been passed.
+ *
+ * @param {Array<unknown>} lines Presenter lines.
+ * @param {number} activeLineIndex Active line index.
+ * @returns {Array<'past' | 'future'>}
+ */
 export function assignLineTiers(lines, activeLineIndex) {
-  const spokenIndices = listSpokenLineIndices(lines);
-  const activeOrdinal = Math.max(0, spokenIndices.indexOf(activeLineIndex));
-  const nearSpokenIndices = new Set(spokenIndices.slice(activeOrdinal + 1, activeOrdinal + 3));
-
-  return lines.map((_, index) => {
-    if (index < activeLineIndex) {
-      return 'past';
-    }
-
-    if (index === activeLineIndex) {
-      return 'current';
-    }
-
-    if (nearSpokenIndices.has(index)) {
-      return 'near';
-    }
-
-    return 'future';
-  });
+  return lines.map((_, index) => (index < activeLineIndex ? 'past' : 'future'));
 }
 
 /**

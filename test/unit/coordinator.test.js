@@ -748,7 +748,9 @@ test('coordinator tickPresenterState derives predictive follow lead from overlap
     const presenterPublishes = listPublishesByChannel(hub, 'presenterState');
 
     assert.equal(presenterPublishes.length, beforeTick + 1);
-    assert.equal(presenterPublishes.at(-1).payload.teleprompter.activeLineIndex, 2);
+    // stream chunk/overlap resolve to stepMs=500; lead = max(500*3, 3000) = 3000,
+    // so the predictor projects well past the old short-lead position.
+    assert.equal(presenterPublishes.at(-1).payload.teleprompter.activeLineIndex, 4);
   } finally {
     Date.now = originalDateNow;
   }
@@ -802,7 +804,9 @@ test('coordinator tickPresenterState derives predictive follow lead from normali
     const presenterPublishes = listPublishesByChannel(hub, 'presenterState');
 
     assert.equal(presenterPublishes.length, beforeTick + 1);
-    assert.equal(presenterPublishes.at(-1).payload.teleprompter.activeLineIndex, 2);
+    // stepMs=500 resolves to lead = max(500*3, 3000) = 3000; the longer lead lets
+    // the predictor bridge further between transcript updates than the old 500.
+    assert.equal(presenterPublishes.at(-1).payload.teleprompter.activeLineIndex, 4);
   } finally {
     Date.now = originalDateNow;
   }

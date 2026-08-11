@@ -98,7 +98,7 @@ function isBrowserSource(config, sourceId) {
   return config.sources[sourceId]?.kind === 'browser';
 }
 
-function resolvePresenterPredictionLeadMs(stt) {
+function resolvePresenterStepMs(stt) {
   if (Number.isFinite(stt?.stepMs) && stt.stepMs > 0) {
     return Math.round(stt.stepMs);
   }
@@ -123,6 +123,20 @@ function resolvePresenterPredictionLeadMs(stt) {
   return Number.isFinite(stt?.chunkSeconds) && stt.chunkSeconds > 0
     ? Math.round(stt.chunkSeconds * 1000)
     : 0;
+}
+
+// The predictor needs enough lookahead to bridge the gap between transcript
+// updates (which arrive every `stepMs`). Returning `stepMs` directly left the
+// teleprompter lagging live speech; `max(stepMs * 3, 3000)` gives follow mode a
+// long enough cap to project smoothly between updates.
+function resolvePresenterPredictionLeadMs(stt) {
+  const stepMs = resolvePresenterStepMs(stt);
+
+  if (stepMs <= 0) {
+    return 0;
+  }
+
+  return Math.max(stepMs * 3, 3000);
 }
 
 /**

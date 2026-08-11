@@ -10,8 +10,15 @@ import {
 import { splitScript } from './splitScript.js';
 
 const DEFAULT_RECENT_TRANSCRIPT_LIMIT = 10;
-const DEFAULT_TRANSCRIPT_MATCH_ITEM_WINDOW = 3;
-const DEFAULT_TRANSCRIPT_MATCH_WORD_WINDOW = 24;
+// Shrink the matcher input to the latest transcript event so stale words from
+// earlier chunks cannot contaminate scoring. The recent-transcript limit above
+// is intentionally larger: off-script recovery still wants the fuller history.
+const DEFAULT_TRANSCRIPT_MATCH_ITEM_WINDOW = 1;
+const DEFAULT_TRANSCRIPT_MATCH_WORD_WINDOW = 20;
+// When the speaker is off-script or lost, widen the matcher: accept a lower
+// confidence and look further ahead so a distinctive line snaps follow back.
+const OFF_SCRIPT_RECOVERY_THRESHOLD = 0.25;
+const OFF_SCRIPT_RECOVERY_FAR_MULTIPLIER = 3;
 const DEFAULT_TRACKING = {
   farJumpLines: 8,
   lostMs: 8000,
@@ -115,9 +122,9 @@ function buildTranscriptSearchText(items) {
   return words.slice(-DEFAULT_TRANSCRIPT_MATCH_WORD_WINDOW).join(' ');
 }
 
-function isForwardMatch(match, activeLineIndex, tracking) {
-  return match.confidence >= tracking.minConfidence
-    && (match.index - activeLineIndex) <= tracking.farJumpLines;
+function isForwardMatch(match, activeLineIndex, minConfidence, farLimit) {
+  return match.confidence >= minConfidence
+    && (match.index - activeLineIndex) <= farLimit;
 }
 
 /**
@@ -316,11 +323,30 @@ export function createPresenterSession(options) {
       }
 
       const transcriptTail = buildTranscriptSearchText(state.teleprompter.recentTranscript);
-      const match = matchLineDetailed(transcriptTail, state.current.lines, state.teleprompter.activeLineIndex, {
-        threshold: tracking.minConfidence,
-      });
+      // Off-script/lost states widen the search: a lower threshold and a longer
+      // forward reach (farJumpLines * 3) so a distinctive upcoming line can snap
+      // follow back into sync. The trackingState here reflects the latest tick
+      // or transcript, which is the state we want to recover from.
+      const isOffScriptRecovery = state.teleprompter.trackingState === 'offScript'
+        || state.teleprompter.trackingState === 'lost';
+      const searchThreshold = isOffScriptRecovery ? OFF_SCRIPT_RECOVERY_THRESHOLD : tracking.minConfidence;
+      const farLimit = isOffScriptRecovery
+        ? tracking.farJumpLines * OFF_SCRIPT_RECOVERY_FAR_MULTIPLIER
+        : tracking.farJumpLines;
+      const matchOptions = { threshold: searchThreshold };
 
-      if (isForwardMatch(match, state.teleprompter.activeLineIndex, tracking)) {
+      if (isOffScriptRecovery) {
+        matchOptions.maxIndex = state.teleprompter.activeLineIndex + farLimit;
+      }
+
+      const match = matchLineDetailed(
+        transcriptTail,
+        state.current.lines,
+        state.teleprompter.activeLineIndex,
+        matchOptions,
+      );
+
+      if (isForwardMatch(match, state.teleprompter.activeLineIndex, searchThreshold, farLimit)) {
         // Capture time preserves the speaker's actual pace, while `nowMs` records
         // when the reducer observed enough evidence to refresh follow state.
         if (runtime.lastMatchedLineIndex !== match.index || match.handoff === 'early') {

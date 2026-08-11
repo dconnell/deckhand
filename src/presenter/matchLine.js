@@ -6,14 +6,28 @@ function normalizeWords(text) {
     .filter(Boolean);
 }
 
-function countWordMatches(lineWords, transcriptWords) {
+// Minimum TF-IDF weighted score for the next-line prefix/tail evidence that
+// authorizes an early handoff. See matchLineDetailed for the full rationale.
+const EARLY_HANDOFF_PREFIX_FLOOR = 0.3;
+
+function sumLineWeights(lineWords, weightOf) {
+  let total = 0;
+
+  for (const word of lineWords) {
+    total += weightOf(word);
+  }
+
+  return total;
+}
+
+function sumMatchedWeights(lineWords, transcriptWords, weightOf) {
   const remaining = new Map();
 
   for (const word of transcriptWords) {
     remaining.set(word, (remaining.get(word) ?? 0) + 1);
   }
 
-  let matches = 0;
+  let matched = 0;
 
   for (const word of lineWords) {
     const count = remaining.get(word) ?? 0;
@@ -22,7 +36,7 @@ function countWordMatches(lineWords, transcriptWords) {
       continue;
     }
 
-    matches += 1;
+    matched += weightOf(word);
 
     if (count === 1) {
       remaining.delete(word);
@@ -31,32 +45,48 @@ function countWordMatches(lineWords, transcriptWords) {
     }
   }
 
-  return matches;
+  return matched;
 }
 
-function countMatchedWords(lineWords, transcriptWords) {
-  return countWordMatches(lineWords, transcriptWords);
-}
+// TF-IDF style distinctive-word weighting: each line word contributes
+// `1 / documentFrequency`, where documentFrequency is the number of slide lines
+// the word appears in. Distinctive words anchor the match; ubiquitous filler
+// (e.g. "the", "and") gets discounted so it cannot inflate old-line scores and
+// lag the highlight. Score is weighted precision: matched weight over total
+// line weight. Recall is intentionally dropped because a short, fully-present
+// line is a strong anchor even when the rolling window holds extra words.
+function computeScore(lineWords, transcriptWords, weightOf) {
+  const totalWeight = sumLineWeights(lineWords, weightOf);
 
-function computeScore(lineWords, transcriptWords) {
-  const matches = countWordMatches(lineWords, transcriptWords);
-
-  if (matches === 0) {
+  if (totalWeight === 0) {
     return 0;
   }
 
-  const precision = matches / lineWords.length;
-  const recall = matches / transcriptWords.length;
-
-  if (precision + recall === 0) {
-    return 0;
-  }
-
-  return (2 * precision * recall) / (precision + recall);
+  return sumMatchedWeights(lineWords, transcriptWords, weightOf) / totalWeight;
 }
 
-function computeTailScore(lineWords, transcriptWords) {
-  return computeScore(lineWords, transcriptWords.slice(-lineWords.length));
+function computeTailScore(lineWords, transcriptWords, weightOf) {
+  return computeScore(lineWords, transcriptWords.slice(-lineWords.length), weightOf);
+}
+
+function computeDocumentFrequency(lines) {
+  const documentFrequency = new Map();
+
+  for (const line of lines) {
+    const words = normalizeWords(getSpokenText(line));
+    const seen = new Set();
+
+    for (const word of words) {
+      if (seen.has(word)) {
+        continue;
+      }
+
+      seen.add(word);
+      documentFrequency.set(word, (documentFrequency.get(word) ?? 0) + 1);
+    }
+  }
+
+  return documentFrequency;
 }
 
 function countTrailingPrefixMatches(lineWords, transcriptWords) {
@@ -137,6 +167,8 @@ export function matchLineDetailed(transcriptTail, lines, fromIndex, options = {}
   const endIndex = typeof options.maxIndex === 'number'
     ? Math.max(startIndex, Math.min(lines.length - 1, options.maxIndex))
     : lines.length - 1;
+  const documentFrequency = computeDocumentFrequency(lines);
+  const weightOf = (word) => 1 / (documentFrequency.get(word) ?? 1);
   const scoredLines = new Map();
   let bestIndex = startIndex;
   let bestScore = 0;
@@ -150,8 +182,8 @@ export function matchLineDetailed(transcriptTail, lines, fromIndex, options = {}
       continue;
     }
 
-    const score = computeScore(lineWords, transcriptWords);
-    const tailScore = computeTailScore(lineWords, transcriptWords);
+    const score = computeScore(lineWords, transcriptWords, weightOf);
+    const tailScore = computeTailScore(lineWords, transcriptWords, weightOf);
 
     scoredLines.set(index, {
       lineWords,
@@ -190,22 +222,27 @@ export function matchLineDetailed(transcriptTail, lines, fromIndex, options = {}
       );
       const nextPrefixWords = countTrailingPrefixMatches(nextLine.lineWords, transcriptWords);
       const nextPrefixScore = nextPrefixWords > 0
-        ? computeScore(nextLine.lineWords, transcriptWords.slice(-nextPrefixWords))
+        ? computeScore(nextLine.lineWords, transcriptWords.slice(-nextPrefixWords), weightOf)
         : 0;
-      const currentCoveredWords = countMatchedWords(currentLine.lineWords, transcriptWords);
-      const currentCoveredRatio = currentLine.lineWords.length > 0
-        ? currentCoveredWords / currentLine.lineWords.length
-        : 0;
+      const currentCoveredRatio = currentLine.score;
 
       // Generalized early advance: when the current line is well-covered and
       // the next line has distinct prefix evidence at the transcript tail,
       // advance immediately instead of waiting for the next line's words to
       // dominate the rolling window. Without this, the highlight lags a full
       // line behind because the matcher keeps scoring the finished line higher.
+      //
+      // The prefix score floor is decoupled from the main match threshold and
+      // kept low: under TF-IDF weighted precision, hearing just the required
+      // prefix (ceil(n/3) words) of an n-word line covers ~1/3 of its weight, so
+      // a floor near 0.3 confirms the prefix is genuine without demanding the
+      // near-full coverage that would defeat the purpose of an early handoff.
+      // Spurious advances are still blocked by the prefix-count gate above and
+      // the distinct-forward-prefix check below.
       if (currentCoveredRatio >= 0.55
         && nextPrefixWords >= requiredPrefixWords
-        && (nextLine.tailScore >= Math.max(threshold, 0.45)
-          || nextPrefixScore >= Math.max(threshold, 0.45))
+        && (nextLine.tailScore >= EARLY_HANDOFF_PREFIX_FLOOR
+          || nextPrefixScore >= EARLY_HANDOFF_PREFIX_FLOOR)
         && hasDistinctForwardPrefix(currentLine.lineWords, nextLine.lineWords, nextPrefixWords)) {
         return { index: nextLine.index, confidence: nextLine.tailScore, handoff: 'early' };
       }

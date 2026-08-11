@@ -256,9 +256,12 @@ npm run presenter:stt -- --once my-talk                  # one-shot test
 ```
 
 Deckhand's presenter STT config now targets `whisper-stream` directly. The
-default sample settings use `mode: "step"` with `stepMs: 1500`,
-`lengthMs: 6000`, and `keepMs: 250`, which keeps follow mode responsive while
-still giving the decoder enough context to stabilize short phrases.
+default sample settings use `mode: "step"` with `stepMs: 1000`,
+`lengthMs: 4000`, and `keepMs: 250`. The shorter step and window keep fresh
+transcripts reaching follow mode quickly, which lets the teleprompter track
+live speech more tightly; the coordinator also derives a prediction lead of
+`max(stepMs * 3, 3000)` so follow mode can bridge the gap between transcript
+updates instead of jumping only when each update lands.
 
 Use `mode: "vad"` when you want speech-activity-triggered bursts instead of a
 steady cadence. In `vad` mode, tune `lengthMs`, `vadThreshold`, and

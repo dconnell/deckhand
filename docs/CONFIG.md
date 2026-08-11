@@ -98,8 +98,8 @@ model for OBS, the presenter stage, and slide actions.
       "model": "/absolute/path/to/ggml-large-v3-turbo.bin",
       "mode": "step",
       "captureId": -1,
-      "stepMs": 1500,
-      "lengthMs": 6000,
+      "stepMs": 1000,
+      "lengthMs": 4000,
       "keepMs": 250,
       "threads": 4,
       "audioCtx": 0,
@@ -648,8 +648,8 @@ selector is used only for the local presenter window-management path.
 - `mode` — `step` or `vad`; default `step`
 - `captureId` — microphone capture device id passed to `whisper-stream`;
   default `-1`
-- `stepMs` — decode cadence in milliseconds; default `1500`
-- `lengthMs` — audio window length in milliseconds; default `6000`; must be
+- `stepMs` — decode cadence in milliseconds; default `1000`
+- `lengthMs` — audio window length in milliseconds; default `4000`; must be
   greater than or equal to `stepMs`
 - `keepMs` — overlap retained between step windows; default `250`; must be less
   than or equal to `stepMs`
@@ -670,8 +670,14 @@ Tuning guidance:
 
 - `step` mode is the default for teleprompter follow mode because it produces a
   steady transcript cadence.
-- Start by lowering `stepMs` to improve responsiveness; raise `lengthMs` only if
-  phrases are getting chopped too aggressively.
+- The defaults (`stepMs: 1000`, `lengthMs: 4000`) favor teleprompter
+  responsiveness: a shorter step means fresher transcripts reach follow mode
+  sooner, and the shorter window keeps the decoder from lagging well behind
+  live speech. The coordinator derives a prediction lead of
+  `max(stepMs * 3, 3000)` so the teleprompter can bridge the gap between
+  transcript updates rather than snapping forward only when each update lands.
+- Raise `lengthMs` only if phrases are getting chopped too aggressively; keep it
+  as close to `stepMs` as your decoder tolerates so windows stay fresh.
 - Increase `keepMs` modestly to preserve word boundaries between windows.
 - Use `vad` mode when you prefer speech-burst transcription and can tolerate
   less frequent updates.

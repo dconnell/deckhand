@@ -139,29 +139,11 @@ body {
   margin: 0 0 8px;
   font-size: 24px;
   line-height: 1.35;
-  opacity: 0.55;
   position: relative;
 }
 
 .teleprompter-line[data-tier='past'] {
   opacity: 0.4;
-}
-
-.teleprompter-line[data-tier='current'] {
-  opacity: 1;
-}
-
-.teleprompter-line[data-tier='current']::before {
-  content: '';
-  position: absolute;
-  inset: -6px -12px;
-  border-radius: 12px;
-  background: rgba(59, 186, 255, 0.18);
-  z-index: -1;
-}
-
-.teleprompter-line[data-tier='near'] {
-  opacity: 1;
 }
 
 .teleprompter-progress-shell {

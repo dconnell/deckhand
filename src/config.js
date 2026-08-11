@@ -727,8 +727,8 @@ function normalizePresenterStt(stt) {
     throw new ConfigError('presenter.stt.mode', `must be one of: ${Array.from(VALID_STT_MODES).join(', ')}`);
   }
 
-  const stepMs = normalizePositiveInteger(value.stepMs ?? 1500, 'presenter.stt.stepMs');
-  const lengthMs = normalizePositiveInteger(value.lengthMs ?? 6000, 'presenter.stt.lengthMs');
+  const stepMs = normalizePositiveInteger(value.stepMs ?? 1000, 'presenter.stt.stepMs');
+  const lengthMs = normalizePositiveInteger(value.lengthMs ?? 4000, 'presenter.stt.lengthMs');
   const keepMs = normalizeIntegerAtLeast(value.keepMs ?? 250, 'presenter.stt.keepMs', 0, 'non-negative integer');
 
   if (lengthMs < stepMs) {

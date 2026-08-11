@@ -221,10 +221,10 @@ test('buildTeleprompterFrame treats gap and mode rows as metadata instead of con
   });
 
   assert.equal(frame.offsetPx, -104);
-  assert.deepEqual(frame.tiers, ['past', 'past', 'current', 'future', 'near']);
+  assert.deepEqual(frame.tiers, ['past', 'past', 'future', 'future', 'future']);
 });
 
-test('assignLineTiers highlights upcoming spoken lines instead of metadata rows', () => {
+test('assignLineTiers marks lines before the active index as past and the rest as future', () => {
   assert.deepEqual(assignLineTiers([
     { spokenText: 'One' },
     { spokenText: '' },
@@ -232,7 +232,7 @@ test('assignLineTiers highlights upcoming spoken lines instead of metadata rows'
     { spokenText: '' },
     { spokenText: 'Three' },
     { spokenText: 'Four' },
-  ], 2), ['past', 'past', 'current', 'future', 'near', 'near']);
+  ], 2), ['past', 'past', 'future', 'future', 'future', 'future']);
 });
 
 test('buildProgressPercent counts only spoken lines', () => {

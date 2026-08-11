@@ -363,8 +363,13 @@ test('follow mode can still hand off when the next short line evidence is slight
   session.applyTranscript(createTranscript('today we will talk through the live demo setup before handoff demo starts now', 2_000), 2_000);
 
   assert.equal(session.getState().teleprompter.activeLineIndex, 2);
-  assert.equal(session.tick(3_000), false);
-  assert.equal(session.getState().teleprompter.activeLineIndex, 2);
+  // Under TF-IDF the fully-heard short line ("Demo starts now.") wins directly
+  // rather than via the early-handoff path. Early-handoff resets the predictor
+  // and suppresses lead projection; a confident direct match anchors it, so the
+  // existing lead projection resumes — matching the behavior asserted in
+  // "transcript matches project forward using the current reduction time".
+  assert.equal(session.tick(3_000), true);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 3);
 });
 
 test('follow mode can hand off after two words into a five-word next line', () => {
@@ -389,4 +394,59 @@ test('follow mode can hand off after two words into a five-word next line', () =
   assert.equal(session.getState().teleprompter.activeLineIndex, 2);
   assert.equal(session.tick(4_000), false);
   assert.equal(session.getState().teleprompter.activeLineIndex, 2);
+});
+
+test('off-script recovery widens the forward search window to farJumpLines times three', () => {
+  const session = createPresenterSession({
+    followEnabledByDefault: true,
+    tracking: {
+      offScriptMs: 2_000,
+      lostMs: 10_000,
+      minConfidence: 0.35,
+      farJumpLines: 1,
+    },
+  });
+
+  session.applyPresentationState(createPresentationState(1, {
+    script: 'Alpha begins.\nBravo continues.\nCharlie delta.\nEcho foxtrot.\nGolf hotel.',
+  }), 1_000);
+  session.applyTranscript(createTranscript('alpha begins', 2_000), 2_000);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 0);
+
+  session.tick(5_000);
+  assert.equal(session.getState().teleprompter.trackingState, 'offScript');
+
+  // Line 3 is three ahead: beyond the normal farJumpLines gate (1) but within the
+  // widened off-script gate (farJumpLines * 3 === 3).
+  session.applyTranscript(createTranscript('echo foxtrot', 5_500), 5_500);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 3);
+  assert.equal(session.getState().teleprompter.trackingState, 'listening');
+});
+
+test('off-script recovery accepts distinctive partial matches below the default confidence threshold', () => {
+  const session = createPresenterSession({
+    followEnabledByDefault: true,
+    tracking: {
+      offScriptMs: 2_000,
+      lostMs: 10_000,
+      minConfidence: 0.35,
+      farJumpLines: 2,
+    },
+  });
+
+  session.applyPresentationState(createPresentationState(1, {
+    script: 'The intro.\nThe sigma tau omega.',
+  }), 1_000);
+  session.applyTranscript(createTranscript('the intro', 2_000), 2_000);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 0);
+
+  session.tick(5_000);
+  assert.equal(session.getState().teleprompter.trackingState, 'offScript');
+
+  // 'sigma' alone yields a weighted confidence of ~0.286: below the default 0.35
+  // threshold, but accepted by the lowered 0.25 off-script threshold. This relies
+  // on the shrunken item window isolating the latest transcript chunk.
+  session.applyTranscript(createTranscript('sigma', 5_500), 5_500);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 1);
+  assert.equal(session.getState().teleprompter.trackingState, 'listening');
 });
