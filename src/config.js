@@ -8,6 +8,7 @@ const BROWSER_SOURCE_KIND = 'browser';
 const APP_SOURCE_KIND = 'app';
 const VALID_SOURCE_KINDS = new Set([BROWSER_SOURCE_KIND, APP_SOURCE_KIND]);
 const VALID_BROWSER_ACTIONS = new Set(['activateTab', 'navigate']);
+const VALID_STT_MODES = new Set(['step', 'vad']);
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -64,6 +65,22 @@ function normalizePositiveInteger(value, pathName, label = 'positive integer') {
 function normalizePositiveNumber(value, pathName) {
   if (typeof value !== 'number' || Number.isNaN(value) || value <= 0) {
     throw new ConfigError(pathName, 'must be a positive number');
+  }
+
+  return value;
+}
+
+function normalizeIntegerAtLeast(value, pathName, minimum, label = `integer greater than or equal to ${minimum}`) {
+  if (!Number.isInteger(value) || value < minimum) {
+    throw new ConfigError(pathName, `must be an ${label}`);
+  }
+
+  return value;
+}
+
+function normalizeNumberAtLeast(value, pathName, minimum, label = `number greater than or equal to ${minimum}`) {
+  if (typeof value !== 'number' || Number.isNaN(value) || value < minimum) {
+    throw new ConfigError(pathName, `must be a ${label}`);
   }
 
   return value;
@@ -697,14 +714,69 @@ function normalizePresenterStt(stt) {
   }
 
   const value = assertPlainObject(stt, 'presenter.stt');
+
+   if (value.chunkSeconds !== undefined) {
+    throw new ConfigError(
+      'presenter.stt.chunkSeconds',
+      'was replaced by whisper-stream settings: mode, stepMs, lengthMs, and keepMs',
+    );
+  }
+
+  const mode = value.mode === undefined ? 'step' : assertNonEmptyString(value.mode, 'presenter.stt.mode');
+  if (!VALID_STT_MODES.has(mode)) {
+    throw new ConfigError('presenter.stt.mode', `must be one of: ${Array.from(VALID_STT_MODES).join(', ')}`);
+  }
+
+  const stepMs = normalizePositiveInteger(value.stepMs ?? 1500, 'presenter.stt.stepMs');
+  const lengthMs = normalizePositiveInteger(value.lengthMs ?? 6000, 'presenter.stt.lengthMs');
+  const keepMs = normalizeIntegerAtLeast(value.keepMs ?? 250, 'presenter.stt.keepMs', 0, 'non-negative integer');
+
+  if (lengthMs < stepMs) {
+    throw new ConfigError('presenter.stt.lengthMs', 'must be greater than or equal to presenter.stt.stepMs');
+  }
+
+  if (keepMs > stepMs) {
+    throw new ConfigError('presenter.stt.keepMs', 'must be less than or equal to presenter.stt.stepMs');
+  }
+
   const normalized = {
     whisperBin: normalizeAbsolutePath(value.whisperBin, 'presenter.stt.whisperBin'),
     model: normalizeAbsolutePath(value.model, 'presenter.stt.model'),
-    chunkSeconds: normalizePositiveNumber(value.chunkSeconds, 'presenter.stt.chunkSeconds'),
+    mode,
+    captureId: normalizeIntegerAtLeast(value.captureId ?? -1, 'presenter.stt.captureId', -1, 'integer greater than or equal to -1'),
+    stepMs,
+    lengthMs,
+    keepMs,
+    threads: normalizePositiveInteger(value.threads ?? 4, 'presenter.stt.threads'),
+    audioCtx: normalizeIntegerAtLeast(value.audioCtx ?? 0, 'presenter.stt.audioCtx', 0, 'non-negative integer'),
+    beamSize: normalizeIntegerAtLeast(value.beamSize ?? -1, 'presenter.stt.beamSize', -1, 'integer greater than or equal to -1'),
+    keepContext: value.keepContext === undefined ? false : assertBoolean(value.keepContext, 'presenter.stt.keepContext'),
+    noFallback: value.noFallback === undefined ? true : assertBoolean(value.noFallback, 'presenter.stt.noFallback'),
+    useGpu: value.useGpu === undefined ? true : assertBoolean(value.useGpu, 'presenter.stt.useGpu'),
+    flashAttn: value.flashAttn === undefined ? true : assertBoolean(value.flashAttn, 'presenter.stt.flashAttn'),
   };
 
   if (value.language !== undefined) {
     normalized.language = assertNonEmptyString(value.language, 'presenter.stt.language');
+  }
+
+  if (value.vadThreshold !== undefined) {
+    const vadThreshold = value.vadThreshold;
+
+    if (typeof vadThreshold !== 'number' || Number.isNaN(vadThreshold) || vadThreshold < 0 || vadThreshold > 1) {
+      throw new ConfigError('presenter.stt.vadThreshold', 'must be a number between 0 and 1');
+    }
+
+    normalized.vadThreshold = vadThreshold;
+  }
+
+  if (value.freqThreshold !== undefined) {
+    normalized.freqThreshold = normalizeNumberAtLeast(
+      value.freqThreshold,
+      'presenter.stt.freqThreshold',
+      0,
+      'non-negative number',
+    );
   }
 
   return normalized;
@@ -743,6 +815,7 @@ function normalizePresenterTeleprompter(teleprompter, { requireWindow = false } 
 function normalizePresenterTracking(tracking) {
   if (tracking === undefined) {
     return {
+      farJumpLines: 8,
       offScriptMs: 3000,
       lostMs: 8000,
       minConfidence: 0.35,
@@ -757,6 +830,7 @@ function normalizePresenterTracking(tracking) {
   }
 
   return {
+    farJumpLines: normalizePositiveInteger(value.farJumpLines ?? 8, 'presenter.teleprompter.tracking.farJumpLines'),
     offScriptMs: normalizePositiveInteger(value.offScriptMs ?? 3000, 'presenter.teleprompter.tracking.offScriptMs'),
     lostMs: normalizePositiveInteger(value.lostMs ?? 8000, 'presenter.teleprompter.tracking.lostMs'),
     minConfidence,
@@ -890,7 +964,7 @@ export class ConfigError extends Error {
  * @param {{ baseDir?: string }} [options] Loader options. `baseDir` resolves
  *   relative `files` paths (e.g. a presentation's committed image assets)
  *   against the presentation directory.
- * @returns {{ driver: { type: string }, obs: { url: string, password: string, prune: boolean, transitions: null | { forward: string | null, backward: string | null, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number, windowSettleMs: number, freezeDimPercent: number } }, hub: { host: string, port: number }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[], files?: string[] }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, profileName?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, chunkSeconds: number, language?: string }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
+ * @returns {{ driver: { type: string }, obs: { url: string, password: string, prune: boolean, transitions: null | { forward: string | null, backward: string | null, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number, windowSettleMs: number, freezeDimPercent: number } }, hub: { host: string, port: number }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[], files?: string[] }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, profileName?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, mode: 'step' | 'vad', captureId: number, stepMs: number, lengthMs: number, keepMs: number, threads: number, audioCtx: number, beamSize: number, keepContext: boolean, noFallback: boolean, useGpu: boolean, flashAttn: boolean, language?: string, vadThreshold?: number, freqThreshold?: number }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
  */
 export function normalizeConfig(rawConfig, { baseDir } = {}) {
   const root = assertPlainObject(rawConfig, 'config');

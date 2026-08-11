@@ -30,21 +30,9 @@ export class SubprocessError extends Error {
   }
 }
 
-/**
- * Run a subprocess and capture utf-8 stdout/stderr.
- *
- * @param {string} command Executable name or absolute path.
- * @param {string[]} args CLI arguments.
- * @param {{ signal?: AbortSignal }} [options] Execution options.
- * @returns {Promise<{ stdout: string, stderr: string, exitCode: number }>}
- */
-export function runSubprocess(command, args, options = {}) {
+function attachResult(child, command, args) {
   return new Promise((resolve, reject) => {
     let settled = false;
-    const child = spawn(command, args, {
-      signal: options.signal,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
     let stdout = '';
     let stderr = '';
 
@@ -85,9 +73,9 @@ export function runSubprocess(command, args, options = {}) {
       settled = true;
       if (exitCode === 0) {
         resolve({
-          stdout,
-          stderr,
           exitCode: 0,
+          stderr,
+          stdout,
         });
         return;
       }
@@ -102,4 +90,33 @@ export function runSubprocess(command, args, options = {}) {
       }));
     });
   });
+}
+
+/**
+ * Spawn a subprocess and expose both the child streams and eventual completion.
+ *
+ * @param {string} command Executable name or absolute path.
+ * @param {string[]} args CLI arguments.
+ * @param {{ signal?: AbortSignal }} [options] Execution options.
+ * @returns {import('node:child_process').ChildProcessWithoutNullStreams & { result: Promise<{ stdout: string, stderr: string, exitCode: number }> }}
+ */
+export function createSubprocess(command, args, options = {}) {
+  const child = spawn(command, args, {
+    signal: options.signal,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  child.result = attachResult(child, command, args);
+  return child;
+}
+
+/**
+ * Run a subprocess and capture utf-8 stdout/stderr.
+ *
+ * @param {string} command Executable name or absolute path.
+ * @param {string[]} args CLI arguments.
+ * @param {{ signal?: AbortSignal }} [options] Execution options.
+ * @returns {Promise<{ stdout: string, stderr: string, exitCode: number }>}
+ */
+export function runSubprocess(command, args, options = {}) {
+  return createSubprocess(command, args, options).result;
 }

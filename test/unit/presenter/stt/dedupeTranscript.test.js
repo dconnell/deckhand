@@ -11,6 +11,10 @@ test('shouldPublishTranscript allows new transcript text', () => {
   assert.equal(shouldPublishTranscript('Walk through the init flow.', 'Emphasize line 42.'), true);
 });
 
+test('shouldPublishTranscript suppresses punctuation-only churn', () => {
+  assert.equal(shouldPublishTranscript('Walk through the init flow', 'Walk through the init flow.'), false);
+});
+
 test('shouldPublishTranscript suppresses blank parsed output', () => {
   assert.equal(shouldPublishTranscript('Previous', ''), false);
 });

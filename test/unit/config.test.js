@@ -102,9 +102,20 @@ function createValidConfig() {
         BrowserB: { app: 'Google Chrome', titleIncludes: 'Secondary' },
       },
       stt: {
-        whisperBin: '/opt/homebrew/bin/whisper-cli',
+        whisperBin: '/opt/homebrew/bin/whisper-stream',
         model: '/opt/homebrew/share/whisper/ggml-base.en.bin',
-        chunkSeconds: 2.5,
+        mode: 'step',
+        captureId: -1,
+        stepMs: 1500,
+        lengthMs: 6000,
+        keepMs: 250,
+        threads: 4,
+        audioCtx: 0,
+        beamSize: -1,
+        keepContext: false,
+        noFallback: true,
+        useGpu: true,
+        flashAttn: true,
         language: 'en',
       },
       teleprompter: {
@@ -168,6 +179,97 @@ test('normalizeConfig accepts the greenfield presenter-mode model', () => {
   });
 });
 
+test('normalizeConfig preserves teleprompter tracking tuning including farJumpLines', () => {
+  const config = createValidConfig();
+  config.presenter.teleprompter.tracking = {
+    farJumpLines: 3,
+    lostMs: 9_000,
+    minConfidence: 0.45,
+    offScriptMs: 4_000,
+  };
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.presenter.teleprompter.tracking, {
+    farJumpLines: 3,
+    lostMs: 9_000,
+    minConfidence: 0.45,
+    offScriptMs: 4_000,
+  });
+});
+
+test('normalizeConfig applies whisper-stream stt defaults when optional fields are omitted', () => {
+  const config = createValidConfig();
+  config.presenter.stt = {
+    whisperBin: '/opt/homebrew/bin/whisper-stream',
+    model: '/opt/homebrew/share/whisper/ggml-base.en.bin',
+  };
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.presenter.stt, {
+    whisperBin: '/opt/homebrew/bin/whisper-stream',
+    model: '/opt/homebrew/share/whisper/ggml-base.en.bin',
+    mode: 'step',
+    captureId: -1,
+    stepMs: 1500,
+    lengthMs: 6000,
+    keepMs: 250,
+    threads: 4,
+    audioCtx: 0,
+    beamSize: -1,
+    keepContext: false,
+    noFallback: true,
+    useGpu: true,
+    flashAttn: true,
+  });
+});
+
+test('normalizeConfig preserves explicit whisper-stream stt settings', () => {
+  const config = createValidConfig();
+  config.presenter.stt = {
+    whisperBin: '/opt/homebrew/bin/whisper-stream',
+    model: '/opt/homebrew/share/whisper/ggml-large-v3-turbo.bin',
+    mode: 'vad',
+    captureId: 2,
+    stepMs: 500,
+    lengthMs: 5000,
+    keepMs: 250,
+    threads: 6,
+    audioCtx: 768,
+    beamSize: 3,
+    keepContext: true,
+    noFallback: true,
+    useGpu: false,
+    flashAttn: false,
+    vadThreshold: 0.65,
+    freqThreshold: 120,
+    language: 'en',
+  };
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.presenter.stt, {
+    whisperBin: '/opt/homebrew/bin/whisper-stream',
+    model: '/opt/homebrew/share/whisper/ggml-large-v3-turbo.bin',
+    mode: 'vad',
+    captureId: 2,
+    stepMs: 500,
+    lengthMs: 5000,
+    keepMs: 250,
+    threads: 6,
+    audioCtx: 768,
+    beamSize: 3,
+    keepContext: true,
+    noFallback: true,
+    useGpu: false,
+    flashAttn: false,
+    vadThreshold: 0.65,
+    freqThreshold: 120,
+    language: 'en',
+  });
+});
+
 test('normalizeConfig accepts audience-only mode when presenter is omitted', () => {
   const config = createValidConfig();
   delete config.presenter;
@@ -206,6 +308,7 @@ test('normalizeConfig applies default teleprompter tracking thresholds', () => {
   const normalized = normalizeConfig(createValidConfig());
 
   assert.deepEqual(normalized.presenter.teleprompter.tracking, {
+    farJumpLines: 8,
     offScriptMs: 3000,
     lostMs: 8000,
     minConfidence: 0.35,
@@ -223,6 +326,7 @@ test('normalizeConfig accepts explicit teleprompter tracking overrides', () => {
   const normalized = normalizeConfig(config);
 
   assert.deepEqual(normalized.presenter.teleprompter.tracking, {
+    farJumpLines: 8,
     offScriptMs: 4500,
     lostMs: 9000,
     minConfidence: 0.5,
@@ -916,16 +1020,55 @@ test('normalizeConfig rejects missing window app names', () => {
 
 test('normalizeConfig rejects relative stt paths', () => {
   const config = createValidConfig();
-  config.presenter.stt.whisperBin = './whisper-cli';
+  config.presenter.stt.whisperBin = './whisper-stream';
 
   assertConfigError(() => normalizeConfig(config), 'presenter.stt.whisperBin', /absolute path/i);
 });
 
-test('normalizeConfig rejects non-positive stt chunkSeconds', () => {
+test('normalizeConfig rejects unknown stt modes', () => {
   const config = createValidConfig();
-  config.presenter.stt.chunkSeconds = 0;
+  config.presenter.stt.mode = 'chunked';
 
-  assertConfigError(() => normalizeConfig(config), 'presenter.stt.chunkSeconds', /positive number/i);
+  assertConfigError(() => normalizeConfig(config), 'presenter.stt.mode', /must be one of/i);
+});
+
+test('normalizeConfig rejects legacy stt chunkSeconds', () => {
+  const config = createValidConfig();
+  delete config.presenter.stt.mode;
+  delete config.presenter.stt.stepMs;
+  delete config.presenter.stt.lengthMs;
+  delete config.presenter.stt.keepMs;
+  config.presenter.stt.chunkSeconds = 2.5;
+
+  assertConfigError(() => normalizeConfig(config), 'presenter.stt.chunkSeconds', /replaced/i);
+});
+
+test('normalizeConfig rejects non-positive stt stepMs', () => {
+  const config = createValidConfig();
+  config.presenter.stt.stepMs = 0;
+
+  assertConfigError(() => normalizeConfig(config), 'presenter.stt.stepMs', /positive integer/i);
+});
+
+test('normalizeConfig rejects stt lengthMs shorter than stepMs', () => {
+  const config = createValidConfig();
+  config.presenter.stt.lengthMs = config.presenter.stt.stepMs - 1;
+
+  assertConfigError(() => normalizeConfig(config), 'presenter.stt.lengthMs', /must be greater than or equal to presenter\.stt\.stepMs/i);
+});
+
+test('normalizeConfig rejects stt keepMs larger than stepMs', () => {
+  const config = createValidConfig();
+  config.presenter.stt.keepMs = config.presenter.stt.stepMs + 1;
+
+  assertConfigError(() => normalizeConfig(config), 'presenter.stt.keepMs', /must be less than or equal to presenter\.stt\.stepMs/i);
+});
+
+test('normalizeConfig rejects invalid stt vadThreshold values', () => {
+  const config = createValidConfig();
+  config.presenter.stt.vadThreshold = 1.5;
+
+  assertConfigError(() => normalizeConfig(config), 'presenter.stt.vadThreshold', /between 0 and 1/i);
 });
 
 test('normalizeConfig rejects unknown driver types', () => {
@@ -1010,6 +1153,8 @@ test('presentation/example/config.json loads as the shipped sample presentation'
 
   assert.ok(config.presenter);
   assert.ok(config.layouts['dual-browser']);
+  assert.equal(config.presenter.stt.mode, 'step');
+  assert.equal(config.presenter.stt.stepMs, 1500);
 });
 
 test('presentation/example-laptop/config.json ships per-layout teleprompter overlays with one slide override', async () => {

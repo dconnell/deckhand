@@ -1,3 +1,11 @@
+function normalizeForComparison(text) {
+  return String(text ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /**
  * Decide whether the latest transcript text should be published.
  *
@@ -12,5 +20,5 @@ export function shouldPublishTranscript(previousText, nextText) {
     return false;
   }
 
-  return String(previousText ?? '').trim() !== next;
+  return normalizeForComparison(previousText) !== normalizeForComparison(next);
 }

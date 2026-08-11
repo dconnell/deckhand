@@ -10,6 +10,8 @@ import {
 import { splitScript } from './splitScript.js';
 
 const DEFAULT_RECENT_TRANSCRIPT_LIMIT = 10;
+const DEFAULT_TRANSCRIPT_MATCH_ITEM_WINDOW = 3;
+const DEFAULT_TRANSCRIPT_MATCH_WORD_WINDOW = 24;
 const DEFAULT_TRACKING = {
   farJumpLines: 8,
   lostMs: 8000,
@@ -105,14 +107,30 @@ function coerceActiveLine(lines, activeLineIndex) {
   return clampToSpokenLine(lines, Math.max(0, Math.min(lines.length - 1, activeLineIndex)));
 }
 
+function buildTranscriptSearchText(items) {
+  const words = items
+    .slice(-DEFAULT_TRANSCRIPT_MATCH_ITEM_WINDOW)
+    .flatMap((item) => String(item?.text ?? '').trim().split(/\s+/).filter(Boolean));
+
+  return words.slice(-DEFAULT_TRANSCRIPT_MATCH_WORD_WINDOW).join(' ');
+}
+
+function isForwardMatch(match, activeLineIndex, tracking) {
+  return match.confidence >= tracking.minConfidence
+    && (match.index - activeLineIndex) <= tracking.farJumpLines;
+}
+
 /**
  * Create the coordinator-owned presenter session reducer.
  *
- * @param {{ followEnabledByDefault: boolean, recentTranscriptLimit?: number, tracking?: { offScriptMs?: number, lostMs?: number, minConfidence?: number, farJumpLines?: number } }} options Presenter session options.
+ * @param {{ followEnabledByDefault: boolean, predictionLeadMs?: number, recentTranscriptLimit?: number, tracking?: { offScriptMs?: number, lostMs?: number, minConfidence?: number, farJumpLines?: number } }} options Presenter session options.
  * @returns {{ applyCommand(command: { op: string, source: string, delta?: number, lineIndex?: number }, nowMs?: number): boolean, applyPresentationState(presentationState: { seq: number, slideId: string, layoutId: string, focus?: string | null, script?: string | null, overlays?: Array<Record<string, unknown>> }, nowMs?: number): boolean, applySlideManifest(manifest: { slides: Array<{ id: string, index: { h: number, v: number }, title?: string, heading?: string }> }, nowMs?: number): boolean, applyTranscript(transcript: { source: string, text: string, capturedAtMs: number }, nowMs?: number): boolean, getState(): Record<string, unknown>, tick(nowMs?: number): boolean, updateObsPreview(preview: Partial<ReturnType<typeof createInitialPreviewState>>, nowMs?: number): boolean, updateStream(stream: Partial<ReturnType<typeof createInitialStreamState>>, nowMs?: number): boolean }}
  */
 export function createPresenterSession(options) {
   const predictor = createPredictor({ alpha: 0.6, maxRate: 4, minRate: 0.25 });
+  const predictionLeadMs = Number.isFinite(options.predictionLeadMs) && options.predictionLeadMs > 0
+    ? options.predictionLeadMs
+    : 0;
   const recentTranscriptLimit = options.recentTranscriptLimit ?? DEFAULT_RECENT_TRANSCRIPT_LIMIT;
   const tracking = {
     ...DEFAULT_TRACKING,
@@ -134,7 +152,9 @@ export function createPresenterSession(options) {
   };
   const runtime = {
     ignoreTranscriptBeforeMs: -Infinity,
-    lastMatchedAtMs: null,
+    lastObservedMatchAtMs: null,
+    lastMatchedLineIndex: null,
+    lastPredictionAnchorObservedAtMs: null,
     manifestSlides: [],
     timerStartedAtMs: null,
   };
@@ -150,7 +170,9 @@ export function createPresenterSession(options) {
     state.teleprompter.recentTranscript = [];
     state.teleprompter.trackingState = 'idle';
     runtime.ignoreTranscriptBeforeMs = nowMs;
-    runtime.lastMatchedAtMs = null;
+    runtime.lastObservedMatchAtMs = null;
+    runtime.lastMatchedLineIndex = null;
+    runtime.lastPredictionAnchorObservedAtMs = null;
     predictor.reset();
   }
 
@@ -160,12 +182,12 @@ export function createPresenterSession(options) {
       return;
     }
 
-    if (runtime.lastMatchedAtMs === null) {
+    if (runtime.lastObservedMatchAtMs === null) {
       state.teleprompter.trackingState = 'idle';
       return;
     }
 
-    const sinceLastMatch = Math.max(0, nowMs - runtime.lastMatchedAtMs);
+    const sinceLastMatch = Math.max(0, nowMs - runtime.lastObservedMatchAtMs);
 
     if (sinceLastMatch >= tracking.lostMs) {
       state.teleprompter.trackingState = 'lost';
@@ -178,6 +200,30 @@ export function createPresenterSession(options) {
     }
 
     state.teleprompter.trackingState = 'listening';
+  }
+
+  function projectActiveLine(nowMs) {
+    if (!state.teleprompter.followEnabled
+      || state.current.hidden
+      || state.current.lines.length === 0
+      || runtime.lastPredictionAnchorObservedAtMs === null) {
+      return false;
+    }
+
+    const predictionNow = predictionLeadMs > 0
+      ? Math.min(nowMs, runtime.lastPredictionAnchorObservedAtMs + predictionLeadMs)
+      : nowMs;
+    const nextIndex = coerceActiveLine(
+      state.current.lines,
+      predictor.predict(Math.max(runtime.lastPredictionAnchorObservedAtMs, predictionNow), state.current.lines.length),
+    );
+
+    if (nextIndex === state.teleprompter.activeLineIndex) {
+      return false;
+    }
+
+    state.teleprompter.activeLineIndex = nextIndex;
+    return true;
   }
 
   function syncTimer(nowMs) {
@@ -266,20 +312,23 @@ export function createPresenterSession(options) {
         return true;
       }
 
-      const transcriptTail = state.teleprompter.recentTranscript.map((item) => item.text).join(' ');
+      const transcriptTail = buildTranscriptSearchText(state.teleprompter.recentTranscript);
       const match = matchLineDetailed(transcriptTail, state.current.lines, state.teleprompter.activeLineIndex, {
         threshold: tracking.minConfidence,
       });
 
-      if (match.confidence >= tracking.minConfidence
-        && (match.index - state.teleprompter.activeLineIndex) <= tracking.farJumpLines) {
-        predictor.onMatch(match.index, transcript.capturedAtMs);
-        state.teleprompter.activeLineIndex = coerceActiveLine(
-          state.current.lines,
-          predictor.predict(transcript.capturedAtMs, state.current.lines.length),
-        );
-        runtime.lastMatchedAtMs = transcript.capturedAtMs;
+      if (isForwardMatch(match, state.teleprompter.activeLineIndex, tracking)) {
+        // Capture time preserves the speaker's actual pace, while `nowMs` records
+        // when the reducer observed enough evidence to refresh follow state.
+        if (runtime.lastMatchedLineIndex !== match.index) {
+          predictor.onMatch(match.index, transcript.capturedAtMs ?? nowMs);
+          runtime.lastMatchedLineIndex = match.index;
+          runtime.lastPredictionAnchorObservedAtMs = nowMs;
+        }
+        runtime.lastObservedMatchAtMs = nowMs;
       }
+
+      projectActiveLine(nowMs);
 
       updateTrackingState(nowMs);
       commit(nowMs);
@@ -373,13 +422,16 @@ export function createPresenterSession(options) {
     tick(nowMs = Date.now()) {
       const previousElapsedMs = state.timer.elapsedMs;
       const previousRemainingMs = state.timer.remainingMs;
+      const previousActiveLineIndex = state.teleprompter.activeLineIndex;
       const previousTrackingState = state.teleprompter.trackingState;
 
       syncTimer(nowMs);
+      projectActiveLine(nowMs);
       updateTrackingState(nowMs);
 
       if (state.timer.elapsedMs === previousElapsedMs
         && state.timer.remainingMs === previousRemainingMs
+        && state.teleprompter.activeLineIndex === previousActiveLineIndex
         && state.teleprompter.trackingState === previousTrackingState) {
         return false;
       }

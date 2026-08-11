@@ -333,7 +333,8 @@ websocket may have dropped — reload the tab.
 ### `presenter:doctor` and `presenter:smoke` pass but Hammerspoon is broken
 
 Both are Deckhand-side checks only. `doctor` validates config, OBS canvas
-dimensions, platform, ffmpeg, and whisper paths. `smoke` probes Deckhand's HTTP
+dimensions, platform, configured whisper paths, and `whisper-stream --help`.
+`smoke` probes Deckhand's HTTP
 and opens its own observer websocket. Neither inspects `~/.hammerspoon/`, the
 init.lua sentinel block, the Hammerspoon process, or the Accessibility grant.
 

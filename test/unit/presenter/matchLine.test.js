@@ -30,3 +30,11 @@ test('matchLine uses structured spokenText and ignores non-spoken annotations', 
     { spokenText: 'Answer questions now.' },
   ], 1), 3);
 });
+
+test('matchLine keeps the nearest exact tie instead of jumping to a later duplicate line', () => {
+  assert.equal(matchLine('repeat this exactly', [
+    'Repeat this exactly.',
+    'Bridge line.',
+    'Repeat this exactly.',
+  ], 0), 0);
+});

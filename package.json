@@ -10,8 +10,8 @@
     "presenter:smoke": "node ./src/presenterSmoke.js",
     "presenter:doctor": "node ./src/presenterDoctor.js",
     "test": "node --test",
-    "test:integration": "node --test test/integration",
-    "test:unit": "node --test test/unit"
+    "test:integration": "node --test test/integration/*.test.js",
+    "test:unit": "node --test test/unit/*.test.js test/unit/presenter/*.test.js test/unit/presenter/stt/*.test.js"
   },
   "engines": {
     "node": ">=22.0.0"

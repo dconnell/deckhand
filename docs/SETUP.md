@@ -20,8 +20,8 @@ Advancing the local deck coordinates four things:
 - Node 22+
 - OBS Studio 28+
 - Hammerspoon
-- `ffmpeg` with `avfoundation` support
-- optional: whisper.cpp plus a local model file
+- optional: whisper.cpp built with the `whisper-stream` example plus a local
+  model file
 - this repo cloned locally
 
 ```bash
@@ -235,7 +235,13 @@ health is reported at `/status.json` under `browserSession`.
 
 ## STT runner (optional)
 
-Download a local whisper.cpp model first:
+Build `whisper-stream` and download a local whisper.cpp model first:
+
+```bash
+git clone https://github.com/ggml-org/whisper.cpp.git
+cmake -B whisper.cpp/build -DWHISPER_SDL2=ON whisper.cpp
+cmake --build whisper.cpp/build -j --config Release
+```
 
 ```bash
 curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
@@ -248,6 +254,15 @@ npm run presenter:stt -- my-talk                         # long-running
 npm run presenter:stt -- --retry-delay-ms 250 my-talk    # tune retry delay
 npm run presenter:stt -- --once my-talk                  # one-shot test
 ```
+
+Deckhand's presenter STT config now targets `whisper-stream` directly. The
+default sample settings use `mode: "step"` with `stepMs: 1500`,
+`lengthMs: 6000`, and `keepMs: 250`, which keeps follow mode responsive while
+still giving the decoder enough context to stabilize short phrases.
+
+Use `mode: "vad"` when you want speech-activity-triggered bursts instead of a
+steady cadence. In `vad` mode, tune `lengthMs`, `vadThreshold`, and
+`freqThreshold` first; in `step` mode, tune `stepMs` and `keepMs` first.
 
 On first use, macOS may prompt for microphone access for the terminal or Node.
 
@@ -324,6 +339,10 @@ hub. Neither command validates OBS Screen Recording permission, Hammerspoon,
 or whether managed Chrome windows actually move on a slide advance — the
 end-to-end advance test in [RUNBOOK.md](RUNBOOK.md#t-1-verify-the-four-outputs)
 is the only substitute for those.
+
+When `presenter.stt` is configured, `presenter:doctor` validates the configured
+`whisperBin` and model paths and then runs `whisper-stream --help` as a light
+smoke check.
 
 ## Troubleshooting
 

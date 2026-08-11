@@ -1,15 +1,11 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import WebSocket from 'ws';
 
-import { buildCaptureArgs } from './buildCaptureArgs.js';
 import { buildWhisperArgs } from './buildWhisperArgs.js';
 import { shouldPublishTranscript } from './dedupeTranscript.js';
-import { parseWhisperOutput } from './parseWhisperOutput.js';
-import { runSubprocess } from './subprocess.js';
+import { createWhisperOutputParser } from './parseWhisperOutput.js';
+import { createSubprocess } from './subprocess.js';
 
 function createNoopLogger() {
   return {
@@ -28,10 +24,34 @@ function isSocketOpen(socket, WebSocketClass) {
 }
 
 function closeSocket(socket) {
+  if (socket.readyState === WebSocket.CONNECTING) {
+    socket.once?.('error', () => {});
+
+    try {
+      socket.terminate?.();
+    } catch {
+      // ignore websocket cleanup failures
+    }
+
+    return;
+  }
+
   try {
     socket.close();
   } catch {
     // ignore websocket cleanup failures
+  }
+}
+
+function closeProcess(child) {
+  if (typeof child?.kill !== 'function') {
+    return;
+  }
+
+  try {
+    child.kill();
+  } catch {
+    // ignore subprocess cleanup failures
   }
 }
 
@@ -82,30 +102,80 @@ function sendJson(socket, payload) {
   socket.send(JSON.stringify(payload));
 }
 
-async function waitForRetry(delayMs, signal) {
+async function waitForRetry(delayFn, delayMs, signal) {
   if (delayMs <= 0) {
     return;
   }
 
-  await delay(delayMs, undefined, { signal });
+  await delayFn(delayMs, signal);
+}
+
+function normalizeChunkInput(chunkInput) {
+  return chunkInput ?? undefined;
+}
+
+function normalizeSttMode(stt) {
+  return stt.mode === 'vad' ? 'vad' : 'step';
+}
+
+function buildParser(stt) {
+  return createWhisperOutputParser({
+    mode: normalizeSttMode(stt),
+    nowFn: Date.now,
+  });
+}
+
+function estimateTranscriptLagMs(stt, event) {
+  if (event?.kind === 'segment') {
+    return Number.isFinite(stt.lengthMs) && stt.lengthMs > 0
+      ? Math.round(stt.lengthMs / 2)
+      : 0;
+  }
+
+  return Number.isFinite(stt.stepMs) && stt.stepMs > 0
+    ? Math.round(stt.stepMs)
+    : 0;
+}
+
+function buildCommandArgs(stt, chunkInput) {
+  return buildWhisperArgs({
+    audioCtx: stt.audioCtx,
+    beamSize: stt.beamSize,
+    captureId: chunkInput ?? stt.captureId ?? ':0',
+    flashAttn: stt.flashAttn,
+    freqThreshold: stt.freqThreshold,
+    keepContext: stt.keepContext,
+    keepMs: stt.keepMs,
+    language: stt.language,
+    lengthMs: stt.lengthMs,
+    mode: normalizeSttMode(stt),
+    model: stt.model,
+    noFallback: stt.noFallback,
+    stepMs: stt.stepMs,
+    threads: stt.threads,
+    useGpu: stt.useGpu,
+    vadThreshold: stt.vadThreshold,
+  });
 }
 
 /**
  * Run the local presenter STT observer.
  *
- * @param {{ chunkInput?: string, commandRunner?: (command: string, args: string[]) => Promise<{ stdout?: string, stderr?: string, exitCode?: number }>, hubUrl: string, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void }, nowFn?: () => number, once?: boolean, restartDelayMs?: number, signal?: AbortSignal, stt: { whisperBin: string, model: string, chunkSeconds: number, language?: string }, WebSocketClass?: typeof WebSocket }} options Runner options.
+ * @param {{ chunkInput?: string, createSubprocess?: (command: string, args: string[], options?: { signal?: AbortSignal }) => { stdout: NodeJS.ReadableStream & { setEncoding?(encoding: string): void }, stderr: NodeJS.ReadableStream & { setEncoding?(encoding: string): void }, result: Promise<{ stdout?: string, stderr?: string, exitCode?: number }>, kill?: () => void }, delayFn?: (delayMs: number, signal?: AbortSignal) => Promise<void>, hubUrl: string, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void }, nowFn?: () => number, once?: boolean, restartDelayMs?: number, signal?: AbortSignal, stt: { whisperBin: string, model: string, audioCtx?: number, beamSize?: number, captureId?: number | string, flashAttn?: boolean, freqThreshold?: number, keepContext?: boolean, keepMs?: number, language?: string, lengthMs?: number, mode?: 'step' | 'vad', noFallback?: boolean, stepMs?: number, threads?: number, useGpu?: boolean, vadThreshold?: number, chunkSeconds?: number }, WebSocketClass?: typeof WebSocket }} options Runner options.
  * @returns {Promise<void>}
  */
 export async function runSttObserver(options) {
   const logger = options.logger ?? createNoopLogger();
-  const runCommand = options.commandRunner ?? runSubprocess;
+  const spawnPersistent = options.createSubprocess ?? createSubprocess;
+  const delayFn = options.delayFn ?? (async (delayMs, signal) => {
+    await delay(delayMs, undefined, { signal });
+  });
   const WebSocketClass = options.WebSocketClass ?? WebSocket;
   const nowFn = options.nowFn ?? Date.now;
   const restartDelayMs = options.restartDelayMs ?? 1000;
   const signal = options.signal;
+  const whisperArgs = buildCommandArgs(options.stt, normalizeChunkInput(options.chunkInput));
   let lastTranscript = '';
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-stt-'));
-  const audioPath = path.join(tempDir, 'chunk.wav');
 
   try {
     while (!signal?.aborted) {
@@ -120,39 +190,97 @@ export async function runSttObserver(options) {
         });
 
         while (!signal?.aborted) {
+          let child = null;
+
           try {
-            const captureArgs = buildCaptureArgs({
-              chunkSeconds: options.stt.chunkSeconds,
-              inputDevice: options.chunkInput ?? ':0',
-              outputPath: audioPath,
-            });
-            const whisperArgs = buildWhisperArgs({
-              audioPath,
-              language: options.stt.language,
-              model: options.stt.model,
-            });
+            const parser = buildParser(options.stt);
+            let capturedStderr = '';
+            let publishedThisRun = false;
+            let stopReason = null;
 
-            await runCommand('ffmpeg', captureArgs);
-            const result = await runCommand(options.stt.whisperBin, whisperArgs);
-            const transcriptText = parseWhisperOutput(result.stdout ?? '');
-
-            if (shouldPublishTranscript(lastTranscript, transcriptText)) {
-              lastTranscript = transcriptText;
-              if (!isSocketOpen(socket, WebSocketClass)) {
-                throw new Error('Hub socket is not open');
+            function publishEvent(event) {
+              if (!shouldPublishTranscript(lastTranscript, event.text)) {
+                return;
               }
 
+              if (!isSocketOpen(socket, WebSocketClass)) {
+                stopReason = new Error('Hub socket is not open');
+                closeProcess(child);
+                return;
+              }
+
+              lastTranscript = event.text;
+              publishedThisRun = true;
               sendJson(socket, {
                 type: 'transcript',
                 source: 'whisper',
-                text: transcriptText,
-                capturedAtMs: nowFn(),
+                text: event.text,
+                capturedAtMs: nowFn() - estimateTranscriptLagMs(options.stt, event),
               });
+
+              if (options.once) {
+                stopReason = { type: 'once-complete' };
+                closeProcess(child);
+              }
             }
 
-            if (options.once) {
+            child = spawnPersistent(options.stt.whisperBin, whisperArgs, { signal });
+            child.stdout.setEncoding?.('utf8');
+            child.stderr.setEncoding?.('utf8');
+            child.stderr.on('data', (chunk) => {
+              capturedStderr += String(chunk ?? '');
+            });
+            child.stdout.on('data', (chunk) => {
+              for (const event of parser.push(String(chunk ?? ''))) {
+                publishEvent(event);
+              }
+            });
+
+            let exitResult = null;
+
+            try {
+              exitResult = await child.result;
+            } catch (error) {
+              for (const event of parser.flush()) {
+                publishEvent(event);
+              }
+
+              if (stopReason?.type === 'once-complete' && publishedThisRun) {
+                logger.info('STT observer completed');
+                return;
+              }
+
+              if (stopReason instanceof Error) {
+                stopReason.cause = error;
+                stopReason.stderr = capturedStderr;
+                throw stopReason;
+              }
+
+              if (error instanceof Error && capturedStderr !== '') {
+                error.stderr = capturedStderr;
+              }
+
+              throw error;
+            }
+
+            for (const event of parser.flush()) {
+              publishEvent(event);
+            }
+
+            if (stopReason?.type === 'once-complete' && publishedThisRun) {
               logger.info('STT observer completed');
               return;
+            }
+
+            if (stopReason instanceof Error) {
+              stopReason.stderr = exitResult?.stderr ?? capturedStderr;
+              throw stopReason;
+            }
+
+            if (!signal?.aborted) {
+              const error = new Error(exitResult?.stderr?.trim() || capturedStderr.trim() || 'whisper-stream exited unexpectedly');
+              error.stderr = exitResult?.stderr ?? capturedStderr;
+              throw error;
             }
           } catch (error) {
             if (isAbortError(error)) {
@@ -166,14 +294,20 @@ export async function runSttObserver(options) {
             if (!isSocketOpen(socket, WebSocketClass)) {
               logger.warn('STT hub connection dropped; reconnecting', {
                 error: error instanceof Error ? error.message : String(error),
+                stderr: error instanceof Error && 'stderr' in error ? error.stderr : undefined,
               });
               break;
             }
 
-            logger.warn('STT iteration failed; retrying', {
+            logger.warn('STT stream failed; retrying', {
               error: error instanceof Error ? error.message : String(error),
+              stderr: error instanceof Error && 'stderr' in error ? error.stderr : undefined,
             });
-            await waitForRetry(restartDelayMs, signal);
+            await waitForRetry(delayFn, restartDelayMs, signal);
+          } finally {
+            if (child !== null) {
+              closeProcess(child);
+            }
           }
         }
       } catch (error) {
@@ -187,8 +321,9 @@ export async function runSttObserver(options) {
 
         logger.warn('STT hub connection failed; retrying', {
           error: error instanceof Error ? error.message : String(error),
+          stderr: error instanceof Error && 'stderr' in error ? error.stderr : undefined,
         });
-        await waitForRetry(restartDelayMs, signal);
+        await waitForRetry(delayFn, restartDelayMs, signal);
       } finally {
         if (socket !== null) {
           closeSocket(socket);
@@ -197,7 +332,12 @@ export async function runSttObserver(options) {
     }
 
     logger.info('STT observer stopped');
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
+  } catch (error) {
+    if (isAbortError(error)) {
+      logger.info('STT observer stopped');
+      return;
+    }
+
+    throw error;
   }
 }

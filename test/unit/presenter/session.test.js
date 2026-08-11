@@ -160,6 +160,30 @@ test('tracking state moves from listening to offScript to lost based on silence 
   assert.equal(session.getState().teleprompter.trackingState, 'lost');
 });
 
+test('delayed transcript matches refresh tracking from observation time rather than capture time', () => {
+  const session = createPresenterSession({
+    followEnabledByDefault: true,
+    tracking: {
+      offScriptMs: 2_000,
+      lostMs: 5_000,
+      minConfidence: 0.35,
+    },
+  });
+
+  session.applyPresentationState(createPresentationState(1), 1_000);
+  session.applyTranscript(createTranscript('walk through the init flow', 2_000), 10_000);
+  assert.equal(session.getState().teleprompter.trackingState, 'listening');
+
+  session.tick(11_500);
+  assert.equal(session.getState().teleprompter.trackingState, 'listening');
+
+  session.tick(12_500);
+  assert.equal(session.getState().teleprompter.trackingState, 'offScript');
+
+  session.tick(15_500);
+  assert.equal(session.getState().teleprompter.trackingState, 'lost');
+});
+
 test('far-jump gate holds the active line on low-context future transcript leaps', () => {
   const session = createPresenterSession({
     followEnabledByDefault: true,
@@ -177,4 +201,106 @@ test('far-jump gate holds the active line on low-context future transcript leaps
 
   session.applyTranscript(createTranscript('line five', 3_000));
   assert.equal(session.getState().teleprompter.activeLineIndex, 0);
+});
+
+test('tracking prefers nearby matches before evaluating far-future recovery jumps', () => {
+  const session = createPresenterSession({
+    followEnabledByDefault: true,
+    tracking: {
+      farJumpLines: 2,
+      minConfidence: 0.35,
+    },
+  });
+
+  session.applyPresentationState(createPresentationState(1, {
+    script: 'Welcome intro.\nThe coordinator creates state.\nNext line.\nLater line.\nAnother line.\nYet another line.\nExtra line.\nMore line.\nFinal setup line.\nIntro.',
+  }), 1_000);
+  session.applyTranscript(createTranscript('welcome intro', 2_000), 2_000);
+  session.applyTranscript(createTranscript('welcome intro the coordinator creates', 3_000), 3_000);
+
+  assert.equal(session.getState().teleprompter.activeLineIndex, 1);
+});
+
+test('revised partials on the same line do not teach a fake forward rate', () => {
+  const session = createPresenterSession({
+    followEnabledByDefault: true,
+    predictionLeadMs: 5_000,
+    tracking: {
+      offScriptMs: 10_000,
+      lostMs: 20_000,
+    },
+  });
+
+  session.applyPresentationState(createPresentationState(1, {
+    script: 'Line one still talking here.\nLine two.\nLine three.',
+  }), 1_000);
+  session.applyTranscript(createTranscript('line one', 2_000), 2_000);
+  session.applyTranscript(createTranscript('line one still', 3_000), 3_000);
+  session.applyTranscript(createTranscript('line one still talking here', 4_000), 4_000);
+
+  assert.equal(session.tick(9_000), false);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 0);
+  assert.equal(session.getState().teleprompter.trackingState, 'listening');
+});
+
+test('same-line partial revisions after a forward anchor do not extend the prediction window', () => {
+  const session = createPresenterSession({
+    followEnabledByDefault: true,
+    predictionLeadMs: 2_000,
+    tracking: {
+      offScriptMs: 10_000,
+      lostMs: 20_000,
+    },
+  });
+
+  session.applyPresentationState(createPresentationState(1, {
+    script: 'Alpha now.\nBravo next.\nCharlie later.\nDelta after.\nEcho end.',
+  }), 500);
+  session.applyTranscript(createTranscript('alpha now', 1_000), 1_000);
+  session.applyTranscript(createTranscript('bravo next', 2_000), 2_000);
+  session.applyTranscript(createTranscript('bravo next revised', 3_500), 3_500);
+
+  assert.equal(session.tick(6_000), true);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 3);
+});
+
+test('transcript matches project forward using the current reduction time', () => {
+  const session = createPresenterSession({
+    followEnabledByDefault: true,
+    predictionLeadMs: 3_000,
+  });
+
+  session.applyPresentationState(createPresentationState(1, {
+    script: 'Line one.\nLine two.\nLine three.\nLine four.',
+  }), 1_000);
+  session.applyTranscript(createTranscript('line one', 2_000), 2_000);
+  session.applyTranscript(createTranscript('line two', 3_000), 5_500);
+
+  assert.equal(session.getState().teleprompter.activeLineIndex, 3);
+});
+
+test('tick advances follow mode within the prediction window and then holds position', () => {
+  const session = createPresenterSession({
+    followEnabledByDefault: true,
+    predictionLeadMs: 2_000,
+    tracking: {
+      offScriptMs: 10_000,
+      lostMs: 20_000,
+    },
+  });
+
+  session.applyPresentationState(createPresentationState(1, {
+    script: 'Line one.\nLine two.\nLine three.\nLine four.\nLine five.',
+  }), 1_000);
+  session.applyTranscript(createTranscript('line one', 2_000), 2_000);
+  session.applyTranscript(createTranscript('line two', 3_000), 3_000);
+
+  assert.equal(session.tick(4_500), true);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 2);
+
+  assert.equal(session.tick(7_500), true);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 3);
+
+  assert.equal(session.tick(8_000), false);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 3);
 });

@@ -608,6 +608,48 @@ test('coordinator reduces driver manifests and transcripts into sticky presenter
   }]);
 });
 
+test('coordinator applies transcripts with the current clock for delay compensation', async () => {
+  const originalDateNow = Date.now;
+  const logger = createLogger();
+  const hub = createFakeHub();
+  const obs = createFakeObs();
+  const executor = createFakeExecutor();
+  const config = createConfig();
+  config.slides.demo.script = 'Line one.\nLine two.\nLine three.\nLine four.';
+  const coordinator = createCoordinator({ config, obs, hub, executor, logger });
+
+  try {
+    await coordinator.start();
+    await hub.emit('driverPositionChanged', { id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+
+    Date.now = () => 2_000_000_002_000;
+    await hub.emit('observerTranscript', {
+      transcript: {
+        type: 'transcript',
+        source: 'whisper',
+        text: 'line one',
+        capturedAtMs: 2_000_000_001_000,
+      },
+      sender: { role: 'observer', sessionId: 'observer-1' },
+    });
+
+    Date.now = () => 2_000_000_005_500;
+    await hub.emit('observerTranscript', {
+      transcript: {
+        type: 'transcript',
+        source: 'whisper',
+        text: 'line two',
+        capturedAtMs: 2_000_000_002_000,
+      },
+      sender: { role: 'observer', sessionId: 'observer-1' },
+    });
+
+    assert.equal(coordinator.getCurrentPresenterState().teleprompter.activeLineIndex, 3);
+  } finally {
+    Date.now = originalDateNow;
+  }
+});
+
 test('coordinator reduces presenter commands into sticky presenter state', async () => {
   const logger = createLogger();
   const hub = createFakeHub();
@@ -655,6 +697,115 @@ test('coordinator tickPresenterState republishes elapsed timer updates', async (
 
   assert.equal(presenterPublishes.length, beforeTick + 1);
   assert.equal(presenterPublishes.at(-1).payload.timer.elapsedMs > 0, true);
+});
+
+test('coordinator tickPresenterState derives predictive follow lead from overlapping stream settings', async () => {
+  const originalDateNow = Date.now;
+  const logger = createLogger();
+  const hub = createFakeHub();
+  const obs = createFakeObs();
+  const executor = createFakeExecutor();
+  const config = createConfig();
+  config.presenter.stt = {
+    whisperBin: '/tmp/whisper-stream',
+    model: '/tmp/model.bin',
+    stream: {
+      chunkMs: 2_000,
+      overlapMs: 1_500,
+    },
+  };
+  config.slides.demo.script = 'Line one.\nLine two.\nLine three.\nLine four.\nLine five.';
+  const coordinator = createCoordinator({ config, obs, hub, executor, logger });
+
+  try {
+    await coordinator.start();
+    await hub.emit('driverPositionChanged', { id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+
+    Date.now = () => 2_000_000_002_000;
+    await hub.emit('observerTranscript', {
+      transcript: {
+        type: 'transcript',
+        source: 'whisper',
+        text: 'line one',
+        capturedAtMs: 2_000_000_002_000,
+      },
+      sender: { role: 'observer', sessionId: 'observer-1' },
+    });
+
+    Date.now = () => 2_000_000_002_500;
+    await hub.emit('observerTranscript', {
+      transcript: {
+        type: 'transcript',
+        source: 'whisper',
+        text: 'line two',
+        capturedAtMs: 2_000_000_002_500,
+      },
+      sender: { role: 'observer', sessionId: 'observer-1' },
+    });
+
+    const beforeTick = listPublishesByChannel(hub, 'presenterState').length;
+    await coordinator.tickPresenterState(2_000_000_004_000);
+    const presenterPublishes = listPublishesByChannel(hub, 'presenterState');
+
+    assert.equal(presenterPublishes.length, beforeTick + 1);
+    assert.equal(presenterPublishes.at(-1).payload.teleprompter.activeLineIndex, 2);
+  } finally {
+    Date.now = originalDateNow;
+  }
+});
+
+test('coordinator tickPresenterState derives predictive follow lead from normalized presenter.stt.stepMs', async () => {
+  const originalDateNow = Date.now;
+  const logger = createLogger();
+  const hub = createFakeHub();
+  const obs = createFakeObs();
+  const executor = createFakeExecutor();
+  const config = createConfig();
+  config.presenter.stt = {
+    stepMs: 500,
+    stream: {
+      chunkMs: 2_000,
+      overlapMs: 0,
+    },
+  };
+  config.slides.demo.script = 'Line one.\nLine two.\nLine three.\nLine four.\nLine five.';
+  const coordinator = createCoordinator({ config, obs, hub, executor, logger });
+
+  try {
+    await coordinator.start();
+    await hub.emit('driverPositionChanged', { id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+
+    Date.now = () => 2_000_000_002_000;
+    await hub.emit('observerTranscript', {
+      transcript: {
+        type: 'transcript',
+        source: 'whisper',
+        text: 'line one',
+        capturedAtMs: 2_000_000_002_000,
+      },
+      sender: { role: 'observer', sessionId: 'observer-1' },
+    });
+
+    Date.now = () => 2_000_000_002_500;
+    await hub.emit('observerTranscript', {
+      transcript: {
+        type: 'transcript',
+        source: 'whisper',
+        text: 'line two',
+        capturedAtMs: 2_000_000_002_500,
+      },
+      sender: { role: 'observer', sessionId: 'observer-1' },
+    });
+
+    const beforeTick = listPublishesByChannel(hub, 'presenterState').length;
+    await coordinator.tickPresenterState(2_000_000_004_000);
+    const presenterPublishes = listPublishesByChannel(hub, 'presenterState');
+
+    assert.equal(presenterPublishes.length, beforeTick + 1);
+    assert.equal(presenterPublishes.at(-1).payload.teleprompter.activeLineIndex, 2);
+  } finally {
+    Date.now = originalDateNow;
+  }
 });
 
 test('coordinator status polling updates preview metadata and stream summary', async () => {

@@ -59,6 +59,9 @@ primitives and encode each app's quirks. See
 - `node ./src/index.js <name>` — starts the full managed runtime
 - `npm run presenter:doctor -- <name>` — validates local config and environment
 
+Presenter STT uses `whisper-stream` with a local whisper.cpp model file when
+`presenter.stt` is configured.
+
 Whisper model download:
 
 ```bash
@@ -66,4 +69,4 @@ curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3
 ```
 
 Real OBS output, Hammerspoon Accessibility, microphone permission, and
-whisper.cpp still require manual smoke testing.
+whisper-stream capture quality still require manual smoke testing.

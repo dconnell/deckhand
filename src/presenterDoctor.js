@@ -9,15 +9,6 @@ function isMainModule(metaUrl) {
   return process.argv[1] !== undefined && metaUrl === new URL(`file://${process.argv[1]}`).href;
 }
 
-async function commandExists(commandName) {
-  try {
-    await runSubprocess('which', [commandName]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function pathExists(accessFn, filePath) {
   try {
     await accessFn(filePath);
@@ -30,15 +21,15 @@ async function pathExists(accessFn, filePath) {
 /**
  * Run presenter environment checks.
  *
- * @param {{ accessFn?: typeof access, args?: string[], commandExistsFn?: (commandName: string) => Promise<boolean>, consoleLike?: Console, cwd?: string, platform?: string }} [options] CLI options.
+ * @param {{ accessFn?: typeof access, args?: string[], consoleLike?: Console, cwd?: string, platform?: string, runCommand?: typeof runSubprocess }} [options] CLI options.
  * @returns {Promise<number>}
  */
 export async function runPresenterDoctor(options = {}) {
   const accessFn = options.accessFn ?? access;
   const args = options.args ?? process.argv.slice(2);
-  const commandExistsFn = options.commandExistsFn ?? commandExists;
   const consoleLike = options.consoleLike ?? console;
   const cwd = options.cwd ?? process.cwd();
+  const runCommand = options.runCommand ?? runSubprocess;
   let parsed;
 
   try {
@@ -88,20 +79,25 @@ export async function runPresenterDoctor(options = {}) {
   }
 
   if (config.presenter.stt !== null) {
-    if (!await commandExistsFn('ffmpeg')) {
-      problems.push('ffmpeg was not found on PATH. Install ffmpeg with avfoundation support before running presenter STT.');
-    }
-
-    if (!await pathExists(accessFn, config.presenter.stt.whisperBin)) {
+    const hasWhisperBin = await pathExists(accessFn, config.presenter.stt.whisperBin);
+    if (!hasWhisperBin) {
       problems.push(`Configured whisperBin path is not accessible: ${config.presenter.stt.whisperBin}`);
     }
 
-    if (!await pathExists(accessFn, config.presenter.stt.model)) {
+    const hasModel = await pathExists(accessFn, config.presenter.stt.model);
+    if (!hasModel) {
       problems.push(`Configured model path is not accessible: ${config.presenter.stt.model}`);
     }
 
-    if (problems.length === 0) {
+    if (hasWhisperBin && hasModel) {
       consoleLike.log('Whisper binary and model paths exist');
+
+      try {
+        await runCommand(config.presenter.stt.whisperBin, ['--help']);
+        consoleLike.log('whisper-stream --help completed');
+      } catch (error) {
+        problems.push(`whisper-stream --help failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   } else {
     consoleLike.log('STT is not configured');

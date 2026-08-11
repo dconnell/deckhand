@@ -1,9 +1,58 @@
 function normalizeWords(text) {
-  return [...new Set(String(text)
+  return String(text)
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
-    .filter(Boolean))];
+    .filter(Boolean);
+}
+
+function countWordMatches(lineWords, transcriptWords) {
+  const remaining = new Map();
+
+  for (const word of transcriptWords) {
+    remaining.set(word, (remaining.get(word) ?? 0) + 1);
+  }
+
+  let matches = 0;
+
+  for (const word of lineWords) {
+    const count = remaining.get(word) ?? 0;
+
+    if (count <= 0) {
+      continue;
+    }
+
+    matches += 1;
+
+    if (count === 1) {
+      remaining.delete(word);
+    } else {
+      remaining.set(word, count - 1);
+    }
+  }
+
+  return matches;
+}
+
+function computeScore(lineWords, transcriptWords) {
+  const matches = countWordMatches(lineWords, transcriptWords);
+
+  if (matches === 0) {
+    return 0;
+  }
+
+  const precision = matches / lineWords.length;
+  const recall = matches / transcriptWords.length;
+
+  if (precision + recall === 0) {
+    return 0;
+  }
+
+  return (2 * precision * recall) / (precision + recall);
+}
+
+function computeTailScore(lineWords, transcriptWords) {
+  return computeScore(lineWords, transcriptWords.slice(-lineWords.length));
 }
 
 function getSpokenText(line) {
@@ -32,10 +81,14 @@ export function matchLineDetailed(transcriptTail, lines, fromIndex, options = {}
 
   const threshold = typeof options.threshold === 'number' ? options.threshold : 0.35;
   const startIndex = Math.max(0, Math.min(lines.length - 1, fromIndex));
+  const endIndex = typeof options.maxIndex === 'number'
+    ? Math.max(startIndex, Math.min(lines.length - 1, options.maxIndex))
+    : lines.length - 1;
   let bestIndex = startIndex;
   let bestScore = 0;
+  let bestTailScore = 0;
 
-  for (let index = startIndex; index < lines.length; index += 1) {
+  for (let index = startIndex; index <= endIndex; index += 1) {
     const spokenText = getSpokenText(lines[index]);
     const lineWords = normalizeWords(spokenText);
 
@@ -43,13 +96,12 @@ export function matchLineDetailed(transcriptTail, lines, fromIndex, options = {}
       continue;
     }
 
-    const matches = lineWords.filter((word) => transcriptWords.includes(word)).length;
-    const precision = matches / lineWords.length;
-    const recall = matches / transcriptWords.length;
-    const score = Math.max(precision, (precision + recall) / 2);
+    const score = computeScore(lineWords, transcriptWords);
+    const tailScore = computeTailScore(lineWords, transcriptWords);
 
-    if (score > bestScore) {
+    if (score > bestScore || (score === bestScore && tailScore > bestTailScore)) {
       bestScore = score;
+      bestTailScore = tailScore;
       bestIndex = index;
     }
   }

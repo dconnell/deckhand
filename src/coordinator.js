@@ -23,6 +23,7 @@ const FREEZE_CUT_TRANSITION = 'Cut';
 const TRANSITION_END_BUFFER_MS = 300;
 const DRIVER_SETTLE_TIMEOUT_MS = 2000;
 const DRIVER_COMMAND_POSITION_TIMEOUT_MS = 1500;
+const PRESENTER_FOLLOW_TICK_MS = 250;
 const PRESENTER_STATUS_POLL_MS = 5000;
 
 function delay(ms) {
@@ -97,6 +98,33 @@ function isBrowserSource(config, sourceId) {
   return config.sources[sourceId]?.kind === 'browser';
 }
 
+function resolvePresenterPredictionLeadMs(stt) {
+  if (Number.isFinite(stt?.stepMs) && stt.stepMs > 0) {
+    return Math.round(stt.stepMs);
+  }
+
+  const stream = stt?.streamSettings ?? stt?.stream ?? null;
+
+  if (stream !== null && typeof stream === 'object') {
+    if (Number.isFinite(stream.stepMs) && stream.stepMs > 0) {
+      return Math.round(stream.stepMs);
+    }
+
+    if (Number.isFinite(stream.chunkMs) && stream.chunkMs > 0) {
+      const overlapMs = Number.isFinite(stream.overlapMs) ? stream.overlapMs : 0;
+      const stepMs = stream.chunkMs - overlapMs;
+
+      if (stepMs > 0) {
+        return Math.round(stepMs);
+      }
+    }
+  }
+
+  return Number.isFinite(stt?.chunkSeconds) && stt.chunkSeconds > 0
+    ? Math.round(stt.chunkSeconds * 1000)
+    : 0;
+}
+
 /**
  * Create the coordinator orchestration layer.
  *
@@ -121,6 +149,7 @@ export function createCoordinator(options) {
     ? null
     : createPresenterSession({
         followEnabledByDefault: options.config.presenter.teleprompter.followEnabledByDefault,
+        predictionLeadMs: resolvePresenterPredictionLeadMs(options.config.presenter.stt),
         tracking: options.config.presenter.teleprompter.tracking,
       });
   let previousSlideIndex = null;
@@ -143,6 +172,7 @@ export function createCoordinator(options) {
   const driverSettleWaiters = new Map();
   const completedDriverSettleEvents = new Set();
   const pendingDriverPositions = new Map();
+  let presenterFollowTimer = null;
   let presenterStatusTimer = null;
   let presenterPreview = null;
   let previousStreamStatus = null;
@@ -266,6 +296,20 @@ export function createCoordinator(options) {
     return publishPresenterState(nowMs);
   }
 
+  async function maybePublishPresenterTick(nowMs = Date.now()) {
+    if (presenterSession === null) {
+      return null;
+    }
+
+    if (!presenterSession.tick(nowMs)) {
+      return presenterSession.getState();
+    }
+
+    const presenterState = presenterSession.getState();
+    await options.hub.publishSticky('presenterState', presenterState);
+    return presenterState;
+  }
+
   async function syncPresenterStateFromPresentation(presentationState, nowMs = Date.now()) {
     if (presenterSession === null) {
       return null;
@@ -331,7 +375,7 @@ export function createCoordinator(options) {
       return;
     }
 
-    presenterSession.applyTranscript(payload.transcript, payload.transcript.capturedAtMs);
+    presenterSession.applyTranscript(payload.transcript, Date.now());
     await options.hub.publishSticky('presenterState', presenterSession.getState());
   }
 
@@ -1218,6 +1262,22 @@ export function createCoordinator(options) {
               error: error instanceof Error ? error.message : String(error),
             });
           });
+          presenterFollowTimer = setInterval(() => {
+            if (!started) {
+              return;
+            }
+
+            void (async () => {
+              try {
+                await maybePublishPresenterTick(Date.now());
+              } catch (error) {
+                logger.warn('Presenter follow publish failed', {
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              }
+            })();
+          }, PRESENTER_FOLLOW_TICK_MS);
+          presenterFollowTimer.unref?.();
           presenterStatusTimer = setInterval(() => {
             pollPresenterStatus().catch((error) => {
               logger.warn('Presenter status poll failed', {
@@ -1277,6 +1337,11 @@ export function createCoordinator(options) {
             hubStarted = false;
           }
         } finally {
+          if (presenterFollowTimer !== null) {
+            clearInterval(presenterFollowTimer);
+            presenterFollowTimer = null;
+          }
+
           if (presenterStatusTimer !== null) {
             clearInterval(presenterStatusTimer);
             presenterStatusTimer = null;
@@ -1312,17 +1377,7 @@ export function createCoordinator(options) {
     },
 
     async tickPresenterState(nowMs = Date.now()) {
-      if (presenterSession === null) {
-        return null;
-      }
-
-      if (!presenterSession.tick(nowMs)) {
-        return presenterSession.getState();
-      }
-
-      const presenterState = presenterSession.getState();
-      await options.hub.publishSticky('presenterState', presenterState);
-      return presenterState;
+      return maybePublishPresenterTick(nowMs);
     },
 
     getProgramPreviewSnapshot() {

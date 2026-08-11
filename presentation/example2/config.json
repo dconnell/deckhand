@@ -217,9 +217,20 @@
       }
     },
     "stt": {
-      "whisperBin": "/absolute/path/to/whisper-cli",
+      "whisperBin": "/absolute/path/to/whisper-stream",
       "model": "/absolute/path/to/ggml-base.en.bin",
-      "chunkSeconds": 2.5,
+      "mode": "step",
+      "captureId": -1,
+      "stepMs": 1500,
+      "lengthMs": 6000,
+      "keepMs": 250,
+      "threads": 4,
+      "audioCtx": 0,
+      "beamSize": -1,
+      "keepContext": false,
+      "noFallback": true,
+      "useGpu": true,
+      "flashAttn": true,
       "language": "en"
     },
     "teleprompter": {

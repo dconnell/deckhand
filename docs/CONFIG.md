@@ -94,13 +94,30 @@ model for OBS, the presenter stage, and slide actions.
       "BrowserB": { "app": "Google Chrome", "titleIncludes": "Secondary" }
     },
     "stt": {
-      "whisperBin": "/opt/homebrew/bin/whisper-cli",
+      "whisperBin": "/opt/homebrew/bin/whisper-stream",
       "model": "/absolute/path/to/ggml-large-v3-turbo.bin",
-      "chunkSeconds": 2.5,
+      "mode": "step",
+      "captureId": -1,
+      "stepMs": 1500,
+      "lengthMs": 6000,
+      "keepMs": 250,
+      "threads": 4,
+      "audioCtx": 0,
+      "beamSize": -1,
+      "keepContext": false,
+      "noFallback": true,
+      "useGpu": true,
+      "flashAttn": true,
       "language": "en"
     },
     "teleprompter": {
       "followEnabledByDefault": true,
+      "tracking": {
+        "farJumpLines": 8,
+        "offScriptMs": 3000,
+        "lostMs": 8000,
+        "minConfidence": 0.35
+      },
       "window": { "app": "Google Chrome", "titleIncludes": "Deckhand Presenter" }
     },
     "http": {
@@ -601,8 +618,10 @@ audience-only flow. When present:
   (`browser`, `app`): their owner name is derived from the source descriptor
   and their exact `macWindowId` is resolved at launch, so `titleIncludes` is
   not required
-- `stt` configures the local whisper.cpp observer
+- `stt` configures the local `whisper-stream` observer
 - `teleprompter.followEnabledByDefault` controls initial follow mode
+- `teleprompter.tracking` tunes follow-mode recovery: `farJumpLines`,
+  `offScriptMs`, `lostMs`, and `minConfidence`
 - `teleprompter.window` is the presenter-window selector used to bind the
   teleprompter window; required when any layout or slide uses `overlays` for
   `Presenter`
@@ -621,6 +640,41 @@ Deckhand uses the bootstrap selectors to seed OBS `window_capture` settings,
 then upgrades them in place to exact managed bindings when runtime window
 handles are available. The teleprompter window is not an OBS source; its
 selector is used only for the local presenter window-management path.
+
+`presenter.stt` fields:
+
+- `whisperBin` — absolute path to `whisper-stream`
+- `model` — absolute path to the local ggml model file
+- `mode` — `step` or `vad`; default `step`
+- `captureId` — microphone capture device id passed to `whisper-stream`;
+  default `-1`
+- `stepMs` — decode cadence in milliseconds; default `1500`
+- `lengthMs` — audio window length in milliseconds; default `6000`; must be
+  greater than or equal to `stepMs`
+- `keepMs` — overlap retained between step windows; default `250`; must be less
+  than or equal to `stepMs`
+- `threads` — decode threads; default `4`
+- `audioCtx` — whisper audio context size; default `0`
+- `beamSize` — whisper beam search size; default `-1` for greedy/default
+- `keepContext` — keep decoder prompt context between step windows; default
+  `false`
+- `noFallback` — disable temperature fallback; default `true`
+- `useGpu` — enable GPU inference when available; default `true`
+- `flashAttn` — enable flash attention when supported; default `true`
+- `language` — optional explicit whisper language
+- `vadThreshold` — optional VAD speech threshold from `0` to `1`
+- `freqThreshold` — optional high-pass cutoff threshold in Hz; must be
+  non-negative
+
+Tuning guidance:
+
+- `step` mode is the default for teleprompter follow mode because it produces a
+  steady transcript cadence.
+- Start by lowering `stepMs` to improve responsiveness; raise `lengthMs` only if
+  phrases are getting chopped too aggressively.
+- Increase `keepMs` modestly to preserve word boundaries between windows.
+- Use `vad` mode when you prefer speech-burst transcription and can tolerate
+  less frequent updates.
 
 ## Slide ID scheme
 
@@ -649,6 +703,7 @@ The config loader returns path-based errors for invalid input, including:
   non-browser-capable sources
 - invalid `focus` source for the chosen layout
 - invalid overlay source or overlay shape
+- legacy `presenter.stt.chunkSeconds`; use `mode`/`stepMs`/`lengthMs`/`keepMs`
 - `presenter.windows` entries that reference unknown sources
 - missing `presenter.teleprompter.window` when overlays are configured
 - malformed browser action selectors or URLs
