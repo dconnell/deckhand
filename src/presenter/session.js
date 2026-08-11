@@ -152,6 +152,7 @@ export function createPresenterSession(options) {
   };
   const runtime = {
     ignoreTranscriptBeforeMs: -Infinity,
+    lastEarlyAdvanceAtMs: null,
     lastObservedMatchAtMs: null,
     lastMatchedLineIndex: null,
     lastPredictionAnchorObservedAtMs: null,
@@ -170,6 +171,7 @@ export function createPresenterSession(options) {
     state.teleprompter.recentTranscript = [];
     state.teleprompter.trackingState = 'idle';
     runtime.ignoreTranscriptBeforeMs = nowMs;
+    runtime.lastEarlyAdvanceAtMs = null;
     runtime.lastObservedMatchAtMs = null;
     runtime.lastMatchedLineIndex = null;
     runtime.lastPredictionAnchorObservedAtMs = null;
@@ -206,7 +208,8 @@ export function createPresenterSession(options) {
     if (!state.teleprompter.followEnabled
       || state.current.hidden
       || state.current.lines.length === 0
-      || runtime.lastPredictionAnchorObservedAtMs === null) {
+      || runtime.lastPredictionAnchorObservedAtMs === null
+      || runtime.lastEarlyAdvanceAtMs !== null) {
       return false;
     }
 
@@ -320,11 +323,19 @@ export function createPresenterSession(options) {
       if (isForwardMatch(match, state.teleprompter.activeLineIndex, tracking)) {
         // Capture time preserves the speaker's actual pace, while `nowMs` records
         // when the reducer observed enough evidence to refresh follow state.
-        if (runtime.lastMatchedLineIndex !== match.index) {
-          predictor.onMatch(match.index, transcript.capturedAtMs ?? nowMs);
-          runtime.lastMatchedLineIndex = match.index;
-          runtime.lastPredictionAnchorObservedAtMs = nowMs;
+        if (runtime.lastMatchedLineIndex !== match.index || match.handoff === 'early') {
+          if (match.handoff === 'early') {
+            runtime.lastEarlyAdvanceAtMs = nowMs;
+            predictor.reset();
+          } else {
+            runtime.lastEarlyAdvanceAtMs = null;
+            predictor.onMatch(match.index, transcript.capturedAtMs ?? nowMs);
+            runtime.lastPredictionAnchorObservedAtMs = nowMs;
+            runtime.lastMatchedLineIndex = match.index;
+          }
         }
+
+        state.teleprompter.activeLineIndex = coerceActiveLine(state.current.lines, match.index);
         runtime.lastObservedMatchAtMs = nowMs;
       }
 

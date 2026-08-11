@@ -152,6 +152,42 @@ test('createWindow creates a new-window target and resolves its targetId and win
   assert.deepEqual(await pending, { targetId: 'TARGET_TAB_HOME', windowId: 91 });
 });
 
+test('createWindow forwards an initial size request when width and height are provided', async () => {
+  const transport = createFakeTransport();
+  const client = createCdpClient({
+    discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://browser', chromePid: 1 }),
+    createTransport() {
+      return transport;
+    },
+  });
+
+  await client.connect();
+
+  const pending = client.createWindow({
+    url: 'https://example.com/teleprompter',
+    width: 500,
+    height: 700,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(transport.sent[0], {
+    id: 1,
+    method: 'Target.createTarget',
+    params: {
+      url: 'https://example.com/teleprompter',
+      newWindow: true,
+      width: 500,
+      height: 700,
+    },
+  });
+
+  respondTo(transport, 1, { targetId: 'TARGET_TAB_TELEPROMPTER' });
+  await new Promise((resolve) => setImmediate(resolve));
+  respondTo(transport, 2, { windowId: 92 });
+
+  assert.deepEqual(await pending, { targetId: 'TARGET_TAB_TELEPROMPTER', windowId: 92 });
+});
+
 test('createTab creates a background target and resolves its targetId and owning windowId', async () => {
   const transport = createFakeTransport();
   const client = createCdpClient({

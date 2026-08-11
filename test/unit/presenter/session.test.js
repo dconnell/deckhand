@@ -304,3 +304,89 @@ test('tick advances follow mode within the prediction window and then holds posi
   assert.equal(session.tick(8_000), false);
   assert.equal(session.getState().teleprompter.activeLineIndex, 3);
 });
+
+test('follow mode can advance one spoken line early on strong next-line evidence and slide changes clear that state', () => {
+  const session = createPresenterSession({
+    followEnabledByDefault: true,
+    predictionLeadMs: 2_000,
+    tracking: {
+      offScriptMs: 10_000,
+      lostMs: 20_000,
+    },
+  });
+
+  session.applyPresentationState(createPresentationState(1, {
+    script: 'Intro line.\nThis section walks slowly through the coordinator state initialization before the handoff happens.\nThen demo the app.\nAfter that we continue.',
+  }), 1_000);
+  session.applyTranscript(createTranscript('this section walks slowly through the coordinator state initialization before the handoff happens', 2_000), 2_000);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 1);
+
+  session.applyTranscript(createTranscript('this section walks slowly through the coordinator state initialization before the handoff happens then demo', 3_000), 3_000);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 2);
+  assert.equal(session.tick(4_000), false);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 2);
+
+  session.applyPresentationState(createPresentationState(2, {
+    slideId: 'next-slide',
+    layoutId: 'full-slide',
+    focus: null,
+    script: 'Fresh start line.\nSecond sentence.',
+  }), 4_000);
+
+  assert.equal(session.getState().teleprompter.activeLineIndex, 0);
+  assert.deepEqual(session.getState().teleprompter.recentTranscript, []);
+  assert.equal(session.getState().teleprompter.trackingState, 'idle');
+  assert.equal(session.tick(7_000), false);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 0);
+
+  session.applyTranscript(createTranscript('then demo the app', 3_500), 4_500);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 0);
+});
+
+test('follow mode can still hand off when the next short line evidence is slightly imperfect', () => {
+  const session = createPresenterSession({
+    followEnabledByDefault: true,
+    predictionLeadMs: 2_000,
+    tracking: {
+      offScriptMs: 10_000,
+      lostMs: 20_000,
+    },
+  });
+
+  session.applyPresentationState(createPresentationState(1, {
+    script: 'Intro line.\nToday we will talk through the live demo setup before the handoff to the short call to action.\nDemo starts now.\nAfter that we continue.',
+  }), 1_000);
+
+  session.applyTranscript(createTranscript('today we will talk through the live demo setup before the handoff to the short call to action', 1_500), 1_500);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 1);
+
+  session.applyTranscript(createTranscript('today we will talk through the live demo setup before handoff demo starts now', 2_000), 2_000);
+
+  assert.equal(session.getState().teleprompter.activeLineIndex, 2);
+  assert.equal(session.tick(3_000), false);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 2);
+});
+
+test('follow mode can hand off after two words into a five-word next line', () => {
+  const session = createPresenterSession({
+    followEnabledByDefault: true,
+    predictionLeadMs: 2_000,
+    tracking: {
+      offScriptMs: 10_000,
+      lostMs: 20_000,
+    },
+  });
+
+  session.applyPresentationState(createPresentationState(1, {
+    script: 'Intro line.\nWe need to carefully describe the initialization details before the transition into the operator handoff and final checklist for the live demo.\nNow please open dashboard view.\nAfter that we continue.',
+  }), 1_000);
+
+  session.applyTranscript(createTranscript('we need to carefully describe the initialization details before the transition into the operator handoff and final checklist for the live demo', 2_000), 2_000);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 1);
+
+  session.applyTranscript(createTranscript('we need to carefully describe the initialization details before the transition into the operator handoff and final checklist for the live demo now please', 3_000), 3_000);
+
+  assert.equal(session.getState().teleprompter.activeLineIndex, 2);
+  assert.equal(session.tick(4_000), false);
+  assert.equal(session.getState().teleprompter.activeLineIndex, 2);
+});

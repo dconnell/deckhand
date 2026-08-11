@@ -135,10 +135,10 @@ body {
 }
 
 .teleprompter-line {
-  min-height: 58px;
-  margin: 0 0 16px;
-  font-size: 36px;
-  line-height: 1.6;
+  min-height: 36px;
+  margin: 0 0 8px;
+  font-size: 24px;
+  line-height: 1.35;
   opacity: 0.55;
   position: relative;
 }
@@ -154,8 +154,8 @@ body {
 .teleprompter-line[data-tier='current']::before {
   content: '';
   position: absolute;
-  inset: -8px -16px;
-  border-radius: 14px;
+  inset: -6px -12px;
+  border-radius: 12px;
   background: rgba(59, 186, 255, 0.18);
   z-index: -1;
 }
@@ -200,6 +200,6 @@ body {
 
 @media (max-width: 800px) {
   .teleprompter-line {
-    font-size: 28px;
+    font-size: 20px;
   }
 }

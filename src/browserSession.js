@@ -27,6 +27,16 @@ function defaultWindowTitle(sourceId) {
 
 const DEFAULT_MAC_WINDOW_MAX_ATTEMPTS = 30;
 const DEFAULT_MAC_WINDOW_RETRY_MS = 500;
+const TELEPROMPTER_AUX_WINDOW_KEY = 'presenter-teleprompter';
+const TELEPROMPTER_AUX_WINDOW_SIZE = Object.freeze({ width: 500, height: 700 });
+
+function distanceFromBounds(window, expectedBounds) {
+  if (expectedBounds === null || typeof window.width !== 'number' || typeof window.height !== 'number') {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  return Math.abs(window.width - expectedBounds.width) + Math.abs(window.height - expectedBounds.height);
+}
 
 function boundsArea(window) {
   return (typeof window.width === 'number' ? window.width : 0)
@@ -57,6 +67,19 @@ function pickLargestBoundsWindow(windows) {
   });
 }
 
+function pickClosestBoundsWindow(windows, expectedBounds) {
+  return windows.reduce((best, candidate) => {
+    const bestDistance = distanceFromBounds(best, expectedBounds);
+    const candidateDistance = distanceFromBounds(candidate, expectedBounds);
+
+    if (candidateDistance === bestDistance) {
+      return pickLargestBoundsWindow([best, candidate]);
+    }
+
+    return candidateDistance < bestDistance ? candidate : best;
+  });
+}
+
 /**
  * Resolve the macOS `CGWindowID` of a browser window Deckhand just created.
  *
@@ -66,16 +89,19 @@ function pickLargestBoundsWindow(windows) {
  * no new window appears within the attempt budget, so the caller can fall back
  * to title-based resolution.
  *
- * @param {{ pid: number, before: Array<{ windowId: number }>, enumerateFn: (pid: number) => Array<{ windowId: number, width?: number, height?: number }>, delayFn: (ms: number) => Promise<void>, logger: { warn(message: string, context?: Record<string, unknown>): void }, sourceId: string, maxAttempts: number, retryDelayMs: number }} options Resolution options.
+ * @param {{ pid: number, before: Array<{ windowId: number }>, enumerateFn: (pid: number) => Array<{ windowId: number, width?: number, height?: number }>, delayFn: (ms: number) => Promise<void>, logger: { warn(message: string, context?: Record<string, unknown>): void }, sourceId: string, maxAttempts: number, retryDelayMs: number, expectedBounds?: { width: number, height: number } | null }} options Resolution options.
  * @returns {Promise<number | null>}
  */
-async function resolveNewMacWindowId({ pid, before, enumerateFn, delayFn, logger, sourceId, maxAttempts, retryDelayMs }) {
+async function resolveNewMacWindowId({ pid, before, enumerateFn, delayFn, logger, sourceId, maxAttempts, retryDelayMs, expectedBounds = null }) {
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const after = enumerateFn(pid);
     const newWindows = diffNewWindows(before, after);
 
     if (newWindows.length > 0) {
-      return pickLargestBoundsWindow(newWindows).windowId;
+      const resolvedWindow = expectedBounds === null
+        ? pickLargestBoundsWindow(newWindows)
+        : pickClosestBoundsWindow(newWindows, expectedBounds);
+      return resolvedWindow.windowId;
     }
 
     if (attempt < maxAttempts) {
@@ -94,8 +120,8 @@ async function resolveNewMacWindowId({ pid, before, enumerateFn, delayFn, logger
  * command routing can be tested without a real Chrome process. Identity is
  * always a runtime handle created by Deckhand, never URL or title lookup.
  *
- * @param {{ sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }>, createCdpClient(): { connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string, loadTimeoutMs?: number }): Promise<void>, waitForTabPaint(details: { targetId: string, paintTimeoutMs?: number }): Promise<void>, setWindowTitle(details: { targetId: string, title: string }): Promise<void>, closeTarget(details: { targetId: string }): Promise<void> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Session dependencies.
- * @returns {{ start(): Promise<void>, stop(): Promise<void>, openWindow(url: string): Promise<void>, openAuxWindow(details: { key: string, title: string, url: string }): Promise<{ key: string, targetId: string, cdpWindowId: number, macWindowId: number | null, title: string, url: string }>, activateTab(sourceId: string, tabAlias: string): Promise<void>, navigateTab(sourceId: string, tabAlias: string, url: string): Promise<void>, getStatus(): { connected: boolean, chromePid: number | null, sources: Record<string, { ready: boolean, activeTab: string | null, tabs: string[] }> }, getRegistry(): { sources: Record<string, { cdpWindowId: number | null, mainTargetId: string | null, title: string, tabs: Record<string, { targetId: string, initialUrl: string }>, activeTab: string | null }>, auxWindows: Record<string, { key: string, targetId: string, cdpWindowId: number, macWindowId: number | null, title: string, url: string }> } }}
+ * @param {{ sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }>, createCdpClient(): { connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string, width?: number, height?: number }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string, loadTimeoutMs?: number }): Promise<void>, waitForTabPaint(details: { targetId: string, paintTimeoutMs?: number }): Promise<void>, setWindowTitle(details: { targetId: string, title: string }): Promise<void>, closeTarget(details: { targetId: string }): Promise<void> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Session dependencies.
+ * @returns {{ start(): Promise<void>, stop(): Promise<void>, openWindow(url: string): Promise<void>, openAuxWindow(details: { key: string, title: string, url: string, reopen?: boolean }): Promise<{ key: string, targetId: string, cdpWindowId: number, macWindowId: number | null, title: string, url: string }>, activateTab(sourceId: string, tabAlias: string): Promise<void>, navigateTab(sourceId: string, tabAlias: string, url: string): Promise<void>, getStatus(): { connected: boolean, chromePid: number | null, sources: Record<string, { ready: boolean, activeTab: string | null, tabs: string[] }> }, getRegistry(): { sources: Record<string, { cdpWindowId: number | null, mainTargetId: string | null, title: string, tabs: Record<string, { targetId: string, initialUrl: string }>, activeTab: string | null }>, auxWindows: Record<string, { key: string, targetId: string, cdpWindowId: number, macWindowId: number | null, title: string, url: string }> } }}
  */
 export function createBrowserSession(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -337,7 +363,7 @@ export function createBrowserSession(options) {
 
       const existing = registry.auxWindows[details.key];
 
-      if (existing !== undefined) {
+      if (existing !== undefined && details.reopen !== true) {
         try {
           await cdpClient.activateTab({ targetId: existing.targetId });
           return existing;
@@ -350,8 +376,24 @@ export function createBrowserSession(options) {
         }
       }
 
+      if (existing !== undefined && details.reopen === true) {
+        await cdpClient.closeTarget({ targetId: existing.targetId }).catch((error) => {
+          logger.warn('Failed to close tracked auxiliary window before reopen', {
+            error: error instanceof Error ? error.message : String(error),
+            key: details.key,
+          });
+        });
+        delete registry.auxWindows[details.key];
+      }
+
       const resolution = await resolveAuxWindowMacWindowId();
-      const windowResult = await cdpClient.createWindow({ url: details.url });
+      const windowSize = details.key === TELEPROMPTER_AUX_WINDOW_KEY
+        ? TELEPROMPTER_AUX_WINDOW_SIZE
+        : null;
+      const windowResult = await cdpClient.createWindow({
+        url: details.url,
+        ...(windowSize ?? {}),
+      });
       await cdpClient.setWindowTitle({ targetId: windowResult.targetId, title: details.title }).catch(() => {});
       await cdpClient.activateTab({ targetId: windowResult.targetId }).catch(() => {});
 
@@ -362,6 +404,7 @@ export function createBrowserSession(options) {
             before: resolution.before,
             enumerateFn: enumerateWindowIdsByPidFn,
             delayFn,
+            expectedBounds: windowSize,
             logger,
             sourceId: details.key,
             maxAttempts: macWindowMaxAttempts,

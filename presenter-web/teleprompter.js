@@ -3,14 +3,17 @@ import {
   buildTeleprompterFrame,
   buildTokenRenderParts,
   reconcileLineNodes,
+  shouldRenderImmediately,
 } from './teleprompterView.js';
 
-const LINE_HEIGHT_PX = 58;
-const LINE_GAP_PX = 16;
+const FALLBACK_LINE_HEIGHT_PX = 36;
+const FALLBACK_LINE_GAP_PX = 8;
 
 function createInitialState() {
   return {
     connection: 'connecting',
+    lastRenderedSeq: null,
+    lastRenderedVisible: false,
     presenter: null,
     nodes: [],
     rafScheduled: false,
@@ -53,23 +56,58 @@ function ensureLineNodes(state, listEl, presenter) {
   });
 }
 
+function measureLineMetrics(listEl, nodes) {
+  const listRect = listEl.getBoundingClientRect();
+
+  return nodes.map((node) => {
+    const rect = node.getBoundingClientRect();
+    const top = rect.top - listRect.top;
+
+    return {
+      top,
+      height: rect.height,
+      bottom: top + rect.height,
+    };
+  });
+}
+
 function render(state) {
   const connection = document.getElementById('teleprompter-connection');
   const status = document.getElementById('teleprompter-status');
   const listEl = document.getElementById('teleprompter-lines');
   const shell = document.getElementById('teleprompter-shell');
   const progress = document.getElementById('teleprompter-progress');
+  const viewport = document.querySelector('.teleprompter-viewport');
 
   connection.textContent = state.connection;
+
+  let lineMetrics;
+
+  if (state.presenter !== null && state.presenter.current.hidden !== true) {
+    ensureLineNodes(state, listEl, state.presenter);
+    lineMetrics = measureLineMetrics(listEl, state.nodes);
+  }
 
   const frame = buildTeleprompterFrame(state.presenter, {
     hovered: state.hovered,
     lastStateChangeAtMs: state.lastTrackingStateChangeAtMs,
-    lineHeight: LINE_HEIGHT_PX,
-    lineGap: LINE_GAP_PX,
+    lineHeight: FALLBACK_LINE_HEIGHT_PX,
+    lineGap: FALLBACK_LINE_GAP_PX,
+    lineMetrics,
     nowMs: Date.now(),
-    viewportHeight: window.innerHeight,
+    viewportHeight: viewport?.clientHeight ?? window.innerHeight,
   });
+
+  const nextSeq = state.presenter?.presentationSeq ?? null;
+  const nextVisible = !frame.hidden;
+  const immediate = shouldRenderImmediately({
+    prevSeq: state.lastRenderedSeq,
+    nextSeq,
+    prevVisible: state.lastRenderedVisible,
+    nextVisible,
+  });
+  state.lastRenderedSeq = nextSeq;
+  state.lastRenderedVisible = nextVisible;
 
   if (frame.hidden) {
     status.textContent = frame.status.label;
@@ -80,6 +118,7 @@ function render(state) {
       state.nodes.pop()?.remove();
     }
     listEl.style.transform = 'translateY(0px)';
+    listEl.style.transition = 'none';
     progress.style.transform = 'scaleX(0)';
     return;
   }
@@ -88,8 +127,8 @@ function render(state) {
   status.textContent = frame.status.label;
   status.dataset.tone = frame.status.tone;
   status.hidden = frame.status.visible === false;
-  ensureLineNodes(state, listEl, state.presenter);
 
+  listEl.style.transition = immediate ? 'none' : '';
   listEl.style.transform = `translateY(${frame.offsetPx}px)`;
   progress.style.transform = `scaleX(${frame.progressPercent})`;
 

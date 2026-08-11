@@ -34,6 +34,10 @@ function countWordMatches(lineWords, transcriptWords) {
   return matches;
 }
 
+function countMatchedWords(lineWords, transcriptWords) {
+  return countWordMatches(lineWords, transcriptWords);
+}
+
 function computeScore(lineWords, transcriptWords) {
   const matches = countWordMatches(lineWords, transcriptWords);
 
@@ -55,6 +59,55 @@ function computeTailScore(lineWords, transcriptWords) {
   return computeScore(lineWords, transcriptWords.slice(-lineWords.length));
 }
 
+function countTrailingPrefixMatches(lineWords, transcriptWords) {
+  const maxLength = Math.min(lineWords.length, transcriptWords.length);
+
+  for (let length = maxLength; length > 0; length -= 1) {
+    let matched = true;
+
+    for (let index = 0; index < length; index += 1) {
+      if (lineWords[index] !== transcriptWords[transcriptWords.length - length + index]) {
+        matched = false;
+        break;
+      }
+    }
+
+    if (matched) {
+      return length;
+    }
+  }
+
+  return 0;
+}
+
+function countTrailingSuffixMatches(lineWords, transcriptWords) {
+  const maxLength = Math.min(lineWords.length, transcriptWords.length);
+  let matched = 0;
+
+  while (
+    matched < maxLength
+    && lineWords[lineWords.length - matched - 1] === transcriptWords[transcriptWords.length - matched - 1]
+  ) {
+    matched += 1;
+  }
+
+  return matched;
+}
+
+function hasDistinctForwardPrefix(currentLineWords, nextLineWords, prefixLength) {
+  if (prefixLength <= 0) {
+    return false;
+  }
+
+  for (let index = 0; index < prefixLength; index += 1) {
+    if (currentLineWords[currentLineWords.length - prefixLength + index] !== nextLineWords[index]) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function getSpokenText(line) {
   if (typeof line === 'string') {
     return line;
@@ -70,7 +123,7 @@ function getSpokenText(line) {
  * @param {Array<string | { spokenText?: string }>} lines Script lines.
  * @param {number} fromIndex Current forward-only line index.
  * @param {{ threshold?: number }} [options] Matcher options.
- * @returns {{ index: number, confidence: number }}
+ * @returns {{ index: number, confidence: number, handoff?: 'early' }}
  */
 export function matchLineDetailed(transcriptTail, lines, fromIndex, options = {}) {
   const transcriptWords = normalizeWords(transcriptTail);
@@ -84,6 +137,7 @@ export function matchLineDetailed(transcriptTail, lines, fromIndex, options = {}
   const endIndex = typeof options.maxIndex === 'number'
     ? Math.max(startIndex, Math.min(lines.length - 1, options.maxIndex))
     : lines.length - 1;
+  const scoredLines = new Map();
   let bestIndex = startIndex;
   let bestScore = 0;
   let bestTailScore = 0;
@@ -99,6 +153,12 @@ export function matchLineDetailed(transcriptTail, lines, fromIndex, options = {}
     const score = computeScore(lineWords, transcriptWords);
     const tailScore = computeTailScore(lineWords, transcriptWords);
 
+    scoredLines.set(index, {
+      lineWords,
+      score,
+      tailScore,
+    });
+
     if (score > bestScore || (score === bestScore && tailScore > bestTailScore)) {
       bestScore = score;
       bestTailScore = tailScore;
@@ -108,6 +168,48 @@ export function matchLineDetailed(transcriptTail, lines, fromIndex, options = {}
 
   if (bestScore < threshold) {
     return { index: startIndex, confidence: bestScore };
+  }
+
+  if (bestIndex === startIndex) {
+    const currentLine = scoredLines.get(startIndex) ?? null;
+    let nextLine = null;
+
+    for (let index = startIndex + 1; index <= endIndex; index += 1) {
+      const candidate = scoredLines.get(index);
+
+      if (candidate !== undefined) {
+        nextLine = { index, ...candidate };
+        break;
+      }
+    }
+
+    if (currentLine !== null && nextLine !== null) {
+      const requiredPrefixWords = Math.min(
+        nextLine.lineWords.length,
+        Math.max(2, Math.ceil(nextLine.lineWords.length / 3)),
+      );
+      const nextPrefixWords = countTrailingPrefixMatches(nextLine.lineWords, transcriptWords);
+      const nextPrefixScore = nextPrefixWords > 0
+        ? computeScore(nextLine.lineWords, transcriptWords.slice(-nextPrefixWords))
+        : 0;
+      const currentCoveredWords = countMatchedWords(currentLine.lineWords, transcriptWords);
+      const currentCoveredRatio = currentLine.lineWords.length > 0
+        ? currentCoveredWords / currentLine.lineWords.length
+        : 0;
+
+      // Generalized early advance: when the current line is well-covered and
+      // the next line has distinct prefix evidence at the transcript tail,
+      // advance immediately instead of waiting for the next line's words to
+      // dominate the rolling window. Without this, the highlight lags a full
+      // line behind because the matcher keeps scoring the finished line higher.
+      if (currentCoveredRatio >= 0.55
+        && nextPrefixWords >= requiredPrefixWords
+        && (nextLine.tailScore >= Math.max(threshold, 0.45)
+          || nextPrefixScore >= Math.max(threshold, 0.45))
+        && hasDistinctForwardPrefix(currentLine.lineWords, nextLine.lineWords, nextPrefixWords)) {
+        return { index: nextLine.index, confidence: nextLine.tailScore, handoff: 'early' };
+      }
+    }
   }
 
   return { index: bestIndex, confidence: bestScore };

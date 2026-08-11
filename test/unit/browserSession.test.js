@@ -37,10 +37,17 @@ function createFakeCdpClient() {
       connected = false;
       disconnectedHandlers.forEach((handler) => handler());
     },
-    async createWindow({ url }) {
+    async createWindow({ url, width, height }) {
       targetCounter += 1;
       windowCounter += 1;
-      calls.push({ type: 'createWindow', url });
+      const call = { type: 'createWindow', url };
+      if (width !== undefined) {
+        call.width = width;
+      }
+      if (height !== undefined) {
+        call.height = height;
+      }
+      calls.push(call);
       return { targetId: `TARGET_${targetCounter}`, windowId: windowCounter };
     },
     async createTab({ url }) {
@@ -507,7 +514,7 @@ test('start leaves macWindowId null when window enumeration is not wired', async
   assert.equal(session.getRegistry().sources.BrowserA.macWindowId, null);
 });
 
-test('openAuxWindow tracks the created auxiliary window and reuses it on focus or reopen', async () => {
+test('openAuxWindow requests the teleprompter initial size, reuses the tracked window on focus, and recreates it on reopen', async () => {
   const cdpClient = createFakeCdpClient();
   const windows = [{ windowId: 100, x: 0, y: 0, width: 800, height: 600 }];
   const session = createBrowserSession({
@@ -516,9 +523,11 @@ test('openAuxWindow tracks the created auxiliary window and reuses it on focus o
     enumerateWindowIdsByPidFn: () => [...windows],
   });
   const realCreateWindow = cdpClient.createWindow;
+  let nextWindowId = 5000;
   cdpClient.createWindow = async (details) => {
     const result = await realCreateWindow(details);
-    windows.push({ windowId: 5000, x: 0, y: 0, width: 1280, height: 800 });
+    windows.push({ windowId: nextWindowId, x: 0, y: 0, width: 1280, height: 800 });
+    nextWindowId += 1;
     return result;
   };
 
@@ -533,17 +542,72 @@ test('openAuxWindow tracks the created auxiliary window and reuses it on focus o
     title: 'Deckhand Presenter',
     url: 'http://127.0.0.1:3001/presenter/teleprompter.html',
   });
+  await session.openAuxWindow({
+    key: 'presenter-teleprompter',
+    title: 'Deckhand Presenter',
+    url: 'http://127.0.0.1:3001/presenter/teleprompter.html',
+    reopen: true,
+  });
 
-  assert.deepEqual(cdpClient.calls.filter((call) => call.type === 'createWindow').length, 1);
+  assert.deepEqual(cdpClient.calls.filter((call) => call.type === 'createWindow').length, 2);
   assert.deepEqual(cdpClient.calls.filter((call) => call.type === 'activateTab' && call.targetId === 'TARGET_1').length, 2);
+  assert.deepEqual(cdpClient.calls.find((call) => call.type === 'createWindow'), {
+    type: 'createWindow',
+    url: 'http://127.0.0.1:3001/presenter/teleprompter.html',
+    width: 500,
+    height: 700,
+  });
   assert.deepEqual(session.getRegistry().auxWindows['presenter-teleprompter'], {
     key: 'presenter-teleprompter',
-    targetId: 'TARGET_1',
-    cdpWindowId: 91,
-    macWindowId: 5000,
+    targetId: 'TARGET_2',
+    cdpWindowId: 92,
+    macWindowId: 5001,
     title: 'Deckhand Presenter',
     url: 'http://127.0.0.1:3001/presenter/teleprompter.html',
   });
+});
+
+test('openAuxWindow does not request teleprompter sizing for unrelated auxiliary windows', async () => {
+  const cdpClient = createFakeCdpClient();
+  const session = createBrowserSession({ sources: {}, createCdpClient: () => cdpClient });
+
+  await session.start();
+  await session.openAuxWindow({
+    key: 'presenter-console',
+    title: 'Deckhand Console',
+    url: 'http://127.0.0.1:3001/presenter/',
+  });
+
+  assert.deepEqual(cdpClient.calls.find((call) => call.type === 'createWindow'), {
+    type: 'createWindow',
+    url: 'http://127.0.0.1:3001/presenter/',
+  });
+});
+
+test('openAuxWindow prefers the new window whose bounds match the teleprompter size', async () => {
+  const cdpClient = createFakeCdpClient();
+  const windows = [{ windowId: 100, x: 0, y: 0, width: 800, height: 600 }];
+  const session = createBrowserSession({
+    sources: {},
+    createCdpClient: () => cdpClient,
+    enumerateWindowIdsByPidFn: () => [...windows],
+  });
+  const realCreateWindow = cdpClient.createWindow;
+  cdpClient.createWindow = async (details) => {
+    const result = await realCreateWindow(details);
+    windows.push({ windowId: 5000, x: 0, y: 0, width: 1280, height: 800 });
+    windows.push({ windowId: 5001, x: 0, y: 0, width: 500, height: 700 });
+    return result;
+  };
+
+  await session.start();
+  const auxWindow = await session.openAuxWindow({
+    key: 'presenter-teleprompter',
+    title: 'Deckhand Presenter',
+    url: 'http://127.0.0.1:3001/presenter/teleprompter.html',
+  });
+
+  assert.equal(auxWindow.macWindowId, 5001);
 });
 
 test('stop explicitly closes tracked auxiliary windows before disconnecting chrome', async () => {
