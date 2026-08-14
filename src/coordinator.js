@@ -147,8 +147,8 @@ function resolvePresenterPredictionLeadMs(stt) {
  * directly; the executor seam keeps slide-event orchestration decoupled from the
  * Deckhand browser session runtime.
  *
- * @param {{ config: { driver: { type: string }, obs: { url: string, password: string, transitions: null | { forward: string | null, backward: string | null, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number, windowSettleMs: number, freezeDimPercent: number } }, layouts: Record<string, unknown>, slides: Record<string, { layoutId: string, commands: Array<{ type: string, source: string, tab?: string, url?: string, [key: string]: unknown }> }> }, obs: { connect(): Promise<unknown>, disconnect(): Promise<unknown>, setScene(sceneName: string): Promise<unknown>, isConnected?(): boolean, applyInputSettings?(inputName: string, inputSettings: Record<string, unknown>): Promise<void>, getCurrentTransitionName?(): Promise<string>, captureProgramScreenshot?(filePath: string): Promise<void>, switchProgramScene?(sceneName: string, options?: { waitForEvent?: boolean, timeoutMs?: number }): Promise<void>, waitForSceneTransitionEnd?(options?: { timeoutMs?: number }): Promise<void>, setCurrentTransition?(name: string, durationMs?: number): Promise<void>, ensureFreezeAssets?(options: { sceneName: string, inputName: string, imagePath: string, dimPercent?: number }): Promise<void> }, hub: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown>, sendCommand(target: { role?: 'driver' }, command: Record<string, unknown>): Promise<unknown>, publishSticky(channel: string, payload: Record<string, unknown>): Promise<unknown>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown> } }, executor?: { start(): Promise<void>, stop(): Promise<void>, execute(command: Record<string, unknown>): Promise<void> } | null, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Coordinator dependencies.
- * @returns {{ start(): Promise<void>, stop(): Promise<void>, handleDriverPositionChanged(position: { id: string, index?: Record<string, unknown>, meta?: Record<string, unknown> }): Promise<void>, getCurrentPresentationState(): Record<string, unknown> | null }}
+ * @param {{ config: { driver: { type: string }, obs: { url: string, password: string, transitions: null | { forward: string | null, backward: string | null, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number, windowSettleMs: number, freezeDimPercent: number } }, layouts: Record<string, unknown>, slides: Record<string, { layoutId: string, commands: Array<{ type: string, source: string, tab?: string, url?: string, [key: string]: unknown }> }> }, obs: { connect(): Promise<unknown>, disconnect(): Promise<unknown>, setScene(sceneName: string): Promise<unknown>, isConnected?(): boolean, isReconnecting?(): boolean, on?(event: 'reconnecting' | 'reconnected', handler: (event: string) => void): void, applyInputSettings?(inputName: string, inputSettings: Record<string, unknown>): Promise<void>, getCurrentTransitionName?(): Promise<string>, captureProgramScreenshot?(filePath: string): Promise<void>, switchProgramScene?(sceneName: string, options?: { waitForEvent?: boolean, timeoutMs?: number }): Promise<void>, waitForSceneTransitionEnd?(options?: { timeoutMs?: number }): Promise<void>, setCurrentTransition?(name: string, durationMs?: number): Promise<void>, ensureFreezeAssets?(options: { sceneName: string, inputName: string, imagePath: string, dimPercent?: number }): Promise<void> }, hub: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown>, sendCommand(target: { role?: 'driver' }, command: Record<string, unknown>): Promise<unknown>, publishSticky(channel: string, payload: Record<string, unknown>): Promise<unknown>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown> } }, executor?: { start(): Promise<void>, stop(): Promise<void>, execute(command: Record<string, unknown>): Promise<void> } | null, browserSession?: { on?(event: 'recovered', handler: () => void): void } | null, persistSlideId?: (payload: { slideId: string, index: unknown }) => Promise<void> | void, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Coordinator dependencies.
+ * @returns {{ start(): Promise<void>, stop(): Promise<void>, handleDriverPositionChanged(position: { id: string, index?: Record<string, unknown>, meta?: Record<string, unknown> }): Promise<void>, getCurrentPresentationState(): Record<string, unknown> | null, refreshCurrentPresentationState(reason?: string): Promise<void>, reapplyCurrentSlide(reason: string, options?: { rearmFreeze?: boolean }): Promise<void>, awaitSlideOperations(): Promise<void> }}
  */
 export function createCoordinator(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -366,6 +366,88 @@ export function createCoordinator(options) {
     }
   }
 
+  /**
+   * Re-apply the current slide to every downstream surface after a transport
+   * recovery. Used by the OBS `reconnected` and browser `recovered` hooks so a
+   * mid-session bounce does not leave OBS pointing at a stale macWindowId or
+   * tabs on the wrong URL. Idempotent: it invalidates the per-source OBS binding
+   * cache so the next apply actually pushes, then re-runs the publish/bind/
+   * dispatch pipeline. `rearmFreeze` additionally re-ensures the freeze assets
+   * (OBS-reconnect only, since OBS may have dropped transient input state).
+   *
+   * @param {string} reason Why the reapply is running.
+   * @param {{ rearmFreeze?: boolean }} [options]
+   * @returns {Promise<void>}
+   */
+  async function runReapplyCurrentSlide(reason, { rearmFreeze = false } = {}) {
+    if (currentPresentationState === null) {
+      return;
+    }
+
+    const slideId = currentPresentationState.slideId;
+    const slideConfig = options.config.slides[slideId] ?? null;
+
+    logger.info('Reapplying current slide after recovery', { reason, slideId });
+
+    lastAppliedObsBindings.clear();
+
+    await republishCurrentPresentationState(reason);
+    await applyObsWindowBindings(currentPresentationState);
+
+    if (slideConfig !== null) {
+      await dispatchBrowserCommands(slideConfig, slideId);
+    }
+
+    if (rearmFreeze) {
+      await ensureFreezeAssetsIfConfigured();
+    }
+  }
+
+  /**
+   * Persist the active slide id so a mid-session restart can resume the deck
+   * where the operator left off. Fire-and-log: a failed write must never break
+   * a slide change. No-op when no `persistSlideId` callback was wired.
+   *
+   * @param {string} slideId The active slide id.
+   * @param {unknown} index The extracted h/v index, for diagnostics.
+   * @returns {Promise<void>}
+   */
+  async function recordResumePoint(slideId, index) {
+    if (typeof options.persistSlideId !== 'function') {
+      return;
+    }
+
+    try {
+      await options.persistSlideId({ slideId, index });
+    } catch (error) {
+      logger.warn('Failed to persist resume slide id', {
+        error: error instanceof Error ? error.message : String(error),
+        slideId,
+      });
+    }
+  }
+
+  let recoveryWired = false;
+
+  function wireRecoveryEvents() {
+    if (recoveryWired) {
+      return;
+    }
+    recoveryWired = true;
+
+    if (options.obs && typeof options.obs.on === 'function') {
+      options.obs.on('reconnected', () => {
+        enqueueSlideOperation(() => runReapplyCurrentSlide('obsReconnected', { rearmFreeze: true }));
+      });
+    }
+
+    if (options.browserSession && typeof options.browserSession.on === 'function') {
+      options.browserSession.on('recovered', () => {
+        enqueueSlideOperation(() => runReapplyCurrentSlide('browserRecovered'));
+      });
+    }
+  }
+
   async function handleDriverSlideManifest(payload) {
     if (presenterSession === null || !payload?.manifest) {
       return;
@@ -414,6 +496,25 @@ export function createCoordinator(options) {
         logger.error('Failed to focus or reopen tracked teleprompter window', {
           error: error instanceof Error ? error.message : String(error),
           op: command.op,
+        });
+      }
+      return;
+    }
+
+    if (command.op === 'relaunchSource') {
+      if (typeof options.relaunchSource !== 'function') {
+        logger.warn('Source relaunch requested but no relaunch hook is available', {
+          sourceId: command.sourceId,
+        });
+        return;
+      }
+
+      try {
+        await options.relaunchSource({ sourceId: command.sourceId });
+      } catch (error) {
+        logger.error('Failed to relaunch source', {
+          error: error instanceof Error ? error.message : String(error),
+          sourceId: command.sourceId,
         });
       }
       return;
@@ -783,6 +884,7 @@ export function createCoordinator(options) {
       await publishAndApplyBindings(presentationState, position.id);
       await applyLegacyAudienceScene(presentationState, position.id);
       await dispatchBrowserCommands(slideConfig, position.id);
+      await recordResumePoint(position.id, currentIndex);
       return;
     }
 
@@ -809,6 +911,8 @@ export function createCoordinator(options) {
       freezeAlreadyVisible: frozenDriverCommand !== null,
       previousPresentationState,
     });
+
+    await recordResumePoint(position.id, currentIndex);
   }
 
   function handleDriverPositionChanged(position) {
@@ -1253,6 +1357,8 @@ export function createCoordinator(options) {
         return;
       }
 
+      wireRecoveryEvents();
+
       logger.info('Starting coordinator', { driver: options.config.driver.type });
 
       try {
@@ -1388,6 +1494,14 @@ export function createCoordinator(options) {
 
     async refreshCurrentPresentationState(reason = 'refresh') {
       await republishCurrentPresentationState(reason);
+    },
+
+    async reapplyCurrentSlide(reason, reapplyOptions) {
+      return runReapplyCurrentSlide(reason, reapplyOptions);
+    },
+
+    awaitSlideOperations() {
+      return slideOperation.catch(() => {});
     },
 
     async tickPresenterState(nowMs = Date.now()) {

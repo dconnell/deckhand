@@ -29,6 +29,41 @@ test('resolveOwnedWindowBindings binds the macWindowId of a newly-launched windo
   assert.deepEqual(result, { Terminal: { macWindowId: 42, pid: 4321 } });
 });
 
+test('resolveOwnedWindowBindings merges adapter session and terminal window ids into the binding', async () => {
+  let launched = false;
+  const itermEntry = {
+    sourceId: 'ItermSource',
+    snapshot() {
+      return launched ? [{ windowId: 42, title: 'demo — fish' }] : [{ windowId: 7, title: 'iterm' }];
+    },
+    async launch() {
+      launched = true;
+      return { sessionId: 'session-uuid-new' };
+    },
+  };
+
+  let terminalLaunched = false;
+  const appleTerminalEntry = {
+    sourceId: 'AppleTerminalSource',
+    snapshot() {
+      return terminalLaunched ? [{ windowId: 84, title: 'demo — zsh' }] : [{ windowId: 8, title: 'terminal' }];
+    },
+    async launch() {
+      terminalLaunched = true;
+      return { terminalWindowId: '1234' };
+    },
+  };
+
+  const result = await resolveOwnedWindowBindings({
+    entries: [itermEntry, appleTerminalEntry],
+    delay: async () => {},
+    logger: createNoopLogger(),
+  });
+
+  assert.equal(result.ItermSource.sessionId, 'session-uuid-new');
+  assert.equal(result.AppleTerminalSource.terminalWindowId, '1234');
+});
+
 test('resolveOwnedWindowBindings polls until the new window appears', async () => {
   let launches = 0;
   let frames = [

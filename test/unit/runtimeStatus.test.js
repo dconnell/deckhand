@@ -62,7 +62,9 @@ test('buildRuntimeStatus returns a compact operator-facing snapshot with browser
     service: 'deckhand',
     phase: 'ready',
     presenterEnabled: true,
-    obs: { connected: true },
+    recovering: false,
+    sourceCatalog: [],
+    obs: { connected: true, reconnecting: false },
     hub: {
       host: '127.0.0.1',
       port: 8765,
@@ -71,6 +73,7 @@ test('buildRuntimeStatus returns a compact operator-facing snapshot with browser
     },
     browserSession: {
       connected: true,
+      phase: 'connected',
       chromePid: 47213,
       sources: {
         Slide: { ready: true, activeTab: 'deck', tabs: ['deck'] },
@@ -135,7 +138,9 @@ test('buildRuntimeStatus reports degraded browser-session state before the sessi
     service: 'deckhand',
     phase: 'starting',
     presenterEnabled: false,
-    obs: { connected: false },
+    recovering: false,
+    sourceCatalog: [],
+    obs: { connected: false, reconnecting: false },
     hub: {
       host: '127.0.0.1',
       port: 8765,
@@ -144,6 +149,7 @@ test('buildRuntimeStatus reports degraded browser-session state before the sessi
     },
     browserSession: {
       connected: false,
+      phase: 'disconnected',
       chromePid: null,
       sources: {},
     },
@@ -172,10 +178,13 @@ test('buildRuntimeStatus surfaces not-ready sources without dropping them', () =
     service: 'deckhand',
     phase: 'starting',
     presenterEnabled: true,
-    obs: { connected: true },
+    recovering: false,
+    sourceCatalog: [],
+    obs: { connected: true, reconnecting: false },
     hub: { host: '127.0.0.1', port: 8765, driverConnected: false, observerCount: 0 },
     browserSession: {
       connected: false,
+      phase: 'disconnected',
       chromePid: 47213,
       sources: {
         BrowserA: { ready: false, activeTab: 'home', tabs: ['home', 'checkout'] },
@@ -184,4 +193,35 @@ test('buildRuntimeStatus surfaces not-ready sources without dropping them', () =
     current: null,
     presenter: null,
   });
+});
+
+test('buildRuntimeStatus flags the recovering umbrella when obs or the browser session is mid-recovery', () => {
+  const obsReconnecting = buildRuntimeStatus({
+    phase: 'ready',
+    currentPresentationState: null,
+    hubAddress: { host: '127.0.0.1', port: 8765 },
+    hubSnapshot: { activeDriver: null, observers: [], sticky: {} },
+    browserSessionStatus: { connected: true, chromePid: 47213, sources: {} },
+    obsConnected: false,
+    obsReconnecting: true,
+    presenterEnabled: true,
+    currentPresenterState: null,
+  });
+
+  assert.equal(obsReconnecting.obs.reconnecting, true);
+  assert.equal(obsReconnecting.recovering, true);
+
+  const browserRecovering = buildRuntimeStatus({
+    phase: 'ready',
+    currentPresentationState: null,
+    hubAddress: { host: '127.0.0.1', port: 8765 },
+    hubSnapshot: { activeDriver: null, observers: [], sticky: {} },
+    browserSessionStatus: { connected: false, phase: 'recovering', chromePid: 47213, sources: {} },
+    obsConnected: true,
+    presenterEnabled: true,
+    currentPresenterState: null,
+  });
+
+  assert.equal(browserRecovering.browserSession.phase, 'recovering');
+  assert.equal(browserRecovering.recovering, true);
 });

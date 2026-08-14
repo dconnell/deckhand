@@ -1,5 +1,7 @@
 .devcontainer/
 presentation/*/config.local.json
+presentation/*/.deckhand-state.json
+presentation/*/.deckhand-state.json.tmp
 node_modules/
 plans/
 models/

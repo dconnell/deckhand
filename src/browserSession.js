@@ -120,8 +120,8 @@ async function resolveNewMacWindowId({ pid, before, enumerateFn, delayFn, logger
  * command routing can be tested without a real Chrome process. Identity is
  * always a runtime handle created by Deckhand, never URL or title lookup.
  *
- * @param {{ sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }>, createCdpClient(): { connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string, width?: number, height?: number }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string, loadTimeoutMs?: number }): Promise<void>, waitForTabPaint(details: { targetId: string, paintTimeoutMs?: number }): Promise<void>, setWindowTitle(details: { targetId: string, title: string }): Promise<void>, closeTarget(details: { targetId: string }): Promise<void> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Session dependencies.
- * @returns {{ start(): Promise<void>, stop(): Promise<void>, openWindow(url: string): Promise<void>, openAuxWindow(details: { key: string, title: string, url: string, reopen?: boolean }): Promise<{ key: string, targetId: string, cdpWindowId: number, macWindowId: number | null, title: string, url: string }>, activateTab(sourceId: string, tabAlias: string): Promise<void>, navigateTab(sourceId: string, tabAlias: string, url: string): Promise<void>, getStatus(): { connected: boolean, chromePid: number | null, sources: Record<string, { ready: boolean, activeTab: string | null, tabs: string[] }> }, getRegistry(): { sources: Record<string, { cdpWindowId: number | null, mainTargetId: string | null, title: string, tabs: Record<string, { targetId: string, initialUrl: string }>, activeTab: string | null }>, auxWindows: Record<string, { key: string, targetId: string, cdpWindowId: number, macWindowId: number | null, title: string, url: string }> } }}
+ * @param {{ sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }>, createCdpClient(): { connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string, width?: number, height?: number }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string, loadTimeoutMs?: number }): Promise<void>, waitForTabPaint(details: { targetId: string, paintTimeoutMs?: number }): Promise<void>, setWindowTitle(details: { targetId: string, title: string }): Promise<void>, closeTarget(details: { targetId: string }): Promise<void> }, enumerateWindowIdsByPidFn?: (pid: number) => Array<{ windowId: number, width?: number, height?: number }>, recovery?: { browserRecover?: { enabled?: boolean, initialDelayMs?: number, maxDelayMs?: number } }, timer?: { setTimeout(fn: () => void, ms: number): unknown, clearTimeout(handle: unknown): void }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Session dependencies.
+ * @returns {{ start(): Promise<void>, stop(): Promise<void>, openWindow(url: string): Promise<void>, openAuxWindow(details: { key: string, title: string, url: string, reopen?: boolean }): Promise<{ key: string, targetId: string, cdpWindowId: number, macWindowId: number | null, title: string, url: string }>, activateTab(sourceId: string, tabAlias: string): Promise<void>, navigateTab(sourceId: string, tabAlias: string, url: string): Promise<void>, relaunchBrowserSource(sourceId: string): Promise<{ macWindowId: number | null }>, on(event: 'recovered' | 'transportLost', handler: () => void): void, getStatus(): { connected: boolean, phase: 'connected' | 'reconnecting' | 'recovering' | 'disconnected', chromePid: number | null, sources: Record<string, { ready: boolean, activeTab: string | null, tabs: string[] }> }, getRegistry(): { sources: Record<string, { cdpWindowId: number | null, mainTargetId: string | null, title: string, tabs: Record<string, { targetId: string, initialUrl: string }>, activeTab: string | null }>, auxWindows: Record<string, { key: string, targetId: string, cdpWindowId: number, macWindowId: number | null, title: string, url: string }> } }}
  */
 export function createBrowserSession(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -131,9 +131,107 @@ export function createBrowserSession(options) {
   const delayFn = options.delayFn ?? delay;
   const macWindowMaxAttempts = options.resolveMacWindowMaxAttempts ?? DEFAULT_MAC_WINDOW_MAX_ATTEMPTS;
   const macWindowRetryMs = options.resolveMacWindowRetryMs ?? DEFAULT_MAC_WINDOW_RETRY_MS;
+  const timer = options.timer ?? {
+    setTimeout(fn, ms) {
+      const handle = setTimeout(fn, ms);
+      handle.unref?.();
+      return handle;
+    },
+    clearTimeout(handle) {
+      clearTimeout(handle);
+    },
+  };
+  const browserRecover = options.recovery?.browserRecover ?? { enabled: true, initialDelayMs: 500, maxDelayMs: 10000 };
   let cdpClient = null;
   let registry = createEmptyRegistry();
   let stopping = false;
+  let stopped = true;
+  let recovering = false;
+  let rebuilding = false;
+  let recoverAttempt = 0;
+  let recoverTimer = null;
+  let transportLostFired = false;
+  const lifecycleHandlers = new Map();
+
+  function emitLifecycle(event) {
+    const handlers = lifecycleHandlers.get(event);
+    if (!handlers) {
+      return;
+    }
+
+    for (const handler of handlers) {
+      try {
+        handler();
+      } catch (error) {
+        logger.warn('Browser session lifecycle handler threw', {
+          event,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  function computeRecoverDelay(attempt) {
+    const base = browserRecover.initialDelayMs * (2 ** attempt);
+    return Math.min(base, browserRecover.maxDelayMs);
+  }
+
+  function scheduleRecover() {
+    if (!browserRecover.enabled || stopped || stopping) {
+      return;
+    }
+
+    const delay = computeRecoverDelay(recoverAttempt);
+    recoverAttempt += 1;
+    recoverTimer = timer.setTimeout(attemptRecover, delay);
+  }
+
+  function handleUnexpectedDisconnect() {
+    if (!transportLostFired) {
+      transportLostFired = true;
+      emitLifecycle('transportLost');
+    }
+
+    if (!browserRecover.enabled || recovering) {
+      return;
+    }
+
+    recovering = true;
+    rebuilding = false;
+    recoverAttempt = 0;
+    scheduleRecover();
+  }
+
+  async function attemptRecover() {
+    if (stopped || stopping || !recovering) {
+      return;
+    }
+
+    try {
+      registry = createEmptyRegistry();
+      rebuilding = true;
+      await cdpClient.connect();
+
+      for (const source of listBrowserSources(options.sources)) {
+        await buildSource(source);
+      }
+
+      recovering = false;
+      rebuilding = false;
+      recoverAttempt = 0;
+      transportLostFired = false;
+      logger.info('Browser session recovered after unexpected disconnect', {
+        chromePid: cdpClient.getChromePid(),
+      });
+      emitLifecycle('recovered');
+    } catch (error) {
+      rebuilding = false;
+      logger.warn('Browser session recover attempt failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      scheduleRecover();
+    }
+  }
 
   function requireSource(sourceId) {
     const source = registry.sources[sourceId];
@@ -293,12 +391,16 @@ export function createBrowserSession(options) {
         throw error;
       }
 
+      stopped = false;
+      transportLostFired = false;
+
       cdpClient.on('disconnected', () => {
-        if (stopping) {
+        if (stopping || stopped) {
           return;
         }
 
         logger.warn('Browser session disconnected unexpectedly');
+        handleUnexpectedDisconnect();
       });
 
       const browserSources = listBrowserSources(options.sources);
@@ -311,6 +413,7 @@ export function createBrowserSession(options) {
         stopping = true;
         await cdpClient.disconnect().catch(() => {});
         stopping = false;
+        stopped = true;
         cdpClient = null;
         registry = createEmptyRegistry();
         throw error;
@@ -323,6 +426,15 @@ export function createBrowserSession(options) {
     },
 
     async stop() {
+      stopped = true;
+      recovering = false;
+      rebuilding = false;
+
+      if (recoverTimer !== null) {
+        timer.clearTimeout(recoverTimer);
+        recoverTimer = null;
+      }
+
       if (cdpClient === null) {
         return;
       }
@@ -359,6 +471,10 @@ export function createBrowserSession(options) {
     async openAuxWindow(details) {
       if (cdpClient === null) {
         throw new Error('browser session is not started');
+      }
+
+      if (recovering) {
+        throw new Error('browser session is recovering');
       }
 
       const existing = registry.auxWindows[details.key];
@@ -428,6 +544,10 @@ export function createBrowserSession(options) {
         throw new Error('browser session is not started');
       }
 
+      if (recovering) {
+        throw new Error('browser session is recovering');
+      }
+
       const source = requireSource(sourceId);
       const tab = requireTab(source, tabAlias);
 
@@ -441,6 +561,10 @@ export function createBrowserSession(options) {
         throw new Error('browser session is not started');
       }
 
+      if (recovering) {
+        throw new Error('browser session is recovering');
+      }
+
       const source = requireSource(sourceId);
       const tab = requireTab(source, tabAlias);
 
@@ -451,11 +575,44 @@ export function createBrowserSession(options) {
       }
     },
 
+    async relaunchBrowserSource(sourceId) {
+      if (cdpClient === null) {
+        throw new Error('browser session is not started');
+      }
+
+      if (recovering) {
+        throw new Error('browser session is recovering');
+      }
+
+      const descriptor = options.sources[sourceId];
+
+      if (descriptor === undefined || descriptor.kind !== 'browser') {
+        throw new Error(`unknown browser source: ${sourceId}`);
+      }
+
+      logger.info('Relaunching browser source window', { source: sourceId });
+      await buildSource(descriptor);
+
+      return { macWindowId: registry.sources[sourceId]?.macWindowId ?? null };
+    },
+
     getStatus() {
       const connected = cdpClient !== null && cdpClient.isConnected();
+      let phase;
+
+      if (rebuilding) {
+        phase = 'recovering';
+      } else if (recovering) {
+        phase = 'reconnecting';
+      } else if (connected) {
+        phase = 'connected';
+      } else {
+        phase = 'disconnected';
+      }
 
       return {
         connected,
+        phase,
         chromePid: cdpClient === null ? null : cdpClient.getChromePid(),
         sources: Object.fromEntries(
           Object.entries(registry.sources).map(([id, source]) => [
@@ -472,6 +629,16 @@ export function createBrowserSession(options) {
 
     getRegistry() {
       return registry;
+    },
+
+    on(event, handler) {
+      if (event !== 'recovered' && event !== 'transportLost') {
+        return;
+      }
+
+      const handlers = lifecycleHandlers.get(event) ?? new Set();
+      handlers.add(handler);
+      lifecycleHandlers.set(event, handlers);
     },
   };
 }

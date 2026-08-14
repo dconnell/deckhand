@@ -412,6 +412,10 @@ function normalizePresenterCommand(message) {
     normalized.lineIndex = normalizeInteger(message.lineIndex, 'lineIndex');
   }
 
+  if (message.sourceId !== undefined) {
+    normalized.sourceId = assertNonEmptyString(message.sourceId, 'sourceId');
+  }
+
   return normalized;
 }
 

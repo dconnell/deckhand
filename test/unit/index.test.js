@@ -370,6 +370,535 @@ test('run discovers the actual DevTools port from the launched Chrome session', 
   }
 });
 
+test('run clears the stale Chrome launch handle on transportLost so recovery relaunches Chrome', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-transport-lost-'));
+  let launchCount = 0;
+  let capturedDiscover = null;
+  let transportLostHandler = null;
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      installSignalHandlers: false,
+      consoleLike: {
+        error() {},
+        info() {},
+        log() {},
+        warn() {},
+      },
+      createHubFn() {
+        return {
+          on() {},
+          async start() {},
+          async stop() {},
+          getAddress() {
+            return { host: '127.0.0.1', port: 8765 };
+          },
+          getSnapshot() {
+            return { activeDriver: null, observers: [], sticky: {} };
+          },
+        };
+      },
+      createObsClientFn() {
+        return {
+          async connect() {},
+          async disconnect() {},
+          async setScene() {},
+          async applyInputSettings() {},
+          getClient() { return this; },
+          isConnected() {
+            return false;
+          },
+        };
+      },
+      launchChromeSessionFn: async () => {
+        launchCount += 1;
+        return {
+          chromePid: 47213,
+          debugPort: 9321,
+          profileDir: '/tmp/deckhand-transport-lost',
+          async stop() {},
+        };
+      },
+      discoverCdpEndpointFn: async () => ({
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9313/devtools/browser/abc',
+        chromePid: null,
+      }),
+      createCdpClientFn({ discover }) {
+        capturedDiscover = discover;
+        return {
+          async connect() {
+            await discover();
+          },
+          async disconnect() {},
+          isConnected() {
+            return true;
+          },
+          getChromePid() {
+            return 47213;
+          },
+          on() {},
+          async createWindow() { throw new Error('not used'); },
+          async createTab() { throw new Error('not used'); },
+          async activateTab() {},
+          async navigateTab() {},
+          async closeTarget() {},
+        };
+      },
+      createBrowserSessionFn({ createCdpClient }) {
+        const cdpClient = createCdpClient();
+        return {
+          async start() { await cdpClient.connect(); },
+          async stop() { await cdpClient.disconnect(); },
+          on(event, handler) {
+            if (event === 'transportLost') {
+              transportLostHandler = handler;
+            }
+          },
+          async openWindow() {},
+          getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
+          async activateTab() {},
+          async navigateTab() {},
+        };
+      },
+      createCoordinatorFn({ executor, obs, hub }) {
+        return {
+          async start() {
+            await executor.start();
+            await obs.connect();
+            await hub.start();
+          },
+          async stop() {
+            await executor.stop();
+            await hub.stop();
+            await obs.disconnect();
+          },
+          getCurrentPresentationState() {
+            return {
+              type: 'presentationState',
+              seq: 1,
+              slideId: 'intro',
+              layoutId: 'full-slide',
+              audienceScene: 'Full Slide',
+              focus: null,
+              slots: [],
+            };
+          },
+          getRuntimeWindowBindings() {
+            return {};
+          },
+        };
+      },
+      createPresenterHttpFn() {
+        return { async start() {}, async stop() {} };
+      },
+      createPresentationServerFn() {
+        return {
+          async start() {},
+          async stop() {},
+          getAddress() { return { host: '127.0.0.1', port: 3000 }; },
+        };
+      },
+      reconcileObsFn: async () => {},
+      waitForDriverPositionFn: async () => {},
+      waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
+      resolveMacWindowBindingsFn: async () => {},
+      resolveOwnedWindowBindingsFn: async () => ({}),
+    });
+
+    assert.equal(exitCode, 0);
+    assert.equal(launchCount, 1, 'Chrome is launched once during initial startup');
+    assert.equal(typeof transportLostHandler, 'function', 'run subscribes to browser transportLost');
+
+    transportLostHandler();
+    await capturedDiscover();
+
+    assert.equal(launchCount, 2, 'clearing the stale handle lets recovery relaunch Chrome');
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+function buildResumeRunOptions({ currentSlideId, sentCommands }) {
+  return {
+    installSignalHandlers: false,
+    consoleLike: {
+      error() {},
+      info() {},
+      log() {},
+      warn() {},
+    },
+    createHubFn() {
+      return {
+        on() {},
+        async start() {},
+        async stop() {},
+        getAddress() {
+          return { host: '127.0.0.1', port: 8765 };
+        },
+        getSnapshot() {
+          return { activeDriver: null, observers: [], sticky: {} };
+        },
+        async sendCommand(target, command) {
+          sentCommands.push({ target, command });
+        },
+      };
+    },
+    createObsClientFn() {
+      return {
+        async connect() {},
+        async disconnect() {},
+        async setScene() {},
+        async applyInputSettings() {},
+        getClient() { return this; },
+        isConnected() {
+          return false;
+        },
+      };
+    },
+    launchChromeSessionFn: async () => ({
+      chromePid: 47213,
+      debugPort: 9321,
+      profileDir: '/tmp/deckhand-resume',
+      async stop() {},
+    }),
+    discoverCdpEndpointFn: async () => ({
+      webSocketDebuggerUrl: 'ws://127.0.0.1:9313/devtools/browser/abc',
+      chromePid: null,
+    }),
+    createCdpClientFn({ discover }) {
+      return {
+        async connect() { await discover(); },
+        async disconnect() {},
+        isConnected() { return true; },
+        getChromePid() { return 47213; },
+        on() {},
+        async createWindow() { throw new Error('not used'); },
+        async createTab() { throw new Error('not used'); },
+        async activateTab() {},
+        async navigateTab() {},
+        async closeTarget() {},
+      };
+    },
+    createBrowserSessionFn({ createCdpClient }) {
+      const cdpClient = createCdpClient();
+      return {
+        async start() { await cdpClient.connect(); },
+        async stop() { await cdpClient.disconnect(); },
+        on() {},
+        async openWindow() {},
+        getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
+        async activateTab() {},
+        async navigateTab() {},
+      };
+    },
+    createCoordinatorFn({ executor, obs, hub }) {
+      return {
+        async start() {
+          await executor.start();
+          await obs.connect();
+          await hub.start();
+        },
+        async stop() {
+          await executor.stop();
+          await hub.stop();
+          await obs.disconnect();
+        },
+        getCurrentPresentationState() {
+          return {
+            type: 'presentationState',
+            seq: 1,
+            slideId: currentSlideId,
+            layoutId: 'full-slide',
+            audienceScene: 'Full Slide',
+            focus: null,
+            slots: [],
+          };
+        },
+        getRuntimeWindowBindings() {
+          return {};
+        },
+      };
+    },
+    createPresenterHttpFn() {
+      return { async start() {}, async stop() {} };
+    },
+    createPresentationServerFn() {
+      return {
+        async start() {},
+        async stop() {},
+        getAddress() { return { host: '127.0.0.1', port: 3000 }; },
+      };
+    },
+    reconcileObsFn: async () => {},
+    waitForDriverPositionFn: async () => {},
+    waitForPresentationObserverFn: async () => {},
+    runSttObserverFn: async () => {},
+    resolveMacWindowBindingsFn: async () => {},
+    resolveOwnedWindowBindingsFn: async () => ({}),
+  };
+}
+
+test('run replays a persisted slide id via goTo when it differs from the reported position', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-resume-replay-'));
+  const sentCommands = [];
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+    const statePath = path.join(tempDir, 'presentation', 'demo', '.deckhand-state.json');
+    await writeFile(statePath, JSON.stringify({ slideId: 'demo', index: { h: 1, v: 0 }, savedAtMs: 1 }), 'utf8');
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      ...buildResumeRunOptions({ currentSlideId: 'intro', sentCommands }),
+    });
+
+    assert.equal(exitCode, 0);
+    assert.deepEqual(sentCommands, [
+      { target: { role: 'driver' }, command: { type: 'goTo', id: 'demo' } },
+    ]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('run does not replay a goTo when the persisted slide matches the reported position', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-resume-match-'));
+  const sentCommands = [];
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+    const statePath = path.join(tempDir, 'presentation', 'demo', '.deckhand-state.json');
+    await writeFile(statePath, JSON.stringify({ slideId: 'intro', index: { h: 0, v: 0 }, savedAtMs: 1 }), 'utf8');
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      ...buildResumeRunOptions({ currentSlideId: 'intro', sentCommands }),
+    });
+
+    assert.equal(exitCode, 0);
+    assert.deepEqual(sentCommands, []);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('run skips resume replay entirely when the --no-resume flag is set', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-resume-disabled-'));
+  const sentCommands = [];
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+    const statePath = path.join(tempDir, 'presentation', 'demo', '.deckhand-state.json');
+    await writeFile(statePath, JSON.stringify({ slideId: 'demo', index: { h: 1, v: 0 }, savedAtMs: 1 }), 'utf8');
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      noResume: true,
+      ...buildResumeRunOptions({ currentSlideId: 'intro', sentCommands }),
+    });
+
+    assert.equal(exitCode, 0);
+    assert.deepEqual(sentCommands, []);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+function buildRelaunchRunOptions({ captures }) {
+  return {
+    installSignalHandlers: false,
+    consoleLike: {
+      error() {},
+      info() {},
+      log() {},
+      warn() {},
+    },
+    createHubFn() {
+      return {
+        on() {},
+        async start() {},
+        async stop() {},
+        getAddress() { return { host: '127.0.0.1', port: 8765 }; },
+        getSnapshot() { return { activeDriver: null, observers: [], sticky: {} }; },
+        async sendCommand() {},
+      };
+    },
+    createObsClientFn() {
+      return {
+        async connect() {},
+        async disconnect() {},
+        async setScene() {},
+        async applyInputSettings() {},
+        getClient() { return this; },
+        isConnected() { return false; },
+      };
+    },
+    launchChromeSessionFn: async () => ({
+      chromePid: 47213,
+      debugPort: 9321,
+      profileDir: '/tmp/deckhand-relaunch',
+      async stop() {},
+    }),
+    discoverCdpEndpointFn: async () => ({
+      webSocketDebuggerUrl: 'ws://127.0.0.1:9313/devtools/browser/abc',
+      chromePid: null,
+    }),
+    createCdpClientFn({ discover }) {
+      return {
+        async connect() { await discover(); },
+        async disconnect() {},
+        isConnected() { return true; },
+        getChromePid() { return 47213; },
+        on() {},
+        async createWindow() { throw new Error('not used'); },
+        async createTab() { throw new Error('not used'); },
+        async activateTab() {},
+        async navigateTab() {},
+        async closeTarget() {},
+      };
+    },
+    createBrowserSessionFn({ createCdpClient }) {
+      createCdpClient();
+      return {
+        async start() {},
+        async stop() {},
+        on() {},
+        async openWindow() {},
+        async openAuxWindow() { return { macWindowId: null }; },
+        getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
+        getRegistry() { return { sources: {}, auxWindows: {} }; },
+        async activateTab() {},
+        async navigateTab() {},
+        async relaunchBrowserSource(sourceId) {
+          captures.browserRelaunches.push(sourceId);
+          return { macWindowId: 555 };
+        },
+      };
+    },
+    createCoordinatorFn(options) {
+      captures.relaunchSource = options.relaunchSource;
+      return {
+        async start() {},
+        async stop() {},
+        getCurrentPresentationState() { return null; },
+        getRuntimeWindowBindings() { return {}; },
+        async reapplyCurrentSlide(reason) { captures.reapplies.push(reason); },
+      };
+    },
+    createPresenterHttpFn() {
+      return { async start() {}, async stop() {} };
+    },
+    createPresentationServerFn() {
+      return {
+        async start() {},
+        async stop() {},
+        getAddress() { return { host: '127.0.0.1', port: 3000 }; },
+      };
+    },
+    reconcileObsFn: async () => {},
+    waitForDriverPositionFn: async () => {},
+    waitForPresentationObserverFn: async () => {},
+    runSttObserverFn: async () => {},
+    resolveMacWindowBindingsFn: async () => {},
+    resolveOwnedWindowBindingsFn: async () => ({}),
+  };
+}
+
+test('relaunchSource rebuilds a browser source and re-applies OBS bindings', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-relaunch-browser-'));
+  const captures = { browserRelaunches: [], reapplies: [], relaunchedAppSources: [] };
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      ...buildRelaunchRunOptions({ captures }),
+    });
+
+    assert.equal(exitCode, 0);
+
+    const result = await captures.relaunchSource({ sourceId: 'Slide' });
+
+    assert.deepEqual(captures.browserRelaunches, ['Slide']);
+    assert.deepEqual(captures.reapplies, ['sourceRelaunched']);
+    assert.equal(result.sourceId, 'Slide');
+    assert.equal(result.macWindowId, 555);
+    assert.equal(result.binding.macWindowId, 555);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('relaunchSource re-launches an app source via the injected app relauncher', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-relaunch-app-'));
+  const captures = { browserRelaunches: [], reapplies: [], relaunchedAppSources: [] };
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      relaunchAppSourceFn: async ({ sourceId }) => {
+        captures.relaunchedAppSources.push(sourceId);
+        return { macWindowId: 777, pid: 1234, sessionId: 'session-uuid-new' };
+      },
+      ...buildRelaunchRunOptions({ captures }),
+    });
+
+    assert.equal(exitCode, 0);
+
+    const result = await captures.relaunchSource({ sourceId: 'Terminal' });
+
+    assert.deepEqual(captures.relaunchedAppSources, ['Terminal']);
+    assert.deepEqual(captures.browserRelaunches, [], 'a browser relaunch is not triggered for an app source');
+    assert.deepEqual(captures.reapplies, ['sourceRelaunched']);
+    assert.deepEqual(result, {
+      sourceId: 'Terminal',
+      macWindowId: 777,
+      binding: { macWindowId: 777, pid: 1234, sessionId: 'session-uuid-new' },
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('relaunchSource rejects an unknown source id', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-relaunch-unknown-'));
+  const captures = { browserRelaunches: [], reapplies: [], relaunchedAppSources: [] };
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+
+    await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      ...buildRelaunchRunOptions({ captures }),
+    });
+
+    await assert.rejects(captures.relaunchSource({ sourceId: 'Mystery' }), /unknown source/i);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('run does not create the presenter HTTP server for audience-only configs', async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-no-presenter-http-'));
   let presenterHttpCreated = false;

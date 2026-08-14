@@ -393,6 +393,7 @@ test('getStatus reports ready per source after start', async () => {
   assert.deepEqual(session.getStatus(), {
     connected: true,
     chromePid: 47213,
+    phase: 'connected',
     sources: {
       BrowserA: { ready: true, activeTab: 'home', tabs: ['home', 'checkout'] },
     },
@@ -402,11 +403,12 @@ test('getStatus reports ready per source after start', async () => {
 test('getStatus reports degraded state before start and after an unexpected disconnect', async () => {
   const cdpClient = createFakeCdpClient();
   const sources = createSources(createBrowserSource('BrowserA', { home: { url: 'https://example.com/home' } }));
-  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient, timer: createFakeTimer() });
 
   assert.deepEqual(session.getStatus(), {
     connected: false,
     chromePid: null,
+    phase: 'disconnected',
     sources: {},
   });
 
@@ -415,6 +417,7 @@ test('getStatus reports degraded state before start and after an unexpected disc
 
   const status = session.getStatus();
   assert.equal(status.connected, false);
+  assert.equal(status.phase, 'reconnecting');
   assert.equal(status.sources.BrowserA.ready, false);
 });
 
@@ -623,4 +626,232 @@ test('stop explicitly closes tracked auxiliary windows before disconnecting chro
   await session.stop();
 
   assert.equal(cdpClient.calls.some((call) => call.type === 'closeTarget' && call.targetId === 'TARGET_1'), true);
+});
+
+function createFakeTimer() {
+  const pending = [];
+
+  return {
+    setTimeout(fn, ms) {
+      const handle = { fn, ms, done: false };
+      pending.push(handle);
+      return handle;
+    },
+    clearTimeout(handle) {
+      if (handle) {
+        handle.done = true;
+      }
+    },
+    delays() {
+      return pending.map((handle) => handle.ms);
+    },
+    activeDelays() {
+      return pending.filter((handle) => !handle.done).map((handle) => handle.ms);
+    },
+    async run(count) {
+      let executed = 0;
+
+      while (executed < count && pending.some((handle) => !handle.done)) {
+        const handle = pending.find((entry) => !entry.done);
+        handle.done = true;
+        await handle.fn();
+        executed += 1;
+      }
+    },
+  };
+}
+
+function createRecoverableSources() {
+  return createSources(
+    createBrowserSource(
+      'BrowserA',
+      {
+        home: { url: 'https://example.com/home' },
+        checkout: { url: 'https://example.com/checkout' },
+      },
+      { initialTab: 'home' },
+    ),
+  );
+}
+
+test('an unexpected disconnect emits transportLost then recovers and rebuilds the registry with fresh target ids', async () => {
+  const cdpClient = createFakeCdpClient();
+  const timer = createFakeTimer();
+  const events = [];
+  const session = createBrowserSession({
+    sources: createRecoverableSources(),
+    createCdpClient: () => cdpClient,
+    timer,
+  });
+  session.on('transportLost', () => events.push('transportLost'));
+  session.on('recovered', () => events.push('recovered'));
+
+  await session.start();
+  const firstTarget = session.getRegistry().sources.BrowserA.tabs.home.targetId;
+
+  cdpClient.simulateDisconnect();
+
+  assert.deepEqual(events, ['transportLost']);
+  assert.equal(session.getStatus().phase, 'reconnecting');
+
+  await timer.run(5);
+
+  assert.deepEqual(events, ['transportLost', 'recovered']);
+  assert.equal(session.getStatus().phase, 'connected');
+
+  const secondTarget = session.getRegistry().sources.BrowserA.tabs.home.targetId;
+  assert.notEqual(firstTarget, secondTarget);
+  assert.equal(session.getRegistry().sources.BrowserA.activeTab, 'home');
+});
+
+test('browser session recover retries with backoff when the first reconnect attempt fails', async () => {
+  const cdpClient = createFakeCdpClient();
+  const timer = createFakeTimer();
+  const events = [];
+  let connectCalls = 0;
+  const realConnect = cdpClient.connect;
+  cdpClient.connect = async () => {
+    connectCalls += 1;
+    if (connectCalls === 2) {
+      throw new Error('chrome unreachable');
+    }
+    await realConnect.call(cdpClient);
+  };
+  const session = createBrowserSession({
+    sources: createRecoverableSources(),
+    createCdpClient: () => cdpClient,
+    timer,
+  });
+  session.on('recovered', () => events.push('recovered'));
+
+  await session.start();
+  cdpClient.simulateDisconnect();
+
+  await timer.run(5);
+
+  assert.deepEqual(events, ['recovered']);
+  assert.equal(connectCalls, 3);
+  assert.equal(session.getStatus().phase, 'connected');
+});
+
+test('browser commands reject with a recovering error while a rebuild is in flight', async () => {
+  const cdpClient = createFakeCdpClient();
+  const timer = createFakeTimer();
+  const session = createBrowserSession({
+    sources: createRecoverableSources(),
+    createCdpClient: () => cdpClient,
+    timer,
+  });
+
+  await session.start();
+  cdpClient.simulateDisconnect();
+
+  await assert.rejects(session.activateTab('BrowserA', 'home'), /recovering/i);
+  await assert.rejects(session.navigateTab('BrowserA', 'home', 'https://example.com/x'), /recovering/i);
+});
+
+test('stop suppresses an in-flight browser recovery', async () => {
+  const cdpClient = createFakeCdpClient();
+  const timer = createFakeTimer();
+  const events = [];
+  const session = createBrowserSession({
+    sources: createRecoverableSources(),
+    createCdpClient: () => cdpClient,
+    timer,
+  });
+  session.on('recovered', () => events.push('recovered'));
+
+  await session.start();
+  cdpClient.simulateDisconnect();
+
+  await session.stop();
+  await timer.run(5);
+
+  assert.deepEqual(events, []);
+  assert.equal(session.getStatus().phase, 'disconnected');
+});
+
+test('browser session recovery can be disabled so a disconnect stays down', async () => {
+  const cdpClient = createFakeCdpClient();
+  const timer = createFakeTimer();
+  const events = [];
+  const session = createBrowserSession({
+    sources: createRecoverableSources(),
+    createCdpClient: () => cdpClient,
+    timer,
+    recovery: {
+      browserRecover: { enabled: false, initialDelayMs: 500, maxDelayMs: 10000 },
+    },
+  });
+  session.on('transportLost', () => events.push('transportLost'));
+  session.on('recovered', () => events.push('recovered'));
+
+  await session.start();
+  cdpClient.simulateDisconnect();
+
+  assert.deepEqual(events, ['transportLost']);
+  assert.equal(timer.delays().length, 0);
+  assert.equal(session.getStatus().phase, 'disconnected');
+});
+
+test('relaunchBrowserSource rebuilds a single source window with fresh runtime handles', async () => {
+  const cdpClient = createFakeCdpClient();
+  const windows = [{ windowId: 100, width: 800, height: 600 }];
+  const enumerateWindowIdsByPidFn = () => [...windows];
+  let nextWindow = 5000;
+  const realCreateWindow = cdpClient.createWindow;
+  cdpClient.createWindow = async (details) => {
+    const result = await realCreateWindow(details);
+    windows.push({ windowId: nextWindow, width: 1280, height: 800 });
+    nextWindow += 1;
+    return result;
+  };
+  const sources = createSources(
+    createBrowserSource(
+      'BrowserA',
+      {
+        home: { url: 'https://example.com/home' },
+        checkout: { url: 'https://example.com/checkout' },
+      },
+      { initialTab: 'home' },
+    ),
+  );
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient, enumerateWindowIdsByPidFn });
+
+  await session.start();
+  const firstTarget = session.getRegistry().sources.BrowserA.tabs.home.targetId;
+  assert.equal(session.getRegistry().sources.BrowserA.macWindowId, 5000);
+
+  const result = await session.relaunchBrowserSource('BrowserA');
+
+  const after = session.getRegistry().sources.BrowserA;
+
+  assert.notEqual(after.tabs.home.targetId, firstTarget, 'the source window is rebuilt with a fresh target id');
+  assert.equal(after.macWindowId, 5001);
+  assert.deepEqual(result, { macWindowId: 5001 });
+});
+
+test('relaunchBrowserSource rejects an unknown or non-browser source id', async () => {
+  const cdpClient = createFakeCdpClient();
+  const sources = createSources(createBrowserSource('BrowserA', { home: { url: 'https://example.com/home' } }));
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await session.start();
+
+  await assert.rejects(session.relaunchBrowserSource('Mystery'), /unknown browser source/i);
+});
+
+test('relaunchBrowserSource rejects while a recovery is in flight', async () => {
+  const cdpClient = createFakeCdpClient();
+  const timer = createFakeTimer();
+  const session = createBrowserSession({
+    sources: createRecoverableSources(),
+    createCdpClient: () => cdpClient,
+    timer,
+  });
+
+  await session.start();
+  cdpClient.simulateDisconnect();
+
+  await assert.rejects(session.relaunchBrowserSource('BrowserA'), /recovering/i);
 });

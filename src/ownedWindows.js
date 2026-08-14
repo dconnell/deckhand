@@ -98,6 +98,13 @@ export async function resolveOwnedWindowBindings(options) {
         resolved.sessionId = launchResult.sessionId;
       }
 
+      // Terminal.app identifies its closable window by AppleScript window id,
+      // not a session uuid — without this merge a relaunched window could
+      // never be tracked for shutdown cleanup.
+      if (resolved.terminalWindowId === undefined && typeof launchResult?.terminalWindowId === 'string') {
+        resolved.terminalWindowId = launchResult.terminalWindowId;
+      }
+
       results[entry.sourceId] = resolved;
       logger.info('Resolved owned source window binding', {
         macWindowId: resolved.macWindowId,

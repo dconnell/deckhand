@@ -440,6 +440,70 @@ function normalizeHub(hub) {
   };
 }
 
+const RECOVERY_SUB_BLOCKS = new Set(['obsReconnect', 'browserRecover', 'resumeSlide']);
+
+/**
+ * Normalize a backoff sub-block (obsReconnect / browserRecover): an optional
+ * `enabled` flag plus positive-integer `initialDelayMs` / `maxDelayMs` knobs.
+ *
+ * @param {unknown} value Raw sub-block.
+ * @param {{ initialDelayMs: number, maxDelayMs: number }} defaults Fallbacks.
+ * @param {string} pathName Config path prefix for errors.
+ * @returns {{ enabled: boolean, initialDelayMs: number, maxDelayMs: number }}
+ */
+function normalizeRecoveryBackoff(value, defaults, pathName) {
+  const block = value === undefined ? {} : assertPlainObject(value, pathName);
+  const enabled = block.enabled === undefined ? true : assertBoolean(block.enabled, `${pathName}.enabled`);
+  const initialDelayMs = block.initialDelayMs === undefined
+    ? defaults.initialDelayMs
+    : normalizePositiveInteger(block.initialDelayMs, `${pathName}.initialDelayMs`);
+  const maxDelayMs = block.maxDelayMs === undefined
+    ? defaults.maxDelayMs
+    : normalizePositiveInteger(block.maxDelayMs, `${pathName}.maxDelayMs`);
+
+  if (initialDelayMs > maxDelayMs) {
+    throw new ConfigError(`${pathName}.initialDelayMs`, 'must not exceed maxDelayMs');
+  }
+
+  return { enabled, initialDelayMs, maxDelayMs };
+}
+
+/**
+ * Normalize the optional top-level `recovery` block. Every sub-block defaults
+ * to an enabled state so Deckhand recovers transports with zero configuration;
+ * operators only need to opt out per subsystem.
+ *
+ * @param {unknown} recovery Raw recovery block.
+ * @returns {{ obsReconnect: { enabled: boolean, initialDelayMs: number, maxDelayMs: number }, browserRecover: { enabled: boolean, initialDelayMs: number, maxDelayMs: number }, resumeSlide: { enabled: boolean } }}
+ */
+function normalizeRecovery(recovery) {
+  if (recovery === undefined) {
+    return {
+      obsReconnect: { enabled: true, initialDelayMs: 250, maxDelayMs: 5000 },
+      browserRecover: { enabled: true, initialDelayMs: 500, maxDelayMs: 10000 },
+      resumeSlide: { enabled: true },
+    };
+  }
+
+  const value = assertPlainObject(recovery, 'recovery');
+
+  for (const key of Object.keys(value)) {
+    if (!RECOVERY_SUB_BLOCKS.has(key)) {
+      throw new ConfigError(`recovery.${key}`, 'unknown recovery sub-block');
+    }
+  }
+
+  return {
+    obsReconnect: normalizeRecoveryBackoff(value.obsReconnect, { initialDelayMs: 250, maxDelayMs: 5000 }, 'recovery.obsReconnect'),
+    browserRecover: normalizeRecoveryBackoff(value.browserRecover, { initialDelayMs: 500, maxDelayMs: 10000 }, 'recovery.browserRecover'),
+    resumeSlide: (() => {
+      const block = value.resumeSlide === undefined ? {} : assertPlainObject(value.resumeSlide, 'recovery.resumeSlide');
+
+      return { enabled: block.enabled === undefined ? true : assertBoolean(block.enabled, 'recovery.resumeSlide.enabled') };
+    })(),
+  };
+}
+
 function normalizeLayoutSlot(layoutId, slot, index, sources) {
   const pathName = `layouts.${layoutId}.slots[${index}]`;
   const value = assertPlainObject(slot, pathName);
@@ -964,7 +1028,7 @@ export class ConfigError extends Error {
  * @param {{ baseDir?: string }} [options] Loader options. `baseDir` resolves
  *   relative `files` paths (e.g. a presentation's committed image assets)
  *   against the presentation directory.
- * @returns {{ driver: { type: string }, obs: { url: string, password: string, prune: boolean, transitions: null | { forward: string | null, backward: string | null, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number, windowSettleMs: number, freezeDimPercent: number } }, hub: { host: string, port: number }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[], files?: string[] }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, profileName?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, mode: 'step' | 'vad', captureId: number, stepMs: number, lengthMs: number, keepMs: number, threads: number, audioCtx: number, beamSize: number, keepContext: boolean, noFallback: boolean, useGpu: boolean, flashAttn: boolean, language?: string, vadThreshold?: number, freqThreshold?: number }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } } }}
+ * @returns {{ driver: { type: string }, obs: { url: string, password: string, prune: boolean, transitions: null | { forward: string | null, backward: string | null, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number, windowSettleMs: number, freezeDimPercent: number } }, hub: { host: string, port: number }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[], files?: string[] }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, profileName?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, mode: 'step' | 'vad', captureId: number, stepMs: number, lengthMs: number, keepMs: number, threads: number, audioCtx: number, beamSize: number, keepContext: boolean, noFallback: boolean, useGpu: boolean, flashAttn: boolean, language?: string, vadThreshold?: number, freqThreshold?: number }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } }, recovery: { obsReconnect: { enabled: boolean, initialDelayMs: number, maxDelayMs: number }, browserRecover: { enabled: boolean, initialDelayMs: number, maxDelayMs: number }, resumeSlide: { enabled: boolean } } }}
  */
 export function normalizeConfig(rawConfig, { baseDir } = {}) {
   const root = assertPlainObject(rawConfig, 'config');
@@ -985,6 +1049,7 @@ export function normalizeConfig(rawConfig, { baseDir } = {}) {
     slides,
     chrome: normalizeChrome(root.chrome),
     presenter: normalizePresenter(root.presenter, layouts, slides, sources),
+    recovery: normalizeRecovery(root.recovery),
   };
 }
 

@@ -15,10 +15,12 @@ import { loadPresentationConfig } from './presentations.js';
 import { parsePresentationCliArgs } from './presentations.js';
 import { resolvePresentationPaths } from './presentations.js';
 import { buildRuntimeStatus } from './runtimeStatus.js';
+import { loadResumableSlide, persistSlideId } from './recovery/slideResume.js';
 import {
   buildBootstrapBinding,
   buildObsWindowBindings,
   closeOwnedAppWindows,
+  createOwnedWindowResolutionEntries,
   defaultResolveOwnedWindowBindings,
   getSourceOwnerName,
   hasBrowserSources,
@@ -35,6 +37,7 @@ import { createBrowserSession, createBrowserCommandExecutor } from './browserSes
 import { createWsTransport, discoverCdpEndpoint, launchChromeSession } from './chromeLauncher.js';
 import { waitForFirstDriverPosition, waitForPresentationObserver } from './lifecycle/waitFor.js';
 import { closeMacWindow, getWindowIdsViaCGList } from './macWindows.js';
+import { resolveOwnedWindowBindings } from './ownedWindows.js';
 import { runSttObserver } from './presenter/stt/runner.js';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -56,9 +59,29 @@ function isMainModule(metaUrl) {
 }
 
 /**
+ * Relaunch a single owned app source (`open -a`) and re-resolve its macOS
+ * window id by diffing CGWindowList around the launch. This is the default
+ * implementation of `options.relaunchAppSourceFn`; inject a stub in tests.
+ *
+ * @param {{ config: Record<string, unknown>, logger: Record<string, unknown>, sourceId: string }} input
+ * @returns {Promise<{ macWindowId?: number, pid?: number } | null>}
+ */
+async function defaultRelaunchAppSource({ config, logger, sourceId }) {
+  const entries = createOwnedWindowResolutionEntries({ config, logger });
+  const entry = entries.find((candidate) => candidate.sourceId === sourceId);
+
+  if (entry === undefined) {
+    return null;
+  }
+
+  const result = await resolveOwnedWindowBindings({ entries: [entry], maxAttempts: 30, logger });
+  return result[sourceId] ?? null;
+}
+
+/**
  * Load config, compose adapters, and start the coordinator process.
  *
- * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, createPresentationServerFn?: typeof createPresentationServer, createBrowserSessionFn?: typeof createBrowserSession, createBrowserCommandExecutorFn?: typeof createBrowserCommandExecutor, createCdpClientFn?: typeof createCdpClient, launchChromeSessionFn?: typeof launchChromeSession, discoverCdpEndpointFn?: typeof discoverCdpEndpoint, reconcileObsFn?: typeof reconcileObsPresentation, waitForDriverPositionFn?: typeof waitForFirstDriverPosition, waitForPresentationObserverFn?: typeof waitForPresentationObserver, installSignalHandlers?: boolean, presenterAssetsPath?: string, closeMacWindowFn?: typeof closeMacWindow, terminateProcessGroupFn?: typeof terminateProcessGroup }} [options] Startup options.
+ * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, createPresentationServerFn?: typeof createPresentationServer, createBrowserSessionFn?: typeof createBrowserSession, createBrowserCommandExecutorFn?: typeof createBrowserCommandExecutor, createCdpClientFn?: typeof createCdpClient, launchChromeSessionFn?: typeof launchChromeSession, discoverCdpEndpointFn?: typeof discoverCdpEndpoint, reconcileObsFn?: typeof reconcileObsPresentation, waitForDriverPositionFn?: typeof waitForFirstDriverPosition, waitForPresentationObserverFn?: typeof waitForPresentationObserver, loadResumableSlideFn?: typeof loadResumableSlide, relaunchAppSourceFn?: (input: { config: Record<string, unknown>, logger: Record<string, unknown>, sourceId: string }) => Promise<{ macWindowId?: number, pid?: number } | null>, installSignalHandlers?: boolean, presenterAssetsPath?: string, noResume?: boolean, closeMacWindowFn?: typeof closeMacWindow, terminateProcessGroupFn?: typeof terminateProcessGroup }} [options] Startup options.
  * @returns {Promise<number>}
  */
 export async function run(options = {}) {
@@ -71,6 +94,7 @@ export async function run(options = {}) {
   const presenterAssetsPath = options.presenterAssetsPath ?? path.join(cwd, 'presenter-web');
   const closeMacWindowFn = options.closeMacWindowFn ?? closeMacWindow;
   const terminateProcessGroupFn = options.terminateProcessGroupFn ?? terminateProcessGroup;
+  const statePath = presentation.statePath;
 
   try {
     await access(configPath);
@@ -98,6 +122,10 @@ export async function run(options = {}) {
   }
 
   const logger = createLogger(consoleLike);
+  const resumeSlideEnabled = config.recovery.resumeSlide.enabled && options.noResume !== true;
+  const persistSlideIdCallback = resumeSlideEnabled
+    ? ({ slideId, index }) => persistSlideId({ statePath, slideId, index, nowMs: Date.now() })
+    : null;
   let coordinator;
   let presenterHttp = null;
   let hub;
@@ -136,6 +164,67 @@ export async function run(options = {}) {
     }
 
     return auxWindow;
+  }
+
+  /**
+   * Relaunch a single managed source window on operator demand (the presenter
+   * console's per-source "relaunch" button). Dispatches by source kind:
+   * browser sources are rebuilt inside the Chrome session; app sources are
+   * re-launched via `open -a` and re-resolved. After the fresh macWindowId lands
+   * the current slide's OBS bindings are re-applied. Relaunch is non-destructive:
+   * it does not close the old window first, matching the chosen "relaunch +
+   * rebind only" behavior.
+   *
+   * @param {{ sourceId: string }} input The source id to relaunch.
+   * @returns {Promise<{ sourceId: string, macWindowId: number | null }>}
+   */
+  async function relaunchSource({ sourceId }) {
+    const source = config.sources[sourceId];
+
+    if (source === undefined) {
+      throw new Error(`unknown source: ${sourceId}`);
+    }
+
+    if (source.kind === 'browser') {
+      if (browserSession === null) {
+        throw new Error('browser session is not started');
+      }
+
+      const result = await browserSession.relaunchBrowserSource(sourceId);
+      resolvedMacWindowBindings[sourceId] = {
+        macWindowId: result.macWindowId,
+        pid: browserSession.getStatus().chromePid ?? undefined,
+      };
+    } else if (source.kind === 'app') {
+      const relaunchAppSource = options.relaunchAppSourceFn ?? defaultRelaunchAppSource;
+      const result = await relaunchAppSource({ config, logger, sourceId });
+
+      if (result?.macWindowId === undefined) {
+        // The launch may have succeeded but the window could not be resolved.
+        // Drop any stale binding: it points at the closed window and would
+        // misdirect both the OBS capture binding and the shutdown close.
+        delete resolvedMacWindowBindings[sourceId];
+        logger.warn('Relaunched app source window could not be resolved; cleared stale binding', { sourceId });
+      } else {
+        // The fresh resolution is authoritative. Adapter identity fields
+        // (sessionId for iTerm2, terminalWindowId for Terminal.app) must
+        // replace — not merge with — the old ones, or shutdown would close
+        // the dead pre-relaunch session and leak the new window.
+        resolvedMacWindowBindings[sourceId] = { ...result };
+      }
+    } else {
+      throw new Error(`source ${sourceId} (kind ${source.kind}) cannot be relaunched`);
+    }
+
+    if (coordinator && typeof coordinator.reapplyCurrentSlide === 'function') {
+      await coordinator.reapplyCurrentSlide('sourceRelaunched');
+    }
+
+    const binding = resolvedMacWindowBindings[sourceId] ?? null;
+    const macWindowId = binding?.macWindowId ?? null;
+    logger.info('Relaunched source window', { sourceId, macWindowId });
+
+    return { sourceId, macWindowId, binding };
   }
 
   async function stopLaunchedChrome() {
@@ -276,7 +365,11 @@ export async function run(options = {}) {
 
   try {
     hub = (options.createHubFn ?? createHub)({ ...config.hub, logger });
-    obs = (options.createObsClientFn ?? createObsClient)({ ...config.obs, logger });
+    obs = (options.createObsClientFn ?? createObsClient)({
+      ...config.obs,
+      logger,
+      reconnect: config.recovery.obsReconnect,
+    });
 
     hub.on('observerWindowBindings', (payload) => {
       for (const source of payload?.cleared ?? []) {
@@ -333,8 +426,32 @@ export async function run(options = {}) {
         sources: config.sources,
         createCdpClient: () => cdpClient,
         enumerateWindowIdsByPidFn: options.enumerateWindowIdsByPidFn ?? getWindowIdsViaCGList,
+        recovery: config.recovery,
         logger,
       });
+
+      // When the CDP transport drops, the browser session recovers by
+      // reconnecting Chrome. A Chrome-process death leaves `chromeLaunch`
+      // pointing at a stale PID, so `ensureLaunched` would short-circuit and
+      // never respawn. Clear the handle (and best-effort reap the old process
+      // group) on transport loss so the next discover relaunches Chrome.
+      if (typeof browserSession.on === 'function') {
+        browserSession.on('transportLost', () => {
+          const stalePid = chromeLaunch?.chromePid;
+
+          chromeLaunch = null;
+
+          if (typeof stalePid === 'number' && stalePid > 0) {
+            try {
+              process.kill(-stalePid, 'SIGKILL');
+            } catch {
+              // process group may have already exited
+            }
+          }
+
+          logger.warn('Browser transport lost; cleared Chrome launch handle for relaunch on recovery');
+        });
+      }
 
       executor = (options.createBrowserCommandExecutorFn ?? createBrowserCommandExecutor)({
         browserSession,
@@ -345,6 +462,7 @@ export async function run(options = {}) {
     coordinator = (options.createCoordinatorFn ?? createCoordinator)({
       config,
       focusPresenterTeleprompter,
+      relaunchSource,
       getManagedWindowBindings() {
         if (config.presenter === null) {
           return {};
@@ -405,6 +523,8 @@ export async function run(options = {}) {
       executor,
       logger,
       obs,
+      browserSession,
+      persistSlideId: persistSlideIdCallback,
     });
 
     if (config.presenter !== null) {
@@ -418,6 +538,10 @@ export async function run(options = {}) {
         getStatus() {
           return buildRuntimeStatus({
             phase,
+            sourceCatalog: Object.values(config.sources).map((source) => ({
+              id: source.id,
+              kind: source.kind,
+            })),
             currentPresentationState: coordinator.getCurrentPresentationState(),
             currentPresenterState: typeof coordinator.getCurrentPresenterState === 'function'
               ? coordinator.getCurrentPresenterState()
@@ -428,6 +552,7 @@ export async function run(options = {}) {
               ? { connected: false, chromePid: null, sources: {} }
               : browserSession.getStatus(),
             obsConnected: typeof obs.isConnected === 'function' ? obs.isConnected() : false,
+            obsReconnecting: typeof obs.isReconnecting === 'function' ? obs.isReconnecting() : false,
             presenterEnabled: true,
           });
         },
@@ -522,6 +647,32 @@ export async function run(options = {}) {
       hub,
       presentationName,
     });
+
+    // Resume-from-slide: if a prior run persisted a slide id for this
+    // presentation and the deck did not already report it on registration,
+    // drive the deck back to that slide so a mid-talk restart needs no manual
+    // navigation. The deck's resulting positionChanged flows through the
+    // coordinator normally and rebuilds OBS/browser state for the slide.
+    if (resumeSlideEnabled) {
+      const resumePoint = await (options.loadResumableSlideFn ?? loadResumableSlide)({ statePath });
+      const currentSlideId = coordinator.getCurrentPresentationState()?.slideId ?? null;
+
+      if (resumePoint !== null && resumePoint.slideId !== currentSlideId) {
+        logger.info('Resuming deck at persisted slide', {
+          slideId: resumePoint.slideId,
+          currentSlideId,
+        });
+
+        try {
+          await hub.sendCommand({ role: 'driver' }, { type: 'goTo', id: resumePoint.slideId });
+        } catch (error) {
+          logger.warn('Failed to resume deck at persisted slide', {
+            error: error instanceof Error ? error.message : String(error),
+            slideId: resumePoint.slideId,
+          });
+        }
+      }
+    }
 
     if (config.presenter !== null) {
       await (options.waitForPresentationObserverFn ?? waitForPresentationObserver)({ hub });
@@ -629,11 +780,13 @@ if (isMainModule(import.meta.url)) {
   let exitCode;
 
   try {
-    const { presentationName } = parsePresentationCliArgs({
+    const { presentationName, values } = parsePresentationCliArgs({
       args: process.argv.slice(2),
-      options: {},
+      options: {
+        'no-resume': { type: 'boolean', default: false },
+      },
     });
-    exitCode = await run({ presentationName });
+    exitCode = await run({ presentationName, noResume: values['no-resume'] === true });
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     exitCode = 1;

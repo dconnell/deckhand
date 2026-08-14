@@ -174,15 +174,14 @@ above is the only substitute for that, and it is mandatory.
 | Deckhand startup log says `Could not reach Chrome DevTools endpoint` | antivirus / security tool killed Chrome mid-launch |
 | Advance changes OBS scene but windows do not move | Hammerspoon Accessibility (T-4) — reload Hammerspoon config |
 | Advance does nothing at all | deck tab lost driver registration — reload the deck tab |
-| `/status.json` shows `obs.connected: true` but OBS does not respond | OBS WebSocket dropped silently — restart Deckhand |
+| `/status.json` shows `obs.reconnecting: true` | OBS WebSocket dropped — Deckhand auto-reconnects; ensure OBS is running |
 
 ## If you have to restart mid-talk
 
-1. Note the current slide id from `/status.json` (`current.slideId`) or the
-   deck URL fragment.
-2. `Ctrl+C` in the Deckhand terminal.
-3. `node ./src/index.js <name>` again.
-4. Once `phase: ready`, navigate the deck to that slide id.
+1. `Ctrl+C` in the Deckhand terminal.
+2. `node ./src/index.js <name>` again.
+3. The deck resumes on the slide you were on automatically (persisted to
+   `presentation/<name>/.deckhand-state.json`).
 
 See [TROUBLESHOOTING: Recovering without losing your
 place](TROUBLESHOOTING.md#recovering-without-losing-your-place) for why this is
