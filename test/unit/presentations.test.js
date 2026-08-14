@@ -17,6 +17,7 @@ test('resolvePresentationPaths maps a presentation name to its self-contained di
     localConfigPath: path.join('/repo', 'presentation', 'random-presentation', 'config.local.json'),
     name: 'random-presentation',
     root: path.join('/repo', 'presentation', 'random-presentation'),
+    statePath: path.join('/repo', 'presentation', 'random-presentation', '.deckhand-state.json'),
   });
 });
 

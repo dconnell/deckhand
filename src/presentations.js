@@ -82,7 +82,7 @@ export function parsePresentationCliArgs(input) {
  * Resolve the self-contained file layout for a named presentation.
  *
  * @param {{ cwd: string, presentationName: string }} options Resolution inputs.
- * @returns {{ name: string, root: string, configPath: string, deckRoot: string, deckEntryPath: string }}
+ * @returns {{ name: string, root: string, configPath: string, localConfigPath: string, statePath: string, deckRoot: string, deckEntryPath: string }}
  */
 export function resolvePresentationPaths(options) {
   const name = validatePresentationName(options.presentationName);
@@ -93,6 +93,7 @@ export function resolvePresentationPaths(options) {
     root,
     configPath: path.join(root, 'config.json'),
     localConfigPath: path.join(root, 'config.local.json'),
+    statePath: path.join(root, '.deckhand-state.json'),
     deckRoot: path.join(root, 'deck'),
     deckEntryPath: path.join(root, 'deck', 'index.html'),
   };

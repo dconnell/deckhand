@@ -60,14 +60,30 @@ async function waitForNamedScene({ getCurrentName, expectedName, logger, timeout
 /**
  * Create a thin OBS v5 wrapper used by the coordinator.
  *
- * @param {{ url: string, password: string, OBSWebSocketClass?: new () => { connect(url: string, password?: string): Promise<unknown>, disconnect(): Promise<unknown>, call(method: string, payload?: Record<string, unknown>): Promise<unknown>, on?(event: string, handler: (data: unknown) => void): void, off?(event: string, handler: (data: unknown) => void): void }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Adapter options.
- * @returns {{ connect(): Promise<unknown>, disconnect(): Promise<void>, setScene(sceneName: string): Promise<void>, applyInputSettings(inputName: string, inputSettings: Record<string, unknown>): Promise<void>, isConnected(): boolean, getClient(): unknown, getCurrentProgramScene(): Promise<string>, getCurrentPreviewScene(): Promise<string>, getCurrentTransitionName(): Promise<string>, getStudioModeEnabled(): Promise<boolean>, setStudioModeEnabled(enabled: boolean): Promise<void>, setPreviewScene(sceneName: string, options?: { timeoutMs?: number, pollIntervalMs?: number }): Promise<void>, triggerStudioModeTransition(options?: { targetSceneName?: string, timeoutMs?: number, pollIntervalMs?: number }): Promise<void>, getSourceScreenshotData(sourceName: string): Promise<string>, getProgramScreenshotBuffer(): Promise<Buffer>, getStreamStatus(): Promise<unknown>, captureProgramScreenshot(filePath: string): Promise<void>, setCurrentTransition(name: string, durationMs?: number): Promise<void>, switchProgramScene(sceneName: string, options?: { waitForEvent?: boolean, timeoutMs?: number }): Promise<void>, waitForSceneTransitionEnd(options?: { timeoutMs?: number }): Promise<void>, waitForSourceScreenshotStable(sourceName: string, options?: { differentFromData?: string | null, pollIntervalMs?: number, stableSamples?: number, timeoutMs?: number }): Promise<void>, ensureFreezeAssets(options: { sceneName: string, inputName: string, imagePath: string, dimPercent?: number }): Promise<void> }}
+ * @param {{ url: string, password: string, OBSWebSocketClass?: new () => { connect(url: string, password?: string): Promise<unknown>, disconnect(): Promise<unknown>, call(method: string, payload?: Record<string, unknown>): Promise<unknown>, on?(event: string, handler: (data: unknown) => void): void, off?(event: string, handler: (data: unknown) => void): void }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void }, reconnect?: { enabled?: boolean, initialDelayMs?: number, maxDelayMs?: number }, timer?: { setTimeout(fn: () => void, ms: number): unknown, clearTimeout(handle: unknown): void } }} options Adapter options.
+ * @returns {{ connect(): Promise<unknown>, disconnect(): Promise<void>, setScene(sceneName: string): Promise<void>, applyInputSettings(inputName: string, inputSettings: Record<string, unknown>): Promise<void>, isConnected(): boolean, isReconnecting(): boolean, on(event: 'reconnecting' | 'reconnected', handler: (event: string) => void): void, getClient(): unknown, getCurrentProgramScene(): Promise<string>, getCurrentPreviewScene(): Promise<string>, getCurrentTransitionName(): Promise<string>, getStudioModeEnabled(): Promise<boolean>, setStudioModeEnabled(enabled: boolean): Promise<void>, setPreviewScene(sceneName: string, options?: { timeoutMs?: number, pollIntervalMs?: number }): Promise<void>, triggerStudioModeTransition(options?: { targetSceneName?: string, timeoutMs?: number, pollIntervalMs?: number }): Promise<void>, getSourceScreenshotData(sourceName: string): Promise<string>, getProgramScreenshotBuffer(): Promise<Buffer>, getStreamStatus(): Promise<unknown>, captureProgramScreenshot(filePath: string): Promise<void>, setCurrentTransition(name: string, durationMs?: number): Promise<void>, switchProgramScene(sceneName: string, options?: { waitForEvent?: boolean, timeoutMs?: number }): Promise<void>, waitForSceneTransitionEnd(options?: { timeoutMs?: number }): Promise<void>, waitForSourceScreenshotStable(sourceName: string, options?: { differentFromData?: string | null, pollIntervalMs?: number, stableSamples?: number, timeoutMs?: number }): Promise<void>, ensureFreezeAssets(options: { sceneName: string, inputName: string, imagePath: string, dimPercent?: number }): Promise<void> }}
  */
 export function createObsClient(options) {
   const logger = options.logger ?? createNoopLogger();
   const OBSWebSocketClass = options.OBSWebSocketClass ?? OBSWebSocket;
   const client = new OBSWebSocketClass();
+  const timer = options.timer ?? {
+    setTimeout(fn, ms) {
+      const handle = setTimeout(fn, ms);
+      handle.unref?.();
+      return handle;
+    },
+    clearTimeout: (handle) => clearTimeout(handle),
+  };
+  const reconnectConfig = options.reconnect ?? { enabled: true, initialDelayMs: 250, maxDelayMs: 5000 };
   let connected = false;
+  let reconnecting = false;
+  let stopped = false;
+  let reconnectTimer = null;
+  let reconnectAttempt = 0;
+  let listenersAttached = false;
+  const lifecycleHandlers = new Map();
+  const closeListeners = new Map();
 
   /**
    * Ensure the freeze image source carries a Color Correction filter dimmed by
@@ -145,11 +161,111 @@ export function createObsClient(options) {
     return typeof screenshot?.imageData === 'string' ? screenshot.imageData : '';
   }
 
+  function emitLifecycle(event) {
+    const handlers = lifecycleHandlers.get(event);
+    if (!handlers) {
+      return;
+    }
+
+    for (const handler of handlers) {
+      try {
+        handler(event);
+      } catch (error) {
+        logger.warn('OBS lifecycle handler threw', {
+          event,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  function computeBackoffDelay(attempt) {
+    const base = reconnectConfig.initialDelayMs * (2 ** attempt);
+    return Math.min(base, reconnectConfig.maxDelayMs);
+  }
+
+  function handleTransportClosed() {
+    if (stopped || !connected) {
+      return;
+    }
+
+    connected = false;
+
+    if (!reconnectConfig.enabled || reconnecting) {
+      return;
+    }
+
+    reconnecting = true;
+    reconnectAttempt = 0;
+    emitLifecycle('reconnecting');
+    scheduleReconnect();
+  }
+
+  function attachCloseListeners() {
+    if (listenersAttached || typeof client.on !== 'function') {
+      return;
+    }
+
+    client.on('ConnectionClosed', handleTransportClosed);
+    client.on('ConnectionError', handleTransportClosed);
+    closeListeners.set('ConnectionClosed', handleTransportClosed);
+    closeListeners.set('ConnectionError', handleTransportClosed);
+    listenersAttached = true;
+  }
+
+  function detachCloseListeners() {
+    if (typeof client.off !== 'function') {
+      return;
+    }
+
+    for (const [event, handler] of closeListeners.entries()) {
+      client.off(event, handler);
+    }
+
+    closeListeners.clear();
+    listenersAttached = false;
+  }
+
+  function scheduleReconnect() {
+    if (stopped || !reconnectConfig.enabled) {
+      return;
+    }
+
+    const delay = computeBackoffDelay(reconnectAttempt);
+    reconnectAttempt += 1;
+    reconnectTimer = timer.setTimeout(attemptReconnect, delay);
+  }
+
+  async function attemptReconnect() {
+    if (stopped || !reconnecting) {
+      return;
+    }
+
+    try {
+      await client.connect(options.url, options.password);
+      connected = true;
+      reconnecting = false;
+      reconnectAttempt = 0;
+      reconnectTimer = null;
+      logger.info('Reconnected to OBS', { url: options.url });
+      emitLifecycle('reconnected');
+    } catch (error) {
+      logger.warn('OBS reconnect attempt failed', {
+        error: error instanceof Error ? error.message : String(error),
+        url: options.url,
+      });
+      scheduleReconnect();
+    }
+  }
+
   return {
     async connect() {
+      attachCloseListeners();
       try {
         const result = await client.connect(options.url, options.password);
         connected = true;
+        reconnecting = false;
+        reconnectAttempt = 0;
         logger.info('Connected to OBS', { url: options.url });
         return result;
       } catch (error) {
@@ -163,13 +279,35 @@ export function createObsClient(options) {
     },
 
     async disconnect() {
-      if (!connected) {
+      stopped = true;
+      reconnecting = false;
+
+      if (reconnectTimer !== null) {
+        timer.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+
+      detachCloseListeners();
+
+      if (connected) {
+        await client.disconnect();
+        connected = false;
+        logger.info('Disconnected from OBS');
+      }
+    },
+
+    isReconnecting() {
+      return reconnecting;
+    },
+
+    on(event, handler) {
+      if (event !== 'reconnecting' && event !== 'reconnected') {
         return;
       }
 
-      await client.disconnect();
-      connected = false;
-      logger.info('Disconnected from OBS');
+      const handlers = lifecycleHandlers.get(event) ?? new Set();
+      handlers.add(handler);
+      lifecycleHandlers.set(event, handlers);
     },
 
     async setScene(sceneName) {

@@ -77,6 +77,45 @@ async function main() {
     sendCommand({ op: 'reopenTeleprompter', source: 'console' });
   });
 
+  async function loadRelaunchControls() {
+    const container = document.getElementById('relaunch-controls');
+    if (container === null) {
+      return;
+    }
+
+    let catalog;
+    try {
+      const status = await fetch('/status.json').then((response) => response.json());
+      catalog = Array.isArray(status.sourceCatalog) ? status.sourceCatalog : [];
+    } catch {
+      container.textContent = 'Source list unavailable';
+      return;
+    }
+
+    container.innerHTML = '';
+    if (catalog.length === 0) {
+      container.textContent = 'No managed sources';
+      return;
+    }
+
+    for (const entry of catalog) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.sourceId = entry.id;
+      button.textContent = `${entry.id} (${entry.kind})`;
+      button.addEventListener('click', () => {
+        button.disabled = true;
+        sendCommand({ op: 'relaunchSource', source: 'console', sourceId: entry.id });
+        window.setTimeout(() => {
+          button.disabled = false;
+        }, 2000);
+      });
+      container.appendChild(button);
+    }
+  }
+
+  void loadRelaunchControls();
+
   client = createObserverClient({
     hubUrl: bootstrap.hubUrl,
     subscriptions: ['presenterState'],

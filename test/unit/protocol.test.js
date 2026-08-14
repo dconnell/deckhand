@@ -171,6 +171,35 @@ test('validateClientMessage accepts observer presenterCommand messages', () => {
   );
 });
 
+test('validateClientMessage preserves the sourceId on a relaunchSource presenter command', () => {
+  assert.deepEqual(
+    validateClientMessage({
+      type: 'presenterCommand',
+      op: 'relaunchSource',
+      source: 'console',
+      sourceId: 'Terminal',
+    }),
+    {
+      type: 'presenterCommand',
+      op: 'relaunchSource',
+      source: 'console',
+      sourceId: 'Terminal',
+    },
+  );
+});
+
+test('validateClientMessage rejects a relaunchSource command with an empty sourceId', () => {
+  assert.throws(
+    () => validateClientMessage({
+      type: 'presenterCommand',
+      op: 'relaunchSource',
+      source: 'console',
+      sourceId: '  ',
+    }),
+    /sourceId/i,
+  );
+});
+
 test('validateClientMessage accepts driver slideManifest messages', () => {
   assert.deepEqual(
     validateClientMessage({

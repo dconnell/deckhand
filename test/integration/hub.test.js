@@ -318,6 +318,36 @@ test('hub emits observer presenterCommand events for the coordinator to reduce',
   }
 });
 
+test('hub preserves sourceId on relaunchSource presenter commands', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+  const events = [];
+  hub.on('observerPresenterCommand', (payload) => {
+    events.push(payload);
+  });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const observer = await createClient(port);
+
+  try {
+    await observer.send({ type: 'register', role: 'observer', subscriptions: ['presenterState'] });
+    await observer.send({ type: 'presenterCommand', op: 'relaunchSource', source: 'console', sourceId: 'Terminal' });
+    await flushMessages();
+
+    assert.equal(events.length, 1);
+    assert.deepEqual(events[0].command, {
+      type: 'presenterCommand',
+      op: 'relaunchSource',
+      source: 'console',
+      sourceId: 'Terminal',
+    });
+  } finally {
+    await observer.close();
+    await hub.stop();
+  }
+});
+
 test('hub emits driver slideManifest events from registered drivers', async () => {
   const logger = createLogger();
   const hub = createHub({ host: '127.0.0.1', port: 0, logger });

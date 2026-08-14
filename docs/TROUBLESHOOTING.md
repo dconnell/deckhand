@@ -13,39 +13,46 @@ tab crashes).
 
 | Failure | Deckhand auto-recovers? | Operator action |
 | --- | --- | --- |
-| OBS WebSocket drops mid-session | No | restart Deckhand |
+| OBS WebSocket drops mid-session | Yes — reconnects with backoff and re-applies the current slide | none; if it stays down, check OBS is running |
 | OBS `Failed to create the scene item` | Yes, one-time reset + retry | if it recurs, re-run `obs:setup` |
 | OBS `CreateInput ... already exists` | Yes, 5×100ms retries | none |
 | macOS Screen Recording revoked from OBS | No | re-grant, restart OBS |
 | Hammerspoon Accessibility revoked mid-talk | No, but next slide recovers | re-grant, reload Hammerspoon |
-| Chrome dies or CDP socket closes mid-session | No | restart Deckhand |
-| Browser tab crashes or window closed manually | No | restart Deckhand |
+| Chrome dies or CDP socket closes mid-session | Yes — relaunches Chrome, rebuilds windows/tabs, re-binds OBS | none |
+| Browser tab crashes, or any window/app closed manually | No (not auto-reopened) | click **Relaunch** in the presenter console |
 | Chrome profile seed fails because Chrome holds a lock | No | quit Chrome, retry |
 | Hub restarts | Yes, Hammerspoon reconnects in ~1s | none |
 | Driver not connected, hotkey pressed | No (hub replies `driver_unavailable`) | open or refresh the deck tab |
 
-Deckhand does not detect any of: macOS Screen Recording / TCC state, OBS
-WebSocket drops after connect, Chrome process death mid-session, tab crashes,
-or Hammerspoon Accessibility state. `/status.json` reflects what Deckhand's
-internal flags last saw, which can be stale after a silent drop.
+Deckhand auto-recovers when a *process or socket dies* (OBS WebSocket drop,
+Chrome/CDP death) — those have one unambiguous correct response. It does **not**
+auto-reopen a window you closed: a close is usually deliberate, so reopening it
+would fight you. Instead the presenter console has a **Relaunch Window** button
+per source that brings back any managed browser source, app source, the
+teleprompter, or the console on demand. `/status.json` reports the live recovery
+phase via `obs.reconnecting`, `browserSession.phase`, and the umbrella
+`recovering` flag. Tune or disable transport recovery via the `recovery` config
+block; see [Recovery configuration](#recovery-configuration).
 
 ## OBS
 
 ### OBS WebSocket dropped mid-session
 
-Deckhand makes a single connection attempt at startup and does **not** watch
-`ConnectionClosed` or `ConnectionError` from `obs-websocket-js`. After a silent
-drop the internal `connected` flag stays `true`, the next OBS call throws a
-transport error and is logged as `Failed to switch OBS scene` /
-`Failed to apply OBS input settings` / similar, and the slide change continues
-without the OBS side landing.
+Deckhand watches `ConnectionClosed` / `ConnectionError` from `obs-websocket-js`.
+On an unexpected close (not during shutdown) the client immediately flips
+`connected = false`, enters `reconnecting`, and retries the WebSocket with
+exponential backoff (`250ms → 500ms → 1s → 2s → 5s`, capped, infinite attempts).
+While disconnected, OBS-side calls for a slide change throw and are logged as
+`Failed to switch OBS scene` / `Failed to apply OBS input settings`; the slide
+change otherwise continues. Once the socket is back, Deckhand re-applies the
+current slide's OBS window bindings and re-arms the freeze frame.
 
-`/status.json` keeps reporting `obs.connected: true` after a drop because
-nothing flips the flag. Treat that field as "connected at least once," not
-"connected right now."
+`/status.json` reports this truthfully: `obs.connected` flips to `false`,
+`obs.reconnecting` becomes `true`, and the umbrella `recovering` flag is set.
 
-**Recovery**: stop Deckhand (`Ctrl+C`) and start it again. There is no
-in-process recovery.
+**Recovery**: usually none — wait for the backoff to reconnect. If OBS itself is
+not running, start OBS and Deckhand reconnects on the next attempt. To disable
+automatic reconnect, set `recovery.obsReconnect.enabled: false` in config.
 
 ### `Failed to create the scene item` during reconcile
 
@@ -208,22 +215,36 @@ holding the debug port range. Address the cause and restart.
 
 ### Chrome dies, CDP socket closes, or a tab crashes mid-talk
 
-There is **no** mid-session recovery for any of these. The browser session
-flips `connected: false`, logs `Browser session disconnected unexpectedly`,
-rejects all pending CDP calls with `CDP transport closed`, and from then on
-every subsequent `activateTab` / `navigate` is a no-op that throws.
+The browser session recovers from an unexpected CDP disconnect. On close (not
+during shutdown) it enters backoff (`500ms → 1s → 2s → 5s → 10s`, capped,
+infinite attempts), reconnects Chrome (relaunching the process if it died,
+clearing the stale launch handle), clears the stale registry, re-runs the
+window/tab build for every browser source, and re-resolves macWindowIds. Once
+reconnected, the coordinator re-dispatches the current slide's browser commands
+and re-applies OBS window bindings. Browser commands arriving mid-rebuild throw
+`browser session is recovering` and are retried via that re-dispatch.
 
-`/status.json` shows `browserSession.connected: false` with the last-known
-source map; reopening tabs is not supported.
+`/status.json` reports the phase via `browserSession.phase`
+(`reconnecting` while in backoff, `recovering` during the rebuild, `connected`
+when done).
 
-**Recovery**: stop Deckhand and start it again. Deckhand relaunches Chrome,
-rebuilds the windows, and preloads the declared tabs from scratch.
+**Recovery**: usually none. If Chrome cannot relaunch (e.g. profile lock held
+by another process), resolve the cause and Deckhand's next attempt will succeed.
 
-### Operator accidentally closes a Deckhand Chrome window
+### Operator closes a managed window or app
 
-Same answer as above: Deckhand does not detect manual window closure and does
-not reopen it. If you close a managed window mid-talk, restart Deckhand to get
-the source back.
+Deckhand does **not** auto-reopen a window you close — a close is usually
+deliberate (hiding, decluttering), and silently undoing it would be surprising
+mid-talk. This covers managed Chrome source windows, the teleprompter/console
+popouts, and owned app sources (Preview, Terminal, …).
+
+**Recovery**: open the presenter console and click the **Relaunch** button for
+the source. For browser sources Deckhand rebuilds the window/tabs; for app
+sources it re-runs `open -a` and re-resolves the macOS window id; then it
+re-applies the current slide's OBS bindings. Relaunch is non-destructive — it
+does not close the old window first, so close it yourself if it is still open.
+
+The teleprompter also keeps its dedicated **Reopen Popout** button.
 
 To defuse this risk before a talk: hide Chrome from the Dock and Cmd-Tab chain
 by running it in its own Space, or simply keep the managed Chrome windows away
@@ -363,17 +384,18 @@ If the whole Deckhand process is down (not just the hub), Hammerspoon keeps
 retrying; hotkeys fire but the send is a silent no-op (`socket == nil`).
 Restart Deckhand and Hammerspoon reconnects within a second.
 
-## When `/status.json` lies
+## When `/status.json` is stale
 
-Because Deckhand does not actively poll most of its dependencies, the status
-payload can be misleading in specific cases:
+Most `/status.json` fields are now live. The remaining caveats:
 
 | Field | Stale after | How to verify for real |
 | --- | --- | --- |
-| `obs.connected` | OBS WebSocket drop | advance a slide; watch Deckhand's log for `Failed to ... OBS ...` |
-| `browserSession.connected` | Chrome exit | the field does flip to `false`, but `chromePid` is not cleared; treat any `connected: false` as terminal |
+| `obs.connected` / `obs.reconnecting` | nothing — reflects the live socket state, including backoff | n/a |
+| `browserSession.connected` / `browserSession.phase` | nothing — reflects the live CDP transport and rebuild phase | n/a |
+| `recovering` | nothing — umbrella over `obs.reconnecting` and `browserSession.phase` of `reconnecting`/`recovering` | n/a |
 | `hub.observerCount` | nothing — this is live | n/a |
 | `phase` | nothing — this is live | n/a |
+| `obs.connected` during a TCC revocation | OBS WebSocket stays up, so `obs.connected: true` even though captures are black | check OBS directly for a live `window_capture` |
 
 When in doubt, advance a slide and watch the Deckhand terminal log. Every OBS
 failure, browser failure, and observer publish failure is logged there even
@@ -381,16 +403,42 @@ when it does not change status.
 
 ## Recovering without losing your place
 
-If you must restart Deckhand mid-talk:
+If Deckhand must be restarted mid-talk, it resumes the deck automatically.
 
-1. Note the current slide id (visible in `/status.json` as `current.slideId`,
-   or in the deck URL's `#/<h>.<v>` fragment).
-2. Stop Deckhand (`Ctrl+C`).
-3. Start it again: `node ./src/index.js <name>`.
-4. After startup, navigate the deck to the noted slide id. Deckhand rebuilds
-   browser windows and OBS bindings from the current slide's `layout`.
+Deckhand persists the active slide id to
+`presentation/<name>/.deckhand-state.json` on every slide change. On the next
+startup, once the deck reports its position, Deckhand compares it to the
+persisted id. If they differ it sends a `goTo` to the driver, the deck
+navigates, and the resulting `positionChanged` rebuilds OBS bindings and browser
+state for that slide — exactly the normal startup path.
 
-There is no built-in "resume from slide X" yet — the deck itself is the source
-of truth for position. The OBS reconcile at startup re-prunes `Deckhand_*`
-entities to match config, so it is safe to restart mid-talk without leaving OBS
-in a half-state.
+1. Stop Deckhand (`Ctrl+C`).
+2. Start it again: `node ./src/index.js <name>`.
+3. The deck returns to the slide you were on. (If the deck tab survived and is
+   already on the right slide, no `goTo` is sent.)
+
+To start fresh instead, pass `--no-resume`, set
+`recovery.resumeSlide.enabled: false` in config, or delete
+`presentation/<name>/.deckhand-state.json`. The OBS reconcile at startup
+re-prunes `Deckhand_*` entities to match config, so it is safe to restart
+mid-talk without leaving OBS in a half-state.
+
+## Recovery configuration
+
+Recovery is enabled by default with sensible backoffs. Override any subsystem by
+adding a top-level `recovery` block to your config (all fields optional):
+
+```json
+"recovery": {
+  "obsReconnect":   { "enabled": true, "initialDelayMs": 250,  "maxDelayMs": 5000 },
+  "browserRecover": { "enabled": true, "initialDelayMs": 500,  "maxDelayMs": 10000 },
+  "resumeSlide":    { "enabled": true }
+}
+```
+
+`initialDelayMs` must not exceed `maxDelayMs`. Set `enabled: false` on any
+subsystem to opt out (for example, `"browserRecover": { "enabled": false }`).
+
+Recovery covers **transport death only** (OBS WebSocket drop, Chrome/CDP death)
+plus **resume-from-slide**. Manually-closed windows and apps are not auto-reopened —
+use the presenter console's **Relaunch** button.

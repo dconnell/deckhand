@@ -1186,3 +1186,78 @@ test('presentation/example-laptop/config.json ships per-layout teleprompter over
 
   assert.notDeepEqual(welcome.overlays, closing.overlays, 'closing must override the full-slide default');
 });
+
+test('normalizeConfig applies default recovery settings when the block is omitted', () => {
+  const config = normalizeConfig(createValidConfig());
+
+  assert.deepEqual(config.recovery, {
+    obsReconnect: { enabled: true, initialDelayMs: 250, maxDelayMs: 5000 },
+    browserRecover: { enabled: true, initialDelayMs: 500, maxDelayMs: 10000 },
+    resumeSlide: { enabled: true },
+  });
+});
+
+test('normalizeConfig passes through a fully-specified recovery block', () => {
+  const config = createValidConfig();
+  config.recovery = {
+    obsReconnect: { enabled: false, initialDelayMs: 100, maxDelayMs: 1000 },
+    browserRecover: { enabled: false, initialDelayMs: 200, maxDelayMs: 2000 },
+    resumeSlide: { enabled: false },
+  };
+
+  const normalized = normalizeConfig(config).recovery;
+
+  assert.deepEqual(normalized, config.recovery);
+});
+
+test('normalizeConfig allows partial recovery sub-blocks to fall back to defaults', () => {
+  const config = createValidConfig();
+  config.recovery = { obsReconnect: { initialDelayMs: 1000 } };
+
+  const normalized = normalizeConfig(config).recovery;
+
+  assert.deepEqual(normalized.obsReconnect, { enabled: true, initialDelayMs: 1000, maxDelayMs: 5000 });
+  assert.deepEqual(normalized.browserRecover, { enabled: true, initialDelayMs: 500, maxDelayMs: 10000 });
+});
+
+test('normalizeConfig rejects malformed recovery sub-blocks with the right path', () => {
+  const cases = [
+    {
+      name: 'obsReconnect.enabled not boolean',
+      mutate: (c) => { c.recovery = { obsReconnect: { enabled: 'yes' } }; },
+      path: 'recovery.obsReconnect.enabled',
+      pattern: /must be a boolean/i,
+    },
+    {
+      name: 'obsReconnect.initialDelayMs greater than maxDelayMs',
+      mutate: (c) => { c.recovery = { obsReconnect: { initialDelayMs: 6000, maxDelayMs: 5000 } }; },
+      path: 'recovery.obsReconnect.initialDelayMs',
+      pattern: /must not exceed maxDelayMs/i,
+    },
+    {
+      name: 'resumeSlide.enabled not boolean',
+      mutate: (c) => { c.recovery = { resumeSlide: { enabled: 1 } }; },
+      path: 'recovery.resumeSlide.enabled',
+      pattern: /must be a boolean/i,
+    },
+    {
+      name: 'recovery itself not an object',
+      mutate: (c) => { c.recovery = true; },
+      path: 'recovery',
+      pattern: /must be an object/i,
+    },
+    {
+      name: 'unknown recovery sub-block',
+      mutate: (c) => { c.recovery = { supervisor: { enabled: true } }; },
+      path: 'recovery.supervisor',
+      pattern: /unknown recovery sub-block/i,
+    },
+  ];
+
+  for (const { name, mutate, path, pattern } of cases) {
+    const config = createValidConfig();
+    mutate(config);
+
+    assertConfigError(() => normalizeConfig(config), path, pattern);
+  }
+});

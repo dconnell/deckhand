@@ -748,3 +748,197 @@ test('obs client ensureFreezeAssets skips the dim filter when dimPercent is 0', 
   assert.equal(calls.includes('CreateSourceFilter'), false);
   assert.equal(calls.includes('SetSourceFilterSettings'), false);
 });
+
+function createFakeTimer() {
+  const pending = [];
+
+  return {
+    pending,
+    setTimeout(fn, ms) {
+      const handle = { fn, ms, done: false };
+      pending.push(handle);
+      return handle;
+    },
+    clearTimeout(handle) {
+      if (handle) {
+        handle.done = true;
+      }
+    },
+    delays() {
+      return pending.map((handle) => handle.ms);
+    },
+    async run(count) {
+      let executed = 0;
+
+      while (executed < count && pending.some((handle) => !handle.done)) {
+        const handle = pending.find((entry) => !entry.done);
+        handle.done = true;
+        await handle.fn();
+        executed += 1;
+      }
+    },
+  };
+}
+
+function createReconnectableObsWebSocket({ outcomes = [] } = {}) {
+  return class ReconnectableObsWebSocket {
+    constructor() {
+      this.handlers = new Map();
+      this.connectAttempts = 0;
+      this.disconnectCalled = false;
+      this.remainingOutcomes = [...outcomes];
+    }
+
+    on(event, handler) {
+      const set = this.handlers.get(event) ?? new Set();
+      set.add(handler);
+      this.handlers.set(event, set);
+    }
+
+    off(event, handler) {
+      this.handlers.get(event)?.delete(handler);
+    }
+
+    emit(event, data) {
+      for (const handler of this.handlers.get(event) ?? []) {
+        handler(data);
+      }
+    }
+
+    async connect() {
+      this.connectAttempts += 1;
+      const outcome = this.remainingOutcomes.length > 0 ? this.remainingOutcomes.shift() : 'ok';
+
+      if (outcome === 'fail') {
+        throw new Error('obs reconnect attempt failed');
+      }
+
+      return { obsWebSocketVersion: '5.0.0', negotiatedRpcVersion: 1 };
+    }
+
+    async disconnect() {
+      this.disconnectCalled = true;
+    }
+
+    async call() {
+      return {};
+    }
+  };
+}
+
+test('obs client marks itself disconnected and emits reconnecting when the socket closes', async () => {
+  const timer = createFakeTimer();
+  const events = [];
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: createReconnectableObsWebSocket({ outcomes: ['ok'] }),
+    timer,
+    reconnect: { enabled: true, initialDelayMs: 250, maxDelayMs: 5000 },
+    logger: { info() {}, error() {}, warn() {} },
+  });
+  obs.on('reconnecting', () => events.push('reconnecting'));
+  obs.on('reconnected', () => events.push('reconnected'));
+
+  await obs.connect();
+  assert.equal(obs.isConnected(), true);
+
+  obs.getClient().emit('ConnectionClosed');
+
+  assert.equal(obs.isConnected(), false);
+  assert.equal(obs.isReconnecting(), true);
+  assert.deepEqual(events, ['reconnecting']);
+});
+
+test('obs client reconnects with backoff and emits reconnected once the socket is back', async () => {
+  const timer = createFakeTimer();
+  const events = [];
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: createReconnectableObsWebSocket({ outcomes: ['ok', 'fail', 'ok'] }),
+    timer,
+    reconnect: { enabled: true, initialDelayMs: 250, maxDelayMs: 5000 },
+    logger: { info() {}, error() {}, warn() {} },
+  });
+  obs.on('reconnecting', () => events.push('reconnecting'));
+  obs.on('reconnected', () => events.push('reconnected'));
+
+  await obs.connect();
+  obs.getClient().emit('ConnectionClosed');
+
+  await timer.run(5);
+
+  assert.equal(obs.isConnected(), true);
+  assert.equal(obs.isReconnecting(), false);
+  assert.deepEqual(events, ['reconnecting', 'reconnected']);
+  assert.equal(obs.getClient().connectAttempts, 3);
+});
+
+test('obs client reconnect backoff starts at initialDelayMs and caps at maxDelayMs', async () => {
+  const timer = createFakeTimer();
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: createReconnectableObsWebSocket({ outcomes: ['ok', 'fail', 'fail', 'fail', 'fail', 'fail', 'fail'] }),
+    timer,
+    reconnect: { enabled: true, initialDelayMs: 250, maxDelayMs: 5000 },
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+  obs.getClient().emit('ConnectionClosed');
+
+  await timer.run(6);
+
+  const delays = timer.delays();
+  assert.equal(delays[0], 250, 'first backoff delay is the initial delay');
+  assert.ok(delays.every((value) => value <= 5000), 'no backoff delay exceeds the cap');
+  assert.equal(delays[delays.length - 1], 5000, 'backoff reaches the cap');
+});
+
+test('obs client suppresses reconnect after an explicit disconnect', async () => {
+  const timer = createFakeTimer();
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: createReconnectableObsWebSocket({ outcomes: ['ok'] }),
+    timer,
+    reconnect: { enabled: true, initialDelayMs: 250, maxDelayMs: 5000 },
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+  obs.getClient().emit('ConnectionClosed');
+
+  await obs.disconnect();
+
+  const attemptsBefore = obs.getClient().connectAttempts;
+  await timer.run(5);
+
+  assert.equal(obs.getClient().connectAttempts, attemptsBefore);
+  assert.equal(obs.isReconnecting(), false);
+  assert.equal(obs.isConnected(), false);
+});
+
+test('obs client skips reconnect when the recovery block disables it', async () => {
+  const timer = createFakeTimer();
+  const events = [];
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: createReconnectableObsWebSocket({ outcomes: ['ok'] }),
+    timer,
+    reconnect: { enabled: false, initialDelayMs: 250, maxDelayMs: 5000 },
+    logger: { info() {}, error() {}, warn() {} },
+  });
+  obs.on('reconnecting', () => events.push('reconnecting'));
+
+  await obs.connect();
+  obs.getClient().emit('ConnectionClosed');
+
+  assert.equal(obs.isConnected(), false);
+  assert.equal(obs.isReconnecting(), false);
+  assert.equal(timer.delays().length, 0, 'no reconnect scheduled when disabled');
+  assert.deepEqual(events, []);
+});
