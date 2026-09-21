@@ -6,7 +6,7 @@ The diagram below shows every runtime component and the connections between
 them. There are two kinds of edges:
 
 - **Hub protocol edges** — JSON messages over the localhost WebSocket bus
-  (`ws://127.0.0.1:8765`). Driver and observer clients use this bus.
+  (`ws://127.0.0.1:8765`). Driver and observer clients use it.
 - **Direct control edges** — in-process calls or dedicated protocols (OBS
   WebSocket, Chrome DevTools Protocol, macOS window APIs) that bypass the hub.
 
@@ -66,8 +66,8 @@ Key things to read from the diagram:
 - The **hub** is the only path between the coordinator and the driver/observer
   clients. Nothing else tunnels through it.
 - The **coordinator** reaches OBS and the browser session directly, not over
-  the hub. Each step is isolated so a failure in one does not suppress the
-  others (see [Flow](#flow) and [Error handling](#error-handling)).
+  the hub; a failure in one step does not suppress the others (see
+  [Flow](#flow) and [Error handling](#error-handling)).
 - **Window identity** flows in a loop: Deckhand launches the windows,
   Hammerspoon resolves the exact `macWindowId` for each, reports it back over
   the hub, and Deckhand pushes it into OBS `window_capture` settings.
@@ -90,10 +90,10 @@ model; platform-specific presenter behavior lives outside the coordinator.
 
 ## Responsibilities
 
-Deckhand is split across two cooperating runtimes: the **Node process** (the
-core) and **Hammerspoon** (a macOS observer that owns the work Node cannot do
-itself). They communicate over the localhost hub — Node runs the server,
-Hammerspoon connects as a client.
+Deckhand is split across two runtimes: the **Node process** (the core) and
+**Hammerspoon** (a macOS observer that owns the work Node cannot do itself).
+They communicate over the localhost hub — Node runs the server, Hammerspoon
+connects as a client.
 
 | Responsibility | Node | Hammerspoon |
 | --- | --- | --- |
@@ -110,7 +110,7 @@ Hammerspoon connects as a client.
 Window discovery is the one shared job, and it runs in two phases. Node opens
 the browser windows and makes a best-effort match; Hammerspoon then resolves
 the exact `macWindowId` for each source and reports it back. Startup blocks on
-that handshake before doing the final OBS reconcile.
+that handshake before the final OBS reconcile.
 
 ## Source of truth
 
@@ -289,25 +289,24 @@ Observer responsibilities:
 ## Owned app sources
 
 Non-browser sources Deckhand launches and tracks (editors, terminals) flow
-through a dedicated owned-app seam that is kept out of the coordinator and
-`index.js`. It is split into three layers by responsibility:
+through a dedicated owned-app seam, kept out of the coordinator and
+`index.js`. It has three layers:
 
-- **`src/appRuntime.js`** — the orchestrator. It resolves an adapter per
-  source (and never branches on app names), drives the launch-and-diff
-  resolution, builds OBS/bootstrap bindings, and closes tracked windows on
-  shutdown.
-- **`src/apps/`** — per-app **adapters**. The registry (`index.js`) picks an
-  adapter by app name; generic apps fall through to `default.js`. Each adapter
-  encodes one app's quirks: aliases, the CGWindow owner name, the
-  presenter/Hammerspoon bootstrap app name, launch args, window-stability
-  confirmation, and the close strategy.
-- **`src/launchers/`** — generic **launch primitives**. `app.js` does the
-  `open -a` spawning (forcing `-n` for a new instance so the diff resolver can
-  find a fresh CGWindowID). Terminal launchers (`iterm2.js`,
-  `appleTerminal.js`, `ghostty.js`, `alacritty.js`, `kitty.js`) each encode
-  one terminal's launch and close mechanics — AppleScript for iTerm2/Terminal/
-  Ghostty, IPC for Alacritty/kitty. No app-specific knowledge lives in the
-  adapters beyond alias resolution and CGWindow owner name.
+- **`src/appRuntime.js`** — the orchestrator: resolves an adapter per source
+  (never branching on app names), drives the launch-and-diff resolution, builds
+  OBS/bootstrap bindings, and closes tracked windows on shutdown.
+- **`src/apps/`** — per-app adapters. The registry (`index.js`) picks one by
+  app name; generic apps fall through to `default.js`. Each adapter encodes one
+  app's quirks: aliases, the CGWindow owner name, the presenter/Hammerspoon
+  bootstrap app name, launch args, window-stability confirmation, and the close
+  strategy.
+- **`src/launchers/`** — generic launch primitives. `app.js` does the `open -a`
+  spawning (forcing `-n` for a new instance so the diff resolver can find a
+  fresh CGWindowID). Terminal launchers (`iterm2.js`, `appleTerminal.js`,
+  `ghostty.js`, `alacritty.js`, `kitty.js`) each encode one terminal's launch
+  and close mechanics — AppleScript for iTerm2/Terminal/Ghostty, IPC for
+  Alacritty/kitty. No app-specific knowledge lives in the adapters beyond alias
+  resolution and CGWindow owner name.
 
 The dependency direction is one-way: **adapters call into launchers, never the
 reverse.** An iTerm2 adapter, for example, composes the iTerm2 launcher
@@ -327,7 +326,7 @@ Two names an adapter must keep distinct:
 
 ## Presenter surfaces
 
-- `/presenter/` — first-class presenter web app
+- `/presenter/` — presenter web app
 - `/status.json` — operator-facing runtime status snapshot
 - `hammerspoon/` — macOS window management integration
 - `src/presenter/stt/` — local STT runner

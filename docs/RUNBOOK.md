@@ -1,6 +1,6 @@
 # Presenter runbook
 
-The literal five-minute pre-talk checklist. Run it in order, top to bottom, on
+The five-minute pre-talk checklist. Run it in order, top to bottom, on
 the laptop you will present from. Every step has a single observable pass/fail
 signal; if any step fails, jump to the linked section in
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
@@ -33,7 +33,7 @@ permissions).
 
    **Pass**: OBS meter responds.
 4. **Displays** — set the resolution and arrangement you will use on stage
-   **now**, before starting Deckhand. Deckhand's `presenter.stage` rectangle is
+   before starting Deckhand. Deckhand's `presenter.stage` rectangle is
    absolute; changing display layout after startup invalidates it.
 
 ## T-4: macOS permissions (quick re-check)
@@ -64,8 +64,7 @@ macOS updates reset TCC entries unpredictably. Spend thirty seconds here.
    populated (you should see `Deckhand_*` inputs in the Sources panel of at
    least one scene).
 3. **Hammerspoon** — confirm it is running (menu bar icon visible). Open the
-   Hammerspoon console now so tracebacks during the talk are visible at a
-   glance.
+   Hammerspoon console now so tracebacks during the talk are easy to spot.
 
 ## T-2: start Deckhand
 
@@ -159,7 +158,7 @@ npm run presenter:smoke -- <name>
 npm run presenter:doctor -- <name>
 ```
 
-Both should pass. **But note what they do not cover**: neither checks OBS
+Both should pass. But note what they do not cover: neither checks OBS
 Screen Recording permission, Hammerspoon existence / Accessibility, or whether
 managed Chrome windows actually move on a slide advance. The T-1 advance test
 above is the only substitute for that, and it is mandatory.
@@ -174,7 +173,7 @@ above is the only substitute for that, and it is mandatory.
 | Deckhand startup log says `Could not reach Chrome DevTools endpoint` | antivirus / security tool killed Chrome mid-launch |
 | Advance changes OBS scene but windows do not move | Hammerspoon Accessibility (T-4) — reload Hammerspoon config |
 | Advance does nothing at all | deck tab lost driver registration — reload the deck tab |
-| `/status.json` shows `obs.reconnecting: true` | OBS WebSocket dropped — Deckhand auto-reconnects; ensure OBS is running |
+| `/status.json` shows `obs.reconnecting: true` | OBS WebSocket dropped — Deckhand auto-reconnects; check that OBS is running |
 
 ## If you have to restart mid-talk
 

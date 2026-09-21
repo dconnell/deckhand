@@ -1,8 +1,7 @@
 # Troubleshooting
 
-Operator-facing known issues and recovery steps for the failure modes that
-matter at runtime. This is the single home for troubleshooting — for the
-literal pre-talk checklist, see [RUNBOOK.md](RUNBOOK.md).
+Known issues and recovery steps for the failure modes that matter at
+runtime. For the literal pre-talk checklist, see [RUNBOOK.md](RUNBOOK.md).
 
 The scope here is issues whose cause is **outside** Deckhand: macOS permission
 resets, Chrome profile locks, Hammerspoon revocation, and the cases where
@@ -47,7 +46,7 @@ While disconnected, OBS-side calls for a slide change throw and are logged as
 change otherwise continues. Once the socket is back, Deckhand re-applies the
 current slide's OBS window bindings and re-arms the freeze frame.
 
-`/status.json` reports this truthfully: `obs.connected` flips to `false`,
+`/status.json` reports it: `obs.connected` flips to `false`,
 `obs.reconnecting` becomes `true`, and the umbrella `recovering` flag is set.
 
 **Recovery**: usually none — wait for the backoff to reconnect. If OBS itself is
@@ -128,9 +127,9 @@ meeting](SETUP.md#sharing-to-the-meeting) for the full setup.
 ### OBS program view is correct but audience sees black or stale content
 
 The Zoom Share Screen target is wrong, or the OBS Projector window was closed
-or lost fullscreen. The most common cause is pressing **Esc** while the
+or lost fullscreen. The most common cause is pressing Esc while the
 fullscreen Projector has focus — Esc closes it. Switch Spaces with
-**Ctrl+Left-arrow** or a **three-finger swipe up** instead of Esc to leave the
+Ctrl+Left-arrow or a three-finger swipe up instead of Esc to leave the
 Projector without closing it.
 
 **Recovery**:
@@ -247,13 +246,13 @@ does not close the old window first, so close it yourself if it is still open.
 The teleprompter also keeps its dedicated **Reopen Popout** button.
 
 To defuse this risk before a talk: hide Chrome from the Dock and Cmd-Tab chain
-by running it in its own Space, or simply keep the managed Chrome windows away
+by running it in its own Space, or keep the managed Chrome windows away
 from your normal browser Space.
 
 ### Custom `chrome.profileDir` and shutdown sweeps
 
-On shutdown Deckhand kills the Chrome process group by PID and also runs two
-belt-and-braces sweeps:
+On shutdown Deckhand kills the Chrome process group by PID and runs two
+additional cleanup sweeps:
 
 ```bash
 pkill -9 -f "deckhand-chrome-profiles"
@@ -425,7 +424,7 @@ mid-talk without leaving OBS in a half-state.
 
 ## Recovery configuration
 
-Recovery is enabled by default with sensible backoffs. Override any subsystem by
+Recovery is enabled by default. Override any subsystem by
 adding a top-level `recovery` block to your config (all fields optional):
 
 ```json

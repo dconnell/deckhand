@@ -2,11 +2,11 @@
 
 Each presentation is self-contained under `presentation/<name>/`. This document
 covers prerequisites, creating a presentation, configuring OBS, and running a
-talk end to end. For the full config schema see [CONFIG.md](CONFIG.md); for the
-pre-talk checklist see [RUNBOOK.md](RUNBOOK.md); for known issues see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+talk. See [CONFIG.md](CONFIG.md) for the config schema, [RUNBOOK.md](RUNBOOK.md)
+for the pre-talk checklist, and [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for
+known issues.
 
-## What you are building
+## What a slide advance does
 
 Advancing the local deck coordinates four things:
 
@@ -37,8 +37,8 @@ npm install
    ```
 
 2. Put local-only values in `presentation/my-talk/config.local.json`
-   (git-ignored). It is a deep-merge overlay on `config.json`, so it only needs
-   the fields you want to override locally:
+   (git-ignored). It deep-merges over `config.json`, so it only needs the
+   fields you want to override:
 
    - `obs.password`
    - `presenter.stage`
@@ -76,21 +76,21 @@ npm run obs:setup -- --set-canvas my-talk  # align the OBS canvas to presenter.s
 
 `obs:setup` provisions scenes and stable input names only. At runtime Deckhand
 pushes macOS `window_capture` settings into those inputs and upgrades them from
-bootstrap title matching to exact managed window bindings when Hammerspoon
-reports them. For strict `macWindowId` updates Deckhand applies a two-step
-settings update (`window: 0` then exact id) to force OBS to refresh the bound
-target without removing and recreating the source.
+bootstrap title matching to exact managed window bindings as Hammerspoon reports
+them. Strict `macWindowId` updates use a two-step settings update (`window: 0`
+then exact id) to make OBS refresh the bound target without removing and
+recreating the source.
 
 If OBS returns `Failed to create the scene item` during reconcile, Deckhand
-performs a one-time reset of `Deckhand_*` scenes and inputs and retries
-automatically. If OBS authentication fails, runtime startup and smoke checks
-fail until `obs.password` is corrected.
+resets `Deckhand_*` scenes and inputs once and retries automatically. If OBS
+authentication fails, runtime startup and smoke checks fail until `obs.password`
+is corrected.
 
 ## Whole-frame slide transitions
 
-Advancing the deck runs a **freeze → mutate → reveal** sequence: the previous
+Advancing the deck runs a freeze → mutate → reveal sequence: the previous
 audience frame is held as a still image while windows resize and tabs navigate
-behind it, then the new scene is revealed. This is **on by default**.
+behind it, then the new scene is revealed. This is on by default.
 
 | Config | Behavior |
 | --- | --- |
@@ -98,10 +98,10 @@ behind it, then the new scene is revealed. This is **on by default**.
 | `obs.transitions: false` | Instant cut; OBS transitions and Studio Mode are never touched. |
 | `obs.transitions: { forward, backward }` | Freeze + **directional slide** reveal (new frame slides in from the side). Needs the one-time OBS setup below. |
 
-The freeze scene (`Deckhand_Freeze`) and its `image_source` are created
-automatically at startup, so the default freeze tier needs no OBS setup. The
-**directional slide** is opt-in because OBS WebSocket cannot create transitions
-— the `Slide Left` / `Slide Right` transitions must be added in the OBS UI.
+Deckhand creates the freeze scene (`Deckhand_Freeze`) and its `image_source`
+at startup, so the default freeze tier needs no OBS setup. The directional
+slide is opt-in because OBS WebSocket cannot create transitions — you add
+`Slide Left` / `Slide Right` in the OBS UI.
 
 ### Directional slide reveal setup (one-time, manual)
 
@@ -110,7 +110,7 @@ one side, `prev` from the other) instead of the default plain reveal.
 
 #### 1. Add the Slide transitions in OBS
 
-Add them in the OBS UI once per scene collection:
+Once per scene collection:
 
 1. Open the transitions dropdown (top-center, next to the program switcher) and
    choose **Add**.
@@ -118,13 +118,13 @@ Add them in the OBS UI once per scene collection:
    example `Slide Right`. Set its **Direction** in the properties panel.
 3. Repeat for the opposite direction, for example `Slide Left`.
 
-The exact names are yours; Deckhand references them by name from config.
+The names are yours; Deckhand references them by name from config.
 
 > Direction is visual. If `next` brings the new frame in from the wrong side,
 > swap the `forward`/`backward` names below — no code change needed.
 
-Deckhand creates the `Deckhand_Freeze` scene and its `image_source` itself at
-startup; do **not** create those manually.
+Deckhand creates the `Deckhand_Freeze` scene and its `image_source` at
+startup; do not create those manually.
 
 #### 2. Reference the transition names in config
 
@@ -173,10 +173,10 @@ npm run hammerspoon:setup
 
 This copies `deckhand.lua`, `apply_state.lua`, and `window_match.lua` into
 `~/.hammerspoon/deckhand/` and patches `~/.hammerspoon/init.lua` to load them
-on startup. The patch is non-destructive: existing content is preserved, the
-Deckhand section is wrapped in `-- >>> deckhand >>>` / `-- <<< deckhand <<<`
-sentinels, re-runs replace that section in place, and a fresh install appends
-cleanly.
+on startup. The patch is non-destructive: it wraps the Deckhand section in
+`-- >>> deckhand >>>` / `-- <<< deckhand <<<` sentinels, preserves existing
+content, replaces that section in place on re-runs, and appends cleanly on a
+fresh install.
 
 Optional overrides:
 
@@ -205,11 +205,10 @@ all three Lua files.
 
 ## Browser sources
 
-Deckhand owns its own Chrome session and the windows/tabs it needs for a
-presentation — no userscript is required. At startup it launches one dedicated
-Chrome process using a separate profile (so your personal Chrome stays
-untouched), then creates one window per browser source and preloads the
-declared tabs.
+Deckhand runs its own Chrome session and the windows/tabs a presentation
+needs — no userscript is required. At startup it launches one dedicated Chrome
+process using a separate profile (so your personal Chrome stays untouched),
+creates one window per browser source, and preloads the declared tabs.
 
 Configure browser sources and their tab catalogs under `sources.<id>.browser`
 (see [CONFIG.md: Browser Sources](CONFIG.md#browser-sources)). Slide actions
@@ -255,13 +254,12 @@ npm run presenter:stt -- --retry-delay-ms 250 my-talk    # tune retry delay
 npm run presenter:stt -- --once my-talk                  # one-shot test
 ```
 
-Deckhand's presenter STT config now targets `whisper-stream` directly. The
-default sample settings use `mode: "step"` with `stepMs: 1000`,
-`lengthMs: 4000`, and `keepMs: 250`. The shorter step and window keep fresh
-transcripts reaching follow mode quickly, which lets the teleprompter track
-live speech more tightly; the coordinator also derives a prediction lead of
-`max(stepMs * 3, 3000)` so follow mode can bridge the gap between transcript
-updates instead of jumping only when each update lands.
+The presenter STT config targets `whisper-stream` directly. The sample defaults
+are `mode: "step"` with `stepMs: 1000`, `lengthMs: 4000`, and `keepMs: 250`.
+The short step and window keep fresh transcripts reaching follow mode quickly,
+so the teleprompter tracks live speech more tightly. The coordinator also
+derives a prediction lead of `max(stepMs * 3, 3000)` so follow mode bridges the
+gap between transcript updates instead of jumping only when each update lands.
 
 Use `mode: "vad"` when you want speech-activity-triggered bursts instead of a
 steady cadence. In `vad` mode, tune `lengthMs`, `vadThreshold`, and
@@ -271,7 +269,7 @@ On first use, macOS may prompt for microphone access for the terminal or Node.
 
 ## Serve the deck and start the coordinator
 
-You need **one terminal window**:
+One terminal window:
 
 ```bash
 node ./src/index.js my-talk
@@ -292,7 +290,7 @@ On shutdown, Deckhand closes only the windows it launched for the session:
 managed browser windows/tabs and owned `app` windows (including iTerm2
 terminals). For owned `app` windows it targets only the tracked exact macOS
 window id and never terminates the whole app process; if an unsaved-changes
-sheet appears, it attempts Don't Save/Discard for that tracked window.
+sheet appears, it attempts Don't Save/Discard.
 
 ### Navigating slides
 
@@ -320,7 +318,7 @@ feature, not as a virtual camera:
    sharing a display follows whichever Space is visible, which breaks the
    moment you switch Spaces back to your work.
 
-If you fullscreened the Projector to its own Space, do **not** press Esc to
+If you fullscreened the Projector to its own Space, do not press Esc to
 leave — Esc closes the Projector and breaks the share. Switch Spaces with
 **Ctrl+Left-arrow** or a **three-finger swipe up** instead; Zoom keeps
 capturing the window by id.
@@ -343,9 +341,8 @@ or whether managed Chrome windows actually move on a slide advance — the
 end-to-end advance test in [RUNBOOK.md](RUNBOOK.md#t-1-verify-the-four-outputs)
 is the only substitute for those.
 
-When `presenter.stt` is configured, `presenter:doctor` validates the configured
-`whisperBin` and model paths and then runs `whisper-stream --help` as a light
-smoke check.
+When `presenter.stt` is configured, `presenter:doctor` validates `whisperBin`
+and the model paths, then runs `whisper-stream --help` as a light smoke check.
 
 ## Troubleshooting
 

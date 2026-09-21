@@ -1,8 +1,8 @@
 # Adapters
 
-Deckhand is extended at four seams: the deck **driver**, the **browser
-session**, **observer** clients, and per-app **app adapters** for owned app
-sources. This document is the contract for each.
+Deckhand is extended at four seams: the deck driver, the browser session,
+observer clients, and per-app app adapters for owned app sources. This
+document is the contract for each.
 
 ## Driver contract
 
@@ -27,12 +27,12 @@ Expected runtime behavior:
 
 ## Browser session (Deckhand-owned)
 
-Browser windows and tabs are owned directly by Deckhand through the Chrome
+Deckhand owns browser windows and tabs directly through the Chrome
 DevTools Protocol. There is no remote target client role.
 
 The coordinator resolves slide config into typed browser commands and
-dispatches them through an injected executor. The executor maps commands onto
-the browser session runtime:
+dispatches them through an injected executor, which maps commands onto the
+browser session runtime:
 
 - `activateTab` activates a preloaded tab by its runtime handle
 - `navigate` loads a new URL in a named tab handle
@@ -76,8 +76,8 @@ Example observer transcript publish:
 
 ## App adapters
 
-App sources (`kind: "app"`) are owned by Deckhand: it launches the window,
-resolves the exact macOS window id by diff, and closes it on shutdown. App
+Deckhand owns app sources (`kind: "app"`): it launches the window, resolves
+the exact macOS window id by diff, and closes it on shutdown. App
 adapters live in `src/apps/`; generic launch primitives live in `src/launchers/`.
 The split is by responsibility — adapters call into launchers, never the
 reverse (see [Architecture: Owned App Sources](ARCHITECTURE.md#owned-app-sources)):
@@ -102,7 +102,7 @@ Each adapter implements:
   AppleScript, invoked via the `ctx.launchIterm2Window` primitive the runtime
   injects) or shaping `args` for the default `open -a` path. The default
   launcher already handles `files` (positional documents) and `openArgs`
-  (verbatim `open` args), so adapters only need these hooks for genuinely
+  (verbatim `open` args), so adapters need these hooks only for genuinely
   custom launch behavior; see [Config: App sources](CONFIG.md#what-the-app-opens)
 - `confirm` — optional identity-confirmation options (e.g. `stableSamples: 2`
   for Electron splash rejection)
@@ -124,7 +124,7 @@ Apps that behave generically need no adapter file — they fall through to
 ### Shared adapter bases
 
 The `src/apps/electron.js` factory produces an adapter for any
-Electron-packaged macOS app: it bakes in the splash-rejection policy
+Electron-packaged macOS app. It bakes in the splash-rejection policy
 (`confirm: { stableSamples: 2 }`) every Electron app needs and accepts
 per-app overrides for aliases, CGWindow owner name, bootstrap app name,
 unsaved-changes policy, and arg shaper. Use it instead of duplicating the
@@ -134,9 +134,9 @@ splash-rejection knob. VS Code is built on it; future Electron apps
 ### Slack and other Electron single-instance apps with no CLI surface
 
 Apps whose CGWindow owner name matches their `open -a` name and that have no
-useful CLI or AppleScript handle (Slack is the canonical example) need **no
-adapter when the operator just wants to launch the app** — the default adapter
-already handles that correctly.
+useful CLI or AppleScript handle (Slack is the canonical example) need no
+adapter when the operator just wants to launch the app — the default adapter
+already handles that.
 
 Slack **does** need an adapter when the operator wants to open a specific
 channel or DM, because Deckhand cannot own a window the desktop Slack app
@@ -147,22 +147,22 @@ modes and declares each via `ownsWindow(source)`:
   switches to the channel in the existing window. The adapter declares
   `ownsWindow(source) === false`, so the runtime skips the diff resolver and
   the close path for that source.
-- **Browser mode (`newWindow: true`).** A new Google Chrome window is created
-  via AppleScript `make new window` pointing at the Slack web client. Chrome's
-  `open -n -a "Google Chrome" URL` does **not** work — Chrome forwards the URL
-  to the running instance and opens a tab, so AppleScript is the only reliable
-  way to spawn a fresh, bindable Chrome window with a URL in an existing
-  process. The new window is bindable by CGWindowID diff and closed via the
+- **Browser mode (`newWindow: true`).** The adapter creates a new Google Chrome
+  window via AppleScript `make new window`, pointing at the Slack web client.
+  Chrome's `open -n -a "Google Chrome" URL` does **not** work — Chrome forwards
+  the URL to the running instance, which opens a tab — so AppleScript is the
+  only reliable way to get a fresh, bindable Chrome window with a URL in an
+  existing process. The window is bindable by CGWindowID diff and closed via the
   standard AX path on shutdown, so `ownsWindow(source) === true`.
 
-For operator config shapes (`slack` vs `uri`, `target`, and how to find Slack
-team/channel IDs) see [Config: Slack](CONFIG.md#slack).
+For config shapes (`slack` vs `uri`, `target`, and how to find Slack
+team/channel IDs), see [Config: Slack](CONFIG.md#slack).
 
 ### Navigation-only sources and the `ownsWindow` contract
 
-Adapters may declare `ownsWindow(source)` returning `false` for sources that
+Adapters may declare `ownsWindow(source)` returning `false` for sources
 Deckhand should launch but cannot own (Slack navigation mode is the first
-example). When this returns `false`, the runtime:
+example). When it returns `false`, the runtime:
 
 - still calls `adapter.launch(source, ctx)` at startup
 - skips the CGWindowID diff resolver for that source (no spurious "window did
@@ -190,8 +190,8 @@ which imposes an operator-side prerequisite:
   before starting Deckhand. Both launch and close use `kitty @`, so close
   targets the exact tracked window even mid-command.
 
-If those prerequisites are not met, the launchers throw a clear error
-naming the missing setup.
+If those prerequisites are not met, the launchers throw an error naming the
+missing setup.
 
 ## Protocol extension strategy
 

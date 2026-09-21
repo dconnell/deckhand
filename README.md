@@ -1,9 +1,9 @@
 # Deckhand
 
 Deckhand is a **macOS-only** local presentation coordinator for remote talks.
-It mixes slides, a live terminal, VS Code, or other apps and switches between
+It mixes slides, a live terminal, VS Code, and other apps, switching between
 them — including split views — so the audience sees a single composed OBS feed
-shared into the meeting (via OBS's Projector window and Zoom's Share Screen).
+shared into the meeting via OBS's Projector window and Zoom's Share Screen.
 The operator never exposes their whole desktop.
 
 ## What Deckhand keeps in sync

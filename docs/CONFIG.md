@@ -146,13 +146,12 @@ model for OBS, the presenter stage, and slide actions.
 
 ## Sources
 
-`sources` is the authoritative catalog of logical source IDs. Layouts, slide
+`sources` is the authoritative catalog of logical source IDs; layouts, slide
 actions, and presenter bindings all reference IDs declared here. The canonical
-presentation sources are `Slide`, `Terminal`, `BrowserA`, and `BrowserB`. These
-names describe what the operator is coordinating; they do not encode position,
-transport, or OBS implementation details. Source IDs are position-agnostic and
-stay stable across layouts — if you need two live browser windows, declare two
-browser sources such as `BrowserA` and `BrowserB`.
+presentation sources are `Slide`, `Terminal`, `BrowserA`, and `BrowserB`. Names
+describe what the operator coordinates — not position, transport, or OBS
+implementation — and IDs stay stable across layouts. To run two live browser
+windows, declare two browser sources such as `BrowserA` and `BrowserB`.
 
 Each entry declares a `kind`:
 
@@ -338,11 +337,8 @@ ignored. The `app` value also matches `Code`. Adapter: `src/apps/vscode.js`.
 
 #### Slack
 
-Slack accepts either a structured `slack` field or a raw `uri`. Without
-`newWindow`, the desktop Slack app is navigated to the channel — no new window,
-no close (Deckhand cannot own a window Slack does not create). With
-`newWindow: true`, a new Chrome window opens the Slack web client at the same
-channel; that window is Deckhand-owned and closed on shutdown.
+Slack accepts either a structured `slack` field or a raw `uri`, and runs in
+one of two modes:
 
 ```json
 "QnA": {
@@ -365,31 +361,31 @@ channel; that window is Deckhand-owned and closed on shutdown.
   DMs)
 - `team` / `id` — find them in any Slack web URL:
   `https://app.slack.com/client/{TEAM_ID}/{CHANNEL_ID}`
-- **Navigation mode** (default): `open "slack://…"` activates Slack and
-  switches to the channel in the existing window. No new window, no diff
-  binding, no close. The Slack window is matched by app + `titleIncludes`.
-- **Browser mode** (`newWindow: true`): a new Chrome window opens
-  `https://app.slack.com/client/{team}/{id}` using your normal Chrome profile
-  (so you are already logged in). That window is Deckhand-owned and closed on
-  shutdown.
+- **Navigation mode** (default, no `newWindow`): `open "slack://…"` activates
+  Slack and switches to the channel in the existing window. No new window, no
+  close — Deckhand cannot own a window Slack does not create, so it skips diff
+  binding and matches the Slack window by app + `titleIncludes`.
+- **Browser mode** (`newWindow: true`): a new Chrome window opens the Slack web
+  client at the same channel, `https://app.slack.com/client/{team}/{id}`, using
+  your normal Chrome profile (already logged in). That window is Deckhand-owned
+  and closed on shutdown.
 - Bare `app: "Slack"` with no `slack` / `uri` field falls through to the
   default adapter and just launches the app.
 
 #### Generic apps (default)
 
-Any macOS app not listed above uses the `default` adapter (`open -a`):
-Preview, Safari, TextEdit, QuickTime Player, and anything else all work without
-an adapter file. Pick exactly one of `args`, `files`, or `openArgs` (or none
-for a bare new window):
+Any macOS app not listed above uses the `default` adapter (`open -a`) —
+Preview, Safari, TextEdit, and QuickTime Player all work without an adapter
+file. Pick exactly one of `args`, `files`, or `openArgs` (or none for a bare
+new window):
 
 ```json
 "Photo": { "kind": "app", "app": "Preview", "files": ["image.jpg"] },
 "Site":  { "kind": "app", "app": "Safari",  "openArgs": ["https://example.com"] }
 ```
 
-`cwd` and `command` are ignored by non-terminal apps. Apps that misbehave
-(unsaved-changes sheets, single-instance handoffs) may need a dedicated
-adapter — see [Adapters: App adapters](ADAPTERS.md#app-adapters).
+Apps that misbehave (unsaved-changes sheets, single-instance handoffs) may need
+a dedicated adapter — see [Adapters: App adapters](ADAPTERS.md#app-adapters).
 
 ### App sources
 
@@ -408,8 +404,8 @@ For copy-paste snippets by app see [App recipes](#app-recipes).
 #### What the app opens
 
 An `app` source launches as `open -n -a <app>`. Three optional fields control
-what follows the app name — **pick one**; `args`, `files`, and `openArgs` are
-mutually exclusive:
+what follows the app name; `args`, `files`, and `openArgs` are mutually
+exclusive:
 
 | Field | Use when | How Deckhand passes it to `open` |
 | --- | --- | --- |
@@ -532,7 +528,7 @@ OBS transitions and Studio Mode never touched):
 ```
 
 All fields are optional — an empty block `"transitions": {}` enables the
-freeze with defaults. Override only what you want to change:
+freeze with defaults:
 
 ```json
 "obs": {
@@ -574,7 +570,7 @@ for the one-time directional-transition setup.
 Behavior notes:
 
 - Every slide advance runs the sequence while transitions are enabled,
-  including same-scene advances, for a consistent experience.
+  including same-scene advances.
 - Deckhand captures your default transition at startup and restores it after
   each change, so manual OBS use between advances is unaffected.
 - Set `transition: 'none'` in the deck's `Reveal.initialize` so OBS owns all
@@ -594,8 +590,7 @@ Deckhand reconciles OBS to the current presentation:
 - inputs and scenes for every source/scene in the current layouts are created
   or updated;
 - any existing `Deckhand_*` input or scene no longer referenced by the current
-  config is removed — so switching to a presentation with fewer sources prunes
-  the dropped ones automatically;
+  config is removed;
 - non-`Deckhand_*` entities are never modified or removed;
 - freeze assets (`Deckhand_Freeze` / `Deckhand_Freeze Frame`) are retained
   while `obs.transitions` is configured and pruned when a presentation drops
@@ -608,8 +603,8 @@ one-time manual cleanup of those old names may be needed after upgrading.
 
 ## Presenter
 
-`presenter` is optional as a whole. If omitted, Deckhand still supports the
-audience-only flow. When present:
+`presenter` is optional; if omitted, Deckhand still supports the audience-only
+flow. When present:
 
 - `platform` must be `macos`
 - `stage` defines the presenter-stage rectangle; width must be even
@@ -633,13 +628,13 @@ Window selectors contain:
 - `titleIncludes` — optional substring to disambiguate multiple windows during
   bootstrap resolution
 
-At runtime, presenter observers may upgrade these bootstrap selectors to exact
-session bindings by reporting `pid`, `macWindowId`, and `strict: true` back to
-Deckhand. Those exact fields are runtime state, not part of committed config.
-Deckhand uses the bootstrap selectors to seed OBS `window_capture` settings,
-then upgrades them in place to exact managed bindings when runtime window
-handles are available. The teleprompter window is not an OBS source; its
-selector is used only for the local presenter window-management path.
+At runtime, presenter observers may report `pid`, `macWindowId`, and
+`strict: true` back to Deckhand; those fields are runtime state, not part of
+committed config. Deckhand uses the bootstrap selectors to seed OBS
+`window_capture` settings, then upgrades them in place to exact managed
+bindings when runtime window handles are available. The teleprompter window is
+not an OBS source; its selector is used only for the local presenter
+window-management path.
 
 `presenter.stt` fields:
 
