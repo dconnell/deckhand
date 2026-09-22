@@ -8,6 +8,7 @@ import {
   listLayoutSources,
   regionTransform,
   screenRect,
+  shouldSkipAudienceTransition,
 } from '../../src/scenes.js';
 
 function createConfig() {
@@ -273,4 +274,156 @@ test('buildPresentationState leaves overlays absent when neither layout nor slid
   assert.deepEqual(state.windowBindings, {
     Slide: { app: 'Safari', titleIncludes: 'Deckhand Deck' },
   });
+});
+
+test('shouldSkipAudienceTransition only skips advances that cannot change the audience frame', () => {
+  const dualBrowserState = {
+    audienceScene: 'Dual Browser',
+    slots: [
+      { source: 'BrowserA', position: 'left' },
+      { source: 'BrowserB', position: 'right' },
+    ],
+  };
+  const fullSlideState = {
+    audienceScene: 'Full Slide',
+    slots: [{ source: 'Slide', position: 'full' }],
+  };
+
+  const cases = [
+    {
+      name: 'null previous state never skips',
+      previousState: null,
+      nextState: dualBrowserState,
+      slideConfig: { commands: [] },
+      expected: false,
+    },
+    {
+      name: 'undefined previous state never skips',
+      previousState: undefined,
+      nextState: dualBrowserState,
+      slideConfig: { commands: [] },
+      expected: false,
+    },
+    {
+      name: 'different audience scene never skips',
+      previousState: fullSlideState,
+      nextState: dualBrowserState,
+      slideConfig: { commands: [] },
+      expected: false,
+    },
+    {
+      name: 'non-empty commands never skip',
+      previousState: dualBrowserState,
+      nextState: dualBrowserState,
+      slideConfig: { commands: [{ type: 'activateTab', source: 'BrowserA', tab: 'checkout' }] },
+      expected: false,
+    },
+    {
+      name: 'same scene, same slots, and empty commands skip',
+      previousState: dualBrowserState,
+      nextState: dualBrowserState,
+      slideConfig: { commands: [] },
+      expected: true,
+    },
+    {
+      name: 'different slot count never skips',
+      previousState: dualBrowserState,
+      nextState: {
+        audienceScene: 'Dual Browser',
+        slots: [{ source: 'BrowserA', position: 'left' }],
+      },
+      slideConfig: { commands: [] },
+      expected: false,
+    },
+    {
+      name: 'same-length slots with a different source never skip',
+      previousState: dualBrowserState,
+      nextState: {
+        audienceScene: 'Dual Browser',
+        slots: [
+          { source: 'BrowserB', position: 'left' },
+          { source: 'BrowserA', position: 'right' },
+        ],
+      },
+      slideConfig: { commands: [] },
+      expected: false,
+    },
+    {
+      name: 'same-length slots with a different position never skip',
+      previousState: dualBrowserState,
+      nextState: {
+        audienceScene: 'Dual Browser',
+        slots: [
+          { source: 'BrowserA', position: 'right' },
+          { source: 'BrowserB', position: 'left' },
+        ],
+      },
+      slideConfig: { commands: [] },
+      expected: false,
+    },
+    {
+      name: 'rect-only slot differences still skip',
+      previousState: {
+        audienceScene: 'Full Slide',
+        slots: [{ source: 'Slide', position: 'full', rect: { x: 0, y: 0, w: 1800, h: 1168 } }],
+      },
+      nextState: {
+        audienceScene: 'Full Slide',
+        slots: [{ source: 'Slide', position: 'full', rect: { x: 10, y: 20, w: 900, h: 500 } }],
+      },
+      slideConfig: { commands: [] },
+      expected: true,
+    },
+    {
+      name: 'deck slide changes are audience-visible',
+      previousState: {
+        slideId: 'a',
+        audienceScene: 'Full Slide',
+        slots: [{ source: 'Slide', position: 'full' }],
+      },
+      nextState: {
+        slideId: 'b',
+        audienceScene: 'Full Slide',
+        slots: [{ source: 'Slide', position: 'full' }],
+      },
+      slideConfig: { commands: [] },
+      expected: false,
+    },
+    {
+      name: 'terminal slides with different ids still skip',
+      previousState: {
+        slideId: 'a',
+        audienceScene: 'Dual Browser',
+        slots: [
+          { source: 'BrowserA', position: 'left' },
+          { source: 'BrowserB', position: 'right' },
+        ],
+      },
+      nextState: {
+        slideId: 'b',
+        audienceScene: 'Dual Browser',
+        slots: [
+          { source: 'BrowserA', position: 'left' },
+          { source: 'BrowserB', position: 'right' },
+        ],
+      },
+      slideConfig: { commands: [] },
+      expected: true,
+    },
+    {
+      name: 'undefined slide config is treated as no commands',
+      previousState: dualBrowserState,
+      nextState: dualBrowserState,
+      slideConfig: undefined,
+      expected: true,
+    },
+  ];
+
+  for (const testCase of cases) {
+    assert.equal(
+      shouldSkipAudienceTransition(testCase.previousState, testCase.nextState, testCase.slideConfig),
+      testCase.expected,
+      testCase.name,
+    );
+  }
 });

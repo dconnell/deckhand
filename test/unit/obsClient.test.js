@@ -40,10 +40,12 @@ function createFakeObsWebSocket({ shouldFailCall = false, shouldFailConnect = fa
 }
 
 test('obs client connect succeeds and records connection state', async () => {
+  const Fake = createFakeObsWebSocket();
+
   const obs = createObsClient({
     url: 'ws://127.0.0.1:4455',
-    password: 'secret',
-    OBSWebSocketClass: createFakeObsWebSocket(),
+    password: '',
+    OBSWebSocketClass: Fake,
     logger: { info() {}, error() {}, warn() {} },
   });
 
@@ -222,6 +224,32 @@ test('obs client captureProgramScreenshot strips the data-uri prefix and writes 
   assert.deepEqual(await readFile(target), fakePng);
 });
 
+test('obs client captureProgramScreenshot rejects without writing a file when OBS returns empty image data', async () => {
+  const Fake = createEventedFakeObsWebSocket((method, payload) => {
+    if (method === 'GetSceneList') {
+      return { scenes: [{ sceneName: 'Full Slide' }], currentProgramSceneName: 'Full Slide' };
+    }
+
+    if (method === 'GetSourceScreenshot' && payload.sourceName === 'Full Slide') {
+      return { imageData: '' };
+    }
+
+    return {};
+  });
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+  const target = path.join(os.tmpdir(), `deckhand-shot-empty-${process.pid}-${Date.now()}.png`);
+
+  await assert.rejects(() => obs.captureProgramScreenshot(target), /empty program screenshot/);
+  await assert.rejects(() => readFile(target), { code: 'ENOENT' });
+});
+
 test('obs client getProgramScreenshotBuffer returns low-resolution JPEG bytes for the current program scene', async () => {
   const fakeJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 1, 2, 3, 4]);
   const dataUri = `data:image/jpeg;base64,${fakeJpeg.toString('base64')}`;
@@ -364,6 +392,14 @@ test('obs client ensureFreezeAssets creates a missing freeze scene and image sou
       return { inputs: [] };
     }
 
+    if (method === 'GetVideoSettings') {
+      return { baseWidth: 1920, baseHeight: 1080 };
+    }
+
+    if (method === 'CreateInput') {
+      return { sceneItemId: 1 };
+    }
+
     return {};
   });
   const obs = createObsClient({
@@ -381,6 +417,8 @@ test('obs client ensureFreezeAssets creates a missing freeze scene and image sou
     'CreateScene',
     'GetInputList',
     'CreateInput',
+    'GetVideoSettings',
+    'SetSceneItemTransform',
   ]);
   assert.deepEqual(obs.getClient().calls[3].payload, {
     sceneItemEnabled: true,
@@ -388,6 +426,17 @@ test('obs client ensureFreezeAssets creates a missing freeze scene and image sou
     inputKind: 'image_source',
     inputName: 'Freeze Frame',
     inputSettings: { file: '/tmp/freeze.png' },
+  });
+  assert.deepEqual(obs.getClient().calls[5].payload, {
+    sceneItemId: 1,
+    sceneName: 'Freeze',
+    sceneItemTransform: {
+      positionX: 0,
+      positionY: 0,
+      boundsType: 'OBS_BOUNDS_SCALE_INNER',
+      boundsWidth: 1920,
+      boundsHeight: 1080,
+    },
   });
 });
 
@@ -607,6 +656,14 @@ test('obs client ensureFreezeAssets re-points an existing image source at the fr
       return { inputs: [{ inputName: 'Freeze Frame', inputKind: 'image_source' }] };
     }
 
+    if (method === 'GetVideoSettings') {
+      return { baseWidth: 2560, baseHeight: 1440 };
+    }
+
+    if (method === 'GetSceneItemList') {
+      return { sceneItems: [{ sceneItemId: 7, sourceName: 'Freeze Frame' }] };
+    }
+
     return {};
   });
   const obs = createObsClient({
@@ -619,11 +676,29 @@ test('obs client ensureFreezeAssets re-points an existing image source at the fr
   await obs.connect();
   await obs.ensureFreezeAssets({ sceneName: 'Freeze', inputName: 'Freeze Frame', imagePath: '/tmp/freeze.png' });
 
-  assert.deepEqual(obs.getClient().calls.map((call) => call.method), ['GetSceneList', 'GetInputList', 'SetInputSettings']);
+  assert.deepEqual(obs.getClient().calls.map((call) => call.method), [
+    'GetSceneList',
+    'GetInputList',
+    'SetInputSettings',
+    'GetVideoSettings',
+    'GetSceneItemList',
+    'SetSceneItemTransform',
+  ]);
   assert.deepEqual(obs.getClient().calls[2].payload, {
     inputName: 'Freeze Frame',
     inputSettings: { file: '/tmp/freeze.png' },
     overlay: true,
+  });
+  assert.deepEqual(obs.getClient().calls[5].payload, {
+    sceneItemId: 7,
+    sceneName: 'Freeze',
+    sceneItemTransform: {
+      positionX: 0,
+      positionY: 0,
+      boundsType: 'OBS_BOUNDS_SCALE_INNER',
+      boundsWidth: 2560,
+      boundsHeight: 1440,
+    },
   });
 });
 
@@ -747,6 +822,112 @@ test('obs client ensureFreezeAssets skips the dim filter when dimPercent is 0', 
   assert.equal(calls.includes('GetSourceFilterList'), false, 'leaves filters untouched when dim is disabled');
   assert.equal(calls.includes('CreateSourceFilter'), false);
   assert.equal(calls.includes('SetSourceFilterSettings'), false);
+});
+
+test('obs client ensureFreezeAssets recreates a missing freeze scene item and transforms it', async () => {
+  const Fake = createEventedFakeObsWebSocket((method) => {
+    if (method === 'GetSceneList') {
+      return { scenes: [{ sceneName: 'Freeze' }] };
+    }
+
+    if (method === 'GetInputList') {
+      return { inputs: [{ inputName: 'Freeze Frame', inputKind: 'image_source' }] };
+    }
+
+    if (method === 'GetVideoSettings') {
+      return { baseWidth: 1920, baseHeight: 1080 };
+    }
+
+    if (method === 'GetSceneItemList') {
+      return { sceneItems: [] };
+    }
+
+    if (method === 'CreateSceneItem') {
+      return { sceneItemId: 42 };
+    }
+
+    return {};
+  });
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+  await obs.ensureFreezeAssets({ sceneName: 'Freeze', inputName: 'Freeze Frame', imagePath: '/tmp/freeze.png' });
+
+  const calls = obs.getClient().calls;
+  const createIndex = calls.findIndex((call) => call.method === 'CreateSceneItem');
+  const transformIndex = calls.findIndex((call) => call.method === 'SetSceneItemTransform');
+  assert.ok(createIndex !== -1, 'recreates the missing freeze scene item');
+  assert.deepEqual(calls[createIndex].payload, {
+    sceneItemEnabled: true,
+    sceneName: 'Freeze',
+    sourceName: 'Freeze Frame',
+  });
+  assert.ok(transformIndex !== -1, 'applies the freeze transform');
+  assert.ok(transformIndex > createIndex, 'transforms the recreated scene item');
+  assert.deepEqual(calls[transformIndex].payload, {
+    sceneItemId: 42,
+    sceneName: 'Freeze',
+    sceneItemTransform: {
+      positionX: 0,
+      positionY: 0,
+      boundsType: 'OBS_BOUNDS_SCALE_INNER',
+      boundsWidth: 1920,
+      boundsHeight: 1080,
+    },
+  });
+});
+
+test('obs client ensureFreezeAssets keeps ensuring the dim filter when the transform step fails', async () => {
+  const Fake = createEventedFakeObsWebSocket((method) => {
+    if (method === 'GetSceneList') {
+      return { scenes: [{ sceneName: 'Freeze' }] };
+    }
+
+    if (method === 'GetInputList') {
+      return { inputs: [{ inputName: 'Freeze Frame', inputKind: 'image_source' }] };
+    }
+
+    if (method === 'GetVideoSettings') {
+      throw new Error('video settings unavailable');
+    }
+
+    if (method === 'GetSourceFilterList') {
+      return { filters: [] };
+    }
+
+    return {};
+  });
+  const warnings = [];
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger: {
+      info() {},
+      error() {},
+      warn(message, context) {
+        warnings.push({ message, context });
+      },
+    },
+  });
+
+  await obs.connect();
+  await obs.ensureFreezeAssets({
+    sceneName: 'Freeze',
+    inputName: 'Freeze Frame',
+    imagePath: '/tmp/freeze.png',
+    dimPercent: 10,
+  });
+
+  const calls = obs.getClient().calls.map((call) => call.method);
+  assert.equal(calls.includes('SetSceneItemTransform'), false, 'skips the transform after the failure');
+  assert.ok(calls.includes('CreateSourceFilter'), 'still ensures the dim filter after transform failure');
+  assert.ok(warnings.length >= 1, 'transform failure must be logged as a warning');
 });
 
 function createFakeTimer() {

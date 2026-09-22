@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createElectronAdapter } from '../../src/apps/electron.js';
+import { iterm2Adapter, slackAdapter, vscodeAdapter } from '../../src/apps/index.js';
 
 function baseConfig(overrides = {}) {
   return {
@@ -75,4 +76,21 @@ test('createElectronAdapter omits buildLaunchArgs when not supplied', () => {
   const adapter = createElectronAdapter(baseConfig());
 
   assert.equal('buildLaunchArgs' in adapter, false);
+});
+
+test('createElectronAdapter marks every Electron adapter as requiring an exclusive app instance', () => {
+  const adapter = createElectronAdapter(baseConfig());
+
+  assert.equal(adapter.requiresExclusiveInstance, true);
+});
+
+test('vscode adapter requires an exclusive instance; terminal-family and Slack adapters do not', () => {
+  assert.equal(vscodeAdapter.requiresExclusiveInstance, true);
+  // Terminal-family apps join the already-running instance by design (the
+  // operator launches deckhand from a terminal), so they must never gate.
+  assert.notEqual(iterm2Adapter.requiresExclusiveInstance, true);
+  // Slack is a hand-rolled adapter (not from the Electron factory): navigation
+  // mode reuses the running app and newWindow mode spawns a Chrome window, so
+  // neither path needs a fresh Slack app instance.
+  assert.notEqual(slackAdapter.requiresExclusiveInstance, true);
 });

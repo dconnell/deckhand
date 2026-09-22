@@ -569,8 +569,12 @@ for the one-time directional-transition setup.
 
 Behavior notes:
 
-- Every slide advance runs the sequence while transitions are enabled,
-  including same-scene advances.
+- Advances that keep the same audience scene with identical slots and no
+  browser actions skip the sequence entirely: presenter state (teleprompter,
+  focus, window bindings) updates, and the OBS program is left untouched — so
+  consecutive beats on the same source (for example, terminal-to-terminal
+  demo beats) don't flicker. Any scene, slot, or browser-action change runs
+  the full sequence.
 - Deckhand captures your default transition at startup and restores it after
   each change, so manual OBS use between advances is unaffected.
 - Set `transition: 'none'` in the deck's `Reveal.initialize` so OBS owns all

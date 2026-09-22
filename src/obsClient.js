@@ -1,5 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import { OBSWebSocket } from 'obs-websocket-js/json';
+import { regionTransform } from './scenes.js';
 
 function createNoopLogger() {
   return {
@@ -140,6 +141,84 @@ export function createObsClient(options) {
       logger.warn('Failed to apply OBS freeze dim filter', {
         error: error instanceof Error ? error.message : String(error),
         sourceName,
+      });
+    }
+  }
+
+  /**
+   * Pin the freeze image's scene item to the full canvas at its native bounds.
+   *
+   * OBS's default scene-item transform leaves the item at its source-native
+   * size/offset, so the canvas-sized freeze image renders cropped and zoomed
+   * (left edge cut off) instead of filling the scene. Re-applied on every
+   * ensure so canvas resolution changes are picked up. Failures warn and
+   * continue so the rest of the ensure still runs.
+   *
+   * @param {{ sceneName: string, inputName: string, createdSceneItemId?: number | null }} args Transform target.
+   * @returns {Promise<void>}
+   */
+  async function applyFreezeSceneItemTransform({ sceneName, inputName, createdSceneItemId = null }) {
+    let baseWidth;
+    let baseHeight;
+
+    try {
+      const video = await client.call('GetVideoSettings');
+      baseWidth = video?.baseWidth;
+      baseHeight = video?.baseHeight;
+    } catch (error) {
+      logger.warn('Failed to read OBS video settings; skipping freeze transform', {
+        error: error instanceof Error ? error.message : String(error),
+        sceneName,
+        inputName,
+      });
+      return;
+    }
+
+    // Tolerate environments where canvas dimensions are unavailable (e.g. stubs)
+    // rather than guessing geometry; a real failure to apply the transform below
+    // still warns.
+    if (!(Number.isFinite(baseWidth) && baseWidth > 0) || !(Number.isFinite(baseHeight) && baseHeight > 0)) {
+      return;
+    }
+
+    try {
+      let sceneItemId = createdSceneItemId;
+
+      if (sceneItemId === null || sceneItemId === undefined) {
+        const itemList = await client.call('GetSceneItemList', { sceneName });
+        const items = Array.isArray(itemList?.sceneItems) ? itemList.sceneItems : [];
+        const existing = items.find((item) => item?.sourceName === inputName);
+
+        if (existing) {
+          sceneItemId = existing.sceneItemId;
+        } else {
+          const createdItem = await client.call('CreateSceneItem', {
+            sceneItemEnabled: true,
+            sceneName,
+            sourceName: inputName,
+          });
+          sceneItemId = createdItem?.sceneItemId;
+        }
+      }
+
+      if (sceneItemId === null || sceneItemId === undefined) {
+        logger.warn('Could not resolve the OBS freeze scene item; skipping freeze transform', {
+          sceneName,
+          inputName,
+        });
+        return;
+      }
+
+      await client.call('SetSceneItemTransform', {
+        sceneItemId,
+        sceneName,
+        sceneItemTransform: regionTransform('full', baseWidth, baseHeight),
+      });
+    } catch (error) {
+      logger.warn('Failed to apply OBS freeze scene item transform', {
+        error: error instanceof Error ? error.message : String(error),
+        sceneName,
+        inputName,
       });
     }
   }
@@ -422,9 +501,16 @@ export function createObsClient(options) {
       }
 
       const dataUri = typeof shot.imageData === 'string' ? shot.imageData : '';
+      const decoded = decodeImageDataUri(dataUri);
+
+      // A zero-byte capture renders as a fully black frame in OBS, so treat it
+      // as a failure rather than arming a blank freeze frame for the audience.
+      if (decoded.length === 0) {
+        throw new Error('OBS returned an empty program screenshot');
+      }
 
       try {
-        await writeFile(filePath, decodeImageDataUri(dataUri));
+        await writeFile(filePath, decoded);
       } catch (error) {
         logger.error('Failed to write OBS screenshot to disk', {
           error: error instanceof Error ? error.message : String(error),
@@ -719,7 +805,7 @@ export function createObsClient(options) {
       const hasInput = inputList.inputs.some((input) => input.inputName === inputName);
 
       if (!hasInput) {
-        await client.call('CreateInput', {
+        const createdInput = await client.call('CreateInput', {
           sceneItemEnabled: true,
           sceneName,
           inputKind: 'image_source',
@@ -727,12 +813,20 @@ export function createObsClient(options) {
           inputSettings: { file: imagePath },
         });
         logger.info('Created OBS freeze image source', { inputName, sceneName });
+
+        await applyFreezeSceneItemTransform({
+          sceneName,
+          inputName,
+          createdSceneItemId: createdInput?.sceneItemId ?? null,
+        });
       } else {
         await client.call('SetInputSettings', {
           inputName,
           inputSettings: { file: imagePath },
           overlay: true,
         });
+
+        await applyFreezeSceneItemTransform({ sceneName, inputName });
       }
 
       await ensureFreezeDimFilter(inputName, dimPercent);

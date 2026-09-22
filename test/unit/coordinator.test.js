@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { computeSlideDirection, createCoordinator, extractSlideIndex } from '../../src/coordinator.js';
+import { deckhandInputName } from '../../src/obsNames.js';
 
 function createLogger() {
   return {
@@ -1159,6 +1160,164 @@ test('coordinator alternates freeze image file paths so OBS reloads each re-arm'
   assert.ok(appliedFiles.some((file) => file.endsWith('-1.png')));
 });
 
+/**
+ * Extend the transitions fixture with a minimal app-window source, layout, and
+ * slide so an advance can target a scene whose only slot is an `app` capture.
+ *
+ * @param {{ appScreenshot: () => Promise<string> }} options Probe behavior for the app source's deckhand input.
+ * @returns {{ config: ReturnType<typeof createTransitionsConfig>, appInputName: string }}
+ */
+function createAppSlideTransitionsConfig({ appScreenshot }) {
+  const config = createTransitionsConfig();
+  config.presenter = null;
+  config.sources.Editor = { id: 'Editor', kind: 'app', app: 'Visual Studio Code' };
+  config.layouts['editor-view'] = {
+    id: 'editor-view',
+    audienceScene: 'Editor View',
+    slots: [{ source: 'Editor', position: 'full' }],
+    sources: ['Editor'],
+  };
+  config.slides.editor = {
+    layoutId: 'editor-view',
+    focus: null,
+    script: null,
+    commands: [],
+  };
+
+  return { config, appInputName: deckhandInputName('Editor'), appScreenshot };
+}
+
+test('coordinator keeps the last good freeze frame when an app source cannot be screenshotted', async () => {
+  const trace = [];
+  const logger = createLogger();
+  const harness = createAppSlideTransitionsConfig({
+    // App-window captures can fail to render in OBS offscreen screenshot
+    // requests; surface that here so the coordinator probe must detect it.
+    appScreenshot: async () => {
+      throw new Error('Failed to render screenshot.');
+    },
+  });
+  const obs = {
+    ...createTracingObs(trace),
+    async getSourceScreenshotData(sourceName) {
+      trace.push(`getSourceScreenshotData:${sourceName}`);
+
+      if (sourceName === harness.appInputName) {
+        return harness.appScreenshot();
+      }
+
+      return 'data:image/png;base64,AAAA';
+    },
+  };
+
+  const coordinator = createCoordinator({
+    config: harness.config,
+    obs,
+    hub: createTracingHub(trace),
+    executor: createTracingExecutor(trace),
+    logger,
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+  trace.length = 0;
+  await coordinator.handleDriverPositionChanged({ id: 'editor', index: { h: 1, v: 0 }, meta: {} });
+
+  assert.ok(trace.includes(`getSourceScreenshotData:${harness.appInputName}`), 'probes the app source directly');
+  assert.equal(trace.includes('applyInputSettings:Freeze Frame'), false, 'freeze input keeps pointing at the last good file');
+  assert.ok(
+    logger.warns.some((entry) => entry.message === 'Freeze frame may render black; keeping the last good freeze frame'
+      && entry.context?.source === 'Editor'),
+    'warns about the unreliable app source',
+  );
+  assert.ok(trace.includes('switchProgramScene:Deckhand_Editor View'), 'the advance still reveals the audience scene');
+});
+
+test('coordinator keeps the last good freeze frame when an app source probe returns an empty image payload', async () => {
+  const trace = [];
+  const logger = createLogger();
+  const harness = createAppSlideTransitionsConfig({
+    // A bare data-URI prefix decodes to a zero-byte image; the probe must
+    // treat it as empty, matching the decoded-buffer check in the obs client.
+    appScreenshot: async () => 'data:image/png;base64,',
+  });
+  const obs = {
+    ...createTracingObs(trace),
+    async getSourceScreenshotData(sourceName) {
+      trace.push(`getSourceScreenshotData:${sourceName}`);
+
+      if (sourceName === harness.appInputName) {
+        return harness.appScreenshot();
+      }
+
+      return 'data:image/png;base64,AAAA';
+    },
+  };
+
+  const coordinator = createCoordinator({
+    config: harness.config,
+    obs,
+    hub: createTracingHub(trace),
+    executor: createTracingExecutor(trace),
+    logger,
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+  trace.length = 0;
+  await coordinator.handleDriverPositionChanged({ id: 'editor', index: { h: 1, v: 0 }, meta: {} });
+
+  assert.ok(trace.includes(`getSourceScreenshotData:${harness.appInputName}`), 'probes the app source directly');
+  assert.equal(trace.includes('applyInputSettings:Freeze Frame'), false, 'freeze input keeps pointing at the last good file');
+  assert.ok(
+    logger.warns.some((entry) => entry.message === 'Freeze frame may render black; keeping the last good freeze frame'
+      && entry.context?.source === 'Editor'),
+    'warns about the unreliable app source',
+  );
+  assert.ok(trace.includes('switchProgramScene:Deckhand_Editor View'), 'the advance still reveals the audience scene');
+});
+
+test('coordinator re-arms the freeze frame when the app source screenshot probe succeeds', async () => {
+  const trace = [];
+  const logger = createLogger();
+  const harness = createAppSlideTransitionsConfig({
+    appScreenshot: async () => 'data:image/png;base64,AAAA',
+  });
+  const obs = {
+    ...createTracingObs(trace),
+    async getSourceScreenshotData(sourceName) {
+      trace.push(`getSourceScreenshotData:${sourceName}`);
+
+      if (sourceName === harness.appInputName) {
+        return harness.appScreenshot();
+      }
+
+      return 'data:image/png;base64,AAAA';
+    },
+  };
+
+  const coordinator = createCoordinator({
+    config: harness.config,
+    obs,
+    hub: createTracingHub(trace),
+    executor: createTracingExecutor(trace),
+    logger,
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+  trace.length = 0;
+  await coordinator.handleDriverPositionChanged({ id: 'editor', index: { h: 1, v: 0 }, meta: {} });
+
+  assert.ok(trace.includes(`getSourceScreenshotData:${harness.appInputName}`), 'probes the app source directly');
+  assert.ok(trace.includes('applyInputSettings:Freeze Frame'), 'a reliable probe still re-arms the freeze frame');
+  assert.equal(
+    logger.warns.some((entry) => entry.message === 'Freeze frame may render black; keeping the last good freeze frame'),
+    false,
+    'no warning is logged when the probe succeeds',
+  );
+});
+
 test('coordinator does not re-apply identical OBS window bindings across slide changes', async () => {
   const trace = [];
   const coordinator = createCoordinator({
@@ -1841,4 +2000,366 @@ test('coordinator logs and continues when a relaunch hook throws', async () => {
 
   assert.ok(logger.errors.some((entry) => /failed to relaunch source/i.test(entry.message)));
   assert.ok(logger.errors.some((entry) => /relaunch exploded/i.test(entry.context?.error)));
+});
+
+function createRecordingHub(trace, publishes) {
+  return {
+    on() {},
+    async start() {},
+    async stop() {},
+    async sendCommand() {},
+    async publishSticky(channel, payload) {
+      trace.push('publishSticky');
+      publishes.push({ channel, payload });
+    },
+    getSnapshot() {
+      return { activeDriver: null, observers: [], sticky: {} };
+    },
+  };
+}
+
+function createSameSceneTransitionsConfig() {
+  const config = createTransitionsConfig();
+  config.slides['demo-clean'] = {
+    layoutId: 'dual-browser',
+    focus: null,
+    script: null,
+    commands: [],
+  };
+  config.slides['intro-clean'] = {
+    layoutId: 'full-slide',
+    focus: null,
+    script: null,
+    commands: [],
+  };
+  return config;
+}
+
+test('coordinator skips the audience transition for same-scene advances without commands', async () => {
+  const trace = [];
+  const publishes = [];
+  const coordinator = createCoordinator({
+    config: createSameSceneTransitionsConfig(),
+    obs: createTracingObs(trace),
+    hub: createRecordingHub(trace, publishes),
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+  assert.ok(trace.includes('switchProgramScene:Freeze'), 'the first advance still runs the full sequence');
+
+  trace.length = 0;
+  publishes.length = 0;
+  await coordinator.handleDriverPositionChanged({ id: 'demo-clean', index: { h: 2, v: 0 }, meta: {} });
+
+  assert.equal(trace.includes('switchProgramScene:Freeze'), false, 'no freeze for an unchanged audience frame');
+  assert.equal(
+    trace.includes('switchProgramScene:Deckhand_Dual Browser'),
+    false,
+    'no program-scene switch when the scene and slots are unchanged',
+  );
+  assert.equal(trace.includes('setCurrentTransition:Cut'), false, 'no freeze cut when the OBS program is untouched');
+  assert.equal(trace.some((entry) => entry.startsWith('execute:')), false, 'no browser commands are dispatched');
+
+  const publish = publishes.find(({ channel }) => channel === 'presentationState');
+  assert.ok(publish, 'a sticky presentation-state publish still occurs');
+  assert.equal(publish.payload.slideId, 'demo-clean', 'the publish carries the incoming slide id');
+  assert.equal(publish.payload.audienceScene, 'Dual Browser', 'the publish resolves to the same audience scene');
+});
+
+test('coordinator still runs the freeze -> reveal sequence for same-scene advances with commands', async () => {
+  const trace = [];
+  const coordinator = createCoordinator({
+    config: createSameSceneTransitionsConfig(),
+    obs: createTracingObs(trace),
+    hub: createRecordingHub(trace, []),
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'demo-clean', index: { h: 2, v: 0 }, meta: {} });
+
+  trace.length = 0;
+  await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+
+  assert.ok(trace.includes('switchProgramScene:Freeze'), 'browser commands force the freeze');
+  assert.ok(trace.includes('switchProgramScene:Deckhand_Dual Browser'), 'browser commands force the reveal');
+  assert.ok(trace.includes('execute:activateTab'), 'browser commands dispatch behind the freeze');
+});
+
+test('coordinator still runs the freeze -> reveal sequence when the audience scene changes', async () => {
+  const trace = [];
+  const coordinator = createCoordinator({
+    config: createSameSceneTransitionsConfig(),
+    obs: createTracingObs(trace),
+    hub: createRecordingHub(trace, []),
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'demo-clean', index: { h: 2, v: 0 }, meta: {} });
+
+  trace.length = 0;
+  await coordinator.handleDriverPositionChanged({ id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+
+  assert.ok(trace.includes('switchProgramScene:Freeze'), 'a scene change still freezes first');
+  assert.ok(trace.includes('switchProgramScene:Deckhand_Full Slide'), 'a scene change still reveals the new scene');
+});
+
+test('coordinator still reveals the audience scene when a frozen observer driver command is in flight', async () => {
+  const trace = [];
+  const publishes = [];
+
+  const handlers = new Map();
+  const hub = {
+    on(eventName, handler) {
+      handlers.set(eventName, handler);
+    },
+    emit(eventName, payload) {
+      return handlers.get(eventName)?.(payload);
+    },
+    async start() {},
+    async stop() {},
+    async sendCommand(_target, command) {
+      trace.push(`sendCommand:${command.type}`);
+      return [{ role: 'driver', sessionId: 'driver-1' }];
+    },
+    async publishSticky(channel, payload) {
+      trace.push('publishSticky');
+      publishes.push({ channel, payload });
+    },
+    getSnapshot() {
+      return {
+        activeDriver: { role: 'driver', sessionId: 'driver-1' },
+        observers: [],
+        sticky: {},
+      };
+    },
+  };
+
+  const coordinator = createCoordinator({
+    config: createSameSceneTransitionsConfig(),
+    obs: createTracingObs(trace),
+    hub,
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+  trace.length = 0;
+
+  await hub.emit('observerDriverCommand', {
+    command: { type: 'next' },
+    sender: { role: 'observer', sessionId: 'observer-1' },
+  });
+
+  const freezeIndex = trace.indexOf('switchProgramScene:Freeze');
+  assert.ok(freezeIndex !== -1, 'the observer driver command cuts to the freeze');
+
+  publishes.length = 0;
+  const pending = hub.emit('driverPositionChanged', {
+    id: 'demo-clean',
+    index: { h: 2, v: 0 },
+    meta: { driverEventId: 21 },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  hub.emit('driverPositionSettled', { eventId: 21 });
+  await pending;
+
+  const revealIndex = trace.indexOf('switchProgramScene:Deckhand_Dual Browser');
+  assert.ok(revealIndex !== -1, 'the frozen advance still reveals the audience scene');
+  assert.ok(freezeIndex < revealIndex, 'the reveal follows the freeze instead of stranding the audience on Freeze');
+
+  const publish = publishes.find(({ channel }) => channel === 'presentationState');
+  assert.ok(publish, 'a sticky presentation-state publish still occurs');
+  assert.equal(publish.payload.slideId, 'demo-clean', 'the publish carries the incoming slide id');
+});
+
+test('coordinator cuts straight back when a pre-frozen advance cannot change the audience frame', async () => {
+  const trace = [];
+  const publishes = [];
+
+  const handlers = new Map();
+  const hub = {
+    on(eventName, handler) {
+      handlers.set(eventName, handler);
+    },
+    emit(eventName, payload) {
+      return handlers.get(eventName)?.(payload);
+    },
+    async start() {},
+    async stop() {},
+    async sendCommand(_target, command) {
+      trace.push(`sendCommand:${command.type}`);
+      return [{ role: 'driver', sessionId: 'driver-1' }];
+    },
+    async publishSticky(channel, payload) {
+      trace.push('publishSticky');
+      publishes.push({ channel, payload });
+    },
+    getSnapshot() {
+      return {
+        activeDriver: { role: 'driver', sessionId: 'driver-1' },
+        observers: [],
+        sticky: {},
+      };
+    },
+  };
+
+  const coordinator = createCoordinator({
+    config: createSameSceneTransitionsConfig(),
+    obs: createTracingObs(trace),
+    hub,
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+  trace.length = 0;
+
+  // The observer command pre-freezes the audience before forwarding `next`,
+  // then the driver reports the resulting position.
+  await hub.emit('observerDriverCommand', {
+    command: { type: 'next' },
+    sender: { role: 'observer', sessionId: 'observer-1' },
+  });
+
+  const freezeIndex = trace.indexOf('switchProgramScene:Freeze');
+  assert.ok(freezeIndex !== -1, 'the observer driver command cuts to the freeze');
+
+  publishes.length = 0;
+  const pending = hub.emit('driverPositionChanged', {
+    id: 'demo-clean',
+    index: { h: 2, v: 0 },
+    meta: { driverEventId: 31 },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  hub.emit('driverPositionSettled', { eventId: 31 });
+  await pending;
+
+  assert.equal(
+    trace.filter((entry) => entry === 'switchProgramScene:Freeze').length,
+    1,
+    'the pre-freeze is the only freeze: the unchanged audience frame must not freeze again',
+  );
+  assert.equal(
+    trace.includes('setCurrentTransition:Slide Right'),
+    false,
+    'no directional transition runs when the audience frame cannot change',
+  );
+  assert.equal(
+    trace.some((entry) => entry.startsWith('triggerStudioModeTransition:')),
+    false,
+    'no studio-mode reveal fires for the incoming slide',
+  );
+
+  const cutBackIndex = trace.indexOf('switchProgramScene:Deckhand_Dual Browser');
+  assert.ok(cutBackIndex !== -1, 'the audience scene is cut back to directly');
+  assert.ok(freezeIndex < cutBackIndex, 'the cut-back follows the pre-freeze instead of stranding the audience on Freeze');
+  assert.ok(trace.includes('setCurrentTransition:Fade'), 'the cut-back restores the operator default transition');
+
+  const publish = publishes.find(({ channel }) => channel === 'presentationState');
+  assert.ok(publish, 'a sticky presentation-state publish still occurs');
+  assert.equal(publish.payload.slideId, 'demo-clean', 'the publish carries the incoming slide id');
+  assert.equal(publish.payload.audienceScene, 'Dual Browser', 'the publish resolves to the same audience scene');
+});
+
+test('coordinator still runs the full masked transition when a Slide-source slot changes slide id', async () => {
+  const trace = [];
+  const coordinator = createCoordinator({
+    config: createSameSceneTransitionsConfig(),
+    obs: createTracingObs(trace),
+    hub: createRecordingHub(trace, []),
+    executor: createTracingExecutor(trace),
+    logger: createLogger(),
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+  trace.length = 0;
+  await coordinator.handleDriverPositionChanged({ id: 'intro-clean', index: { h: 1, v: 0 }, meta: {} });
+
+  assert.ok(trace.includes('switchProgramScene:Freeze'), 'the driver deck surface is audience-visible, so the slide change still freezes');
+  assert.ok(trace.includes('setCurrentTransition:Slide Right'), 'the driver deck slide change still reveals directionally');
+  assert.ok(trace.includes('switchProgramScene:Deckhand_Full Slide'), 'the driver deck slide change still reveals the audience scene');
+});
+
+test('coordinator still publishes presenter state when the frozen cut-back scene switch fails', async () => {
+  const trace = [];
+  const publishes = [];
+
+  const handlers = new Map();
+  const hub = {
+    on(eventName, handler) {
+      handlers.set(eventName, handler);
+    },
+    emit(eventName, payload) {
+      return handlers.get(eventName)?.(payload);
+    },
+    async start() {},
+    async stop() {},
+    async sendCommand(_target, command) {
+      trace.push(`sendCommand:${command.type}`);
+      return [{ role: 'driver', sessionId: 'driver-1' }];
+    },
+    async publishSticky(channel, payload) {
+      publishes.push({ channel, payload });
+    },
+    getSnapshot() {
+      return {
+        activeDriver: { role: 'driver', sessionId: 'driver-1' },
+        observers: [],
+        sticky: {},
+      };
+    },
+  };
+
+  const obs = createTracingObs(trace);
+  // Only the cut-back target fails: the pre-freeze switch to Freeze must work.
+  const realSwitch = obs.switchProgramScene;
+  obs.switchProgramScene = async (name) => {
+    if (name === 'Deckhand_Dual Browser') {
+      throw new Error('obs hiccup');
+    }
+    return realSwitch(name);
+  };
+
+  const logger = createLogger();
+  const coordinator = createCoordinator({
+    config: createSameSceneTransitionsConfig(),
+    obs,
+    hub,
+    executor: createTracingExecutor(trace),
+    logger,
+  });
+
+  await coordinator.start();
+  await coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+  trace.length = 0;
+
+  await hub.emit('observerDriverCommand', {
+    command: { type: 'next' },
+    sender: { role: 'observer', sessionId: 'observer-1' },
+  });
+
+  publishes.length = 0;
+  const pending = hub.emit('driverPositionChanged', {
+    id: 'demo-clean',
+    index: { h: 2, v: 0 },
+    meta: { driverEventId: 41 },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  hub.emit('driverPositionSettled', { eventId: 41 });
+  await pending;
+
+  assert.ok(logger.errors.some((entry) => /cut back/i.test(entry.message)), 'the failed cut-back is logged as an error');
+  const publish = publishes.find(({ channel }) => channel === 'presentationState');
+  assert.ok(publish, 'an OBS hiccup must not strand the presenter: state is still published');
+  assert.equal(publish.payload.slideId, 'demo-clean', 'the publish carries the incoming slide id');
 });

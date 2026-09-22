@@ -18,6 +18,13 @@
  *    `--new-window`) to actually create a new window rather than activate an
  *    existing one. Apps that have such a flag pass `buildLaunchArgs`.
  *
+ * 3. **Exclusive instance required.** Offscreen window capture of an Electron
+ *    app degrades silently (observed: black freeze frames) when another
+ *    instance owns windows, and the `open -n` ownership model means deckhand
+ *    can only reliably own windows it launched itself. Adapters built here
+ *    therefore declare `requiresExclusiveInstance: true` so the startup
+ *    preflight can refuse to run while the operator still has the app open.
+ *
  * What is intentionally NOT shared: aliases, the CGWindow owner name, the
  * `open -a` / Hammerspoon bootstrap app name, and the unsaved-changes close
  * policy. Those differ per app even within the Electron family (Slack has no
@@ -36,6 +43,7 @@
  *   cgWindowOwnerName: () => string,
  *   buildBootstrapBinding: (source: object, configuredBinding?: object) => object,
  *   confirm: { stableSamples: number },
+ *   requiresExclusiveInstance: true,
  *   buildLaunchArgs?: (source: object) => string[],
  *   discardUnsavedChangesOnClose?: boolean,
  * }}
@@ -66,6 +74,10 @@ export function createElectronAdapter({
       };
     },
     confirm: { stableSamples: 2 },
+    // Offscreen window-capture reliability and the `open -n` ownership model
+    // both require that no pre-existing instance of the app is running, so
+    // the startup preflight gates on this flag.
+    requiresExclusiveInstance: true,
   };
 
   if (typeof buildLaunchArgs === 'function') {

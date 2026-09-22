@@ -51,6 +51,16 @@ test('buildIterm2AppleScript creates a bare window when no command or cwd is con
   assert.ok(script.includes('return id of (current session of'));
 });
 
+test('buildIterm2AppleScript targets iTerm2 by bundle id so it compiles when iTerm2 is not running', () => {
+  const script = buildIterm2AppleScript({ command: 'npm run dev', cwd: '/repos/demo' });
+
+  // The name "iTerm2" only resolves while the app is running; on a cold start
+  // osascript compiles the tell block without iTerm2's terminology and rejects
+  // `create window with default profile` with a -2741 syntax error.
+  assert.ok(script.includes('tell application id "com.googlecode.iterm2"'));
+  assert.ok(!script.includes('tell application "iTerm2"'));
+});
+
 test('buildOpenArgs builds an open -n -a invocation with launch args', () => {
   assert.deepEqual(
     buildOpenArgs({ app: 'Visual Studio Code', args: ['--new-window', '/repos/demo'] }),

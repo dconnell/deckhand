@@ -163,6 +163,61 @@ export function listLayoutSources(config) {
 }
 
 /**
+ * Decide whether a slide advance can skip the OBS audience transition.
+ *
+ * True when the incoming slide resolves to the same audience scene with
+ * identical slots and dispatches no browser commands: nothing the audience
+ * sees can change, so only presenter-side state needs updating. Any scene,
+ * slot, or command difference must run the normal freeze → mutate → reveal
+ * sequence (browser commands can change visible content and belong behind
+ * the freeze).
+ *
+ * @param {{ slideId?: string, audienceScene: string, slots: Array<{ source: string, position: string }> } | null} previousState Previous resolved presentation state (null before the first advance).
+ * @param {{ slideId?: string, audienceScene: string, slots: Array<{ source: string, position: string }> }} nextState Incoming resolved presentation state.
+ * @param {{ commands?: Array<unknown> } | undefined} slideConfig Normalized config for the incoming slide.
+ * @returns {boolean}
+ */
+export function shouldSkipAudienceTransition(previousState, nextState, slideConfig) {
+  if (previousState === null || previousState === undefined) {
+    return false;
+  }
+
+  if (previousState.audienceScene !== nextState.audienceScene) {
+    return false;
+  }
+
+  // The driver deck's Slide surface is audience-visible (coordinator's
+  // sourceNeedsDifferentFrame special-cases it the same way), so when the
+  // slide id changes on a Slide-backed layout the deck's own advance already
+  // changed what the audience sees: it must keep the full masked transition.
+  // States without slideId compare undefined === undefined and are unaffected.
+  if (previousState.slideId !== nextState.slideId
+    && nextState.slots.some((slot) => slot.source === 'Slide')) {
+    return false;
+  }
+
+  if (slideConfig?.commands !== undefined && slideConfig.commands.length > 0) {
+    return false;
+  }
+
+  const previousSlots = previousState.slots;
+  const nextSlots = nextState.slots;
+
+  if (previousSlots.length !== nextSlots.length) {
+    return false;
+  }
+
+  for (let index = 0; index < previousSlots.length; index += 1) {
+    if (previousSlots[index].source !== nextSlots[index].source
+      || previousSlots[index].position !== nextSlots[index].position) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
  * Resolve a configured slide to a full presentation-state payload.
  *
  * @param {string} slideId Normalized slide identifier.

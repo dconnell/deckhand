@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { createPresenterSession } from './presenter/session.js';
 import { reduceStreamHealth } from './presenter/reduceStreamHealth.js';
-import { buildPresentationState } from './scenes.js';
+import { buildPresentationState, shouldSkipAudienceTransition } from './scenes.js';
 import { buildMacWindowCaptureSettings } from './setupObs.js';
 import { deckhandInputName, deckhandSceneName } from './obsNames.js';
 
@@ -96,6 +96,18 @@ export function computeSlideDirection(previous, current) {
 
 function isBrowserSource(config, sourceId) {
   return config.sources[sourceId]?.kind === 'browser';
+}
+
+/**
+ * Strip a `data:image/...;base64,` prefix so callers can inspect the raw
+ * payload. Mirrors the decoding regex in obsClient's `decodeImageDataUri` so
+ * emptiness checks here agree with what the client would decode.
+ *
+ * @param {string} data Screenshot data, typically a data URI.
+ * @returns {string} The base64 payload without the data-URI prefix.
+ */
+function appScreenshotPayload(data) {
+  return data.replace(/^data:image\/\w+;base64,/, '');
 }
 
 function resolvePresenterStepMs(stt) {
@@ -888,6 +900,43 @@ export function createCoordinator(options) {
       return;
     }
 
+    const skipAudienceTransition = shouldSkipAudienceTransition(previousPresentationState, presentationState, slideConfig);
+
+    if (skipAudienceTransition && frozenDriverCommand === null) {
+      logger.info('Same audience scene; updating presenter state only', {
+        audienceScene: presentationState.audienceScene,
+        slideId: position.id,
+      });
+      await publishAndApplyBindings(presentationState, position.id);
+      await recordResumePoint(position.id, currentIndex);
+      return;
+    }
+
+    if (skipAudienceTransition && frozenDriverCommand !== null) {
+      // The observer command already froze the audience, but this advance
+      // cannot change the audience frame (same scene, same slots, no
+      // commands): cut straight back instead of running a pointless
+      // directional reveal on top of the freeze.
+      logger.info('Same audience scene behind command freeze; cutting back without slide transition', {
+        audienceScene: presentationState.audienceScene,
+        slideId: position.id,
+      });
+      try {
+        await restoreAudienceScene(frozenDriverCommand.previousAudienceScene);
+      } catch (error) {
+        // An OBS hiccup must not strand the presenter on the freeze scene:
+        // log it and still publish the presenter state below.
+        logger.error('Failed to cut back to the audience scene behind command freeze', {
+          audienceScene: frozenDriverCommand.previousAudienceScene,
+          error: error instanceof Error ? error.message : String(error),
+          slideId: position.id,
+        });
+      }
+      await publishAndApplyBindings(presentationState, position.id);
+      await recordResumePoint(position.id, currentIndex);
+      return;
+    }
+
     await runSlideTransition(transitions, presentationState, direction, position.id, slideConfig, async () => {
       // Register the settle waiter before publishing so a fast presenter ack
       // can never beat the listener.
@@ -1238,6 +1287,49 @@ export function createCoordinator(options) {
     await options.obs.waitForSceneTransitionEnd({ timeoutMs });
   }
 
+  /**
+   * Probe the outgoing app-window slots directly before trusting a freshly
+   * captured freeze frame. App-window captures can fail or render black in OBS
+   * offscreen screenshot requests while the scene-level capture still reports
+   * success, so the app slots are probed one by one; any probe failure means
+   * the new capture is suspect.
+   *
+   * @returns {Promise<boolean>} True when the capture can be trusted (or cannot be probed).
+   */
+  async function appSlotCaptureIsReliable() {
+    if (typeof options.obs.getSourceScreenshotData !== 'function' || currentPresentationState === null) {
+      return true;
+    }
+
+    for (const slot of currentPresentationState.slots) {
+      if (options.config.sources[slot.source]?.kind !== 'app') {
+        continue;
+      }
+
+      let data = null;
+
+      try {
+        data = await options.obs.getSourceScreenshotData(deckhandInputName(slot.source));
+      } catch (error) {
+        logger.warn('Freeze frame may render black; keeping the last good freeze frame', {
+          source: slot.source,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
+
+      if (typeof data !== 'string' || appScreenshotPayload(data).length === 0) {
+        logger.warn('Freeze frame may render black; keeping the last good freeze frame', {
+          source: slot.source,
+          error: 'source screenshot returned no image data',
+        });
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   async function armFreezeFrame(transitions) {
     if (typeof options.obs.captureProgramScreenshot !== 'function' || typeof options.obs.applyInputSettings !== 'function') {
       return;
@@ -1247,6 +1339,14 @@ export function createCoordinator(options) {
 
     try {
       await options.obs.captureProgramScreenshot(freezeImagePath);
+
+      // A capture that renders black must not replace the last good freeze
+      // frame: skipping the settings apply (and the path rotation) keeps the
+      // freeze input pointing at the prior still instead of a black screen.
+      if (!await appSlotCaptureIsReliable()) {
+        return;
+      }
+
       await options.obs.applyInputSettings(transitions.freezeImage, { file: freezeImagePath });
       freezeArmed = true;
       nextFreezeFramePathIndex = nextFreezeFramePathIndex === 0 ? 1 : 0;

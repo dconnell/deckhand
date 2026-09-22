@@ -60,6 +60,11 @@ function applescriptEscape(value) {
  * close that exact window on shutdown, regardless of what process is running
  * inside it (`plans/app-sources.md`).
  *
+ * The app is targeted by bundle id, not by name: the name "iTerm2" only
+ * resolves while the app is running (the bundle is `iTerm.app`), so a
+ * cold-start launch would otherwise compile without iTerm2's terminology and
+ * fail with a -2741 syntax error on `create window with default profile`.
+ *
  * @param {{ command?: string, cwd?: string }} [options] Launch options.
  * @returns {string}
  */
@@ -76,7 +81,7 @@ export function buildIterm2AppleScript({ command, cwd } = {}) {
 
   body += '  return id of (current session of (current tab of newWindow))\n';
 
-  return `tell application "iTerm2"\n  activate\n${body}end tell`;
+  return `tell application id "com.googlecode.iterm2"\n  activate\n${body}end tell`;
 }
 
 /**
@@ -155,7 +160,9 @@ export function closeIterm2OwnedWindow(sessionId) {
     return;
   }
 
-  const script = `tell application "iTerm2"
+  // Bundle id, not name — see buildIterm2AppleScript; the name "iTerm2" does
+  // not resolve when the app is not running.
+  const script = `tell application id "com.googlecode.iterm2"
   repeat with w in windows
     try
       repeat with t in tabs of w

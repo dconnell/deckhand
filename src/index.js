@@ -36,7 +36,8 @@ import { createCdpClient } from './cdpClient.js';
 import { createBrowserSession, createBrowserCommandExecutor } from './browserSession.js';
 import { createWsTransport, discoverCdpEndpoint, launchChromeSession } from './chromeLauncher.js';
 import { waitForFirstDriverPosition, waitForPresentationObserver } from './lifecycle/waitFor.js';
-import { closeMacWindow, getWindowIdsViaCGList } from './macWindows.js';
+import { closeMacWindow, enumerateWindowsByOwnerName, getWindowIdsViaCGList } from './macWindows.js';
+import { collectOwnedAppInstanceConflicts } from './preflightOwnedApps.js';
 import { resolveOwnedWindowBindings } from './ownedWindows.js';
 import { runSttObserver } from './presenter/stt/runner.js';
 import os from 'node:os';
@@ -81,7 +82,7 @@ async function defaultRelaunchAppSource({ config, logger, sourceId }) {
 /**
  * Load config, compose adapters, and start the coordinator process.
  *
- * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, createPresentationServerFn?: typeof createPresentationServer, createBrowserSessionFn?: typeof createBrowserSession, createBrowserCommandExecutorFn?: typeof createBrowserCommandExecutor, createCdpClientFn?: typeof createCdpClient, launchChromeSessionFn?: typeof launchChromeSession, discoverCdpEndpointFn?: typeof discoverCdpEndpoint, reconcileObsFn?: typeof reconcileObsPresentation, waitForDriverPositionFn?: typeof waitForFirstDriverPosition, waitForPresentationObserverFn?: typeof waitForPresentationObserver, loadResumableSlideFn?: typeof loadResumableSlide, relaunchAppSourceFn?: (input: { config: Record<string, unknown>, logger: Record<string, unknown>, sourceId: string }) => Promise<{ macWindowId?: number, pid?: number } | null>, installSignalHandlers?: boolean, presenterAssetsPath?: string, noResume?: boolean, closeMacWindowFn?: typeof closeMacWindow, terminateProcessGroupFn?: typeof terminateProcessGroup }} [options] Startup options.
+ * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, createPresentationServerFn?: typeof createPresentationServer, createBrowserSessionFn?: typeof createBrowserSession, createBrowserCommandExecutorFn?: typeof createBrowserCommandExecutor, createCdpClientFn?: typeof createCdpClient, launchChromeSessionFn?: typeof launchChromeSession, discoverCdpEndpointFn?: typeof discoverCdpEndpoint, preflightEnumerateWindowsFn?: typeof enumerateWindowsByOwnerName, reconcileObsFn?: typeof reconcileObsPresentation, waitForDriverPositionFn?: typeof waitForFirstDriverPosition, waitForPresentationObserverFn?: typeof waitForPresentationObserver, loadResumableSlideFn?: typeof loadResumableSlide, relaunchAppSourceFn?: (input: { config: Record<string, unknown>, logger: Record<string, unknown>, sourceId: string }) => Promise<{ macWindowId?: number, pid?: number } | null>, installSignalHandlers?: boolean, presenterAssetsPath?: string, noResume?: boolean, shutdownCloseTimeoutMs?: number, shutdownStopTimeoutMs?: number, closeMacWindowFn?: typeof closeMacWindow, terminateProcessGroupFn?: typeof terminateProcessGroup }} [options] Startup options.
  * @returns {Promise<number>}
  */
 export async function run(options = {}) {
@@ -94,6 +95,8 @@ export async function run(options = {}) {
   const presenterAssetsPath = options.presenterAssetsPath ?? path.join(cwd, 'presenter-web');
   const closeMacWindowFn = options.closeMacWindowFn ?? closeMacWindow;
   const terminateProcessGroupFn = options.terminateProcessGroupFn ?? terminateProcessGroup;
+  const shutdownCloseTimeoutMs = options.shutdownCloseTimeoutMs ?? 15000;
+  const shutdownStopTimeoutMs = options.shutdownStopTimeoutMs ?? 10000;
   const statePath = presentation.statePath;
 
   try {
@@ -122,6 +125,39 @@ export async function run(options = {}) {
   }
 
   const logger = createLogger(consoleLike);
+
+  // Hard preflight gate: Electron-family owned apps (`open -n` + a fresh app
+  // instance) cannot be captured reliably while the operator already has the
+  // app open, so refuse to start BEFORE any side effect — no presentation
+  // server, hub, OBS reconcile, Chrome, or owned windows.
+  if (process.platform === 'darwin') {
+    const ownedAppConflicts = collectOwnedAppInstanceConflicts({
+      config,
+      enumerateWindowsByOwnerNameFn: options.preflightEnumerateWindowsFn ?? enumerateWindowsByOwnerName,
+      logger,
+    });
+
+    if (ownedAppConflicts.length > 0) {
+      const conflictLines = ownedAppConflicts.map((conflict) => {
+        if (conflict.match !== null && conflict.windowCount === null) {
+          // Probe-scoped conflict (`code --status`): the workspace answer is
+          // authoritative but carries no window count to report.
+          return `  - ${conflict.sourceId}: "${conflict.app}" already has "${conflict.match}" open`;
+        }
+
+        return conflict.match !== null
+          ? `  - ${conflict.sourceId}: "${conflict.app}" already has "${conflict.match}" open (${conflict.windowCount} window${conflict.windowCount === 1 ? '' : 's'})`
+          : `  - ${conflict.sourceId}: "${conflict.app}" already has ${conflict.windowCount} window(s) open`;
+      });
+      consoleLike.error([
+        'Refusing to start: owned app already running',
+        'Deckhand launches its own instance of these apps and cannot reliably capture',
+        'windows while they are already open. Quit them completely and start again:',
+        ...conflictLines,
+      ].join('\n'));
+      return 1;
+    }
+  }
   const resumeSlideEnabled = config.recovery.resumeSlide.enabled && options.noResume !== true;
   const persistSlideIdCallback = resumeSlideEnabled
     ? ({ slideId, index }) => persistSlideId({ statePath, slideId, index, nowMs: Date.now() })
@@ -136,6 +172,10 @@ export async function run(options = {}) {
   let sttAbortController = null;
   let phase = 'starting';
   const resolvedMacWindowBindings = {};
+  // Last-known bindings for windows whose live cache entry was invalidated
+  // mid-run (e.g. Hammerspoon reported the window unfindable). Shutdown still
+  // needs the stale identity to close windows deckhand itself opened.
+  const shutdownWindowBindings = {};
 
   async function focusPresenterTeleprompter({ reopen = false } = {}) {
     if (config.presenter === null || browserSession === null || config.presenter.teleprompter.window === null) {
@@ -203,6 +243,12 @@ export async function run(options = {}) {
         // The launch may have succeeded but the window could not be resolved.
         // Drop any stale binding: it points at the closed window and would
         // misdirect both the OBS capture binding and the shutdown close.
+        // Only stash a live binding: when the observer `cleared` event already
+        // stashed the last-known binding, assigning undefined here would
+        // clobber it and shutdown would leak the still-open original window.
+        if (resolvedMacWindowBindings[sourceId] !== undefined) {
+          shutdownWindowBindings[sourceId] = resolvedMacWindowBindings[sourceId];
+        }
         delete resolvedMacWindowBindings[sourceId];
         logger.warn('Relaunched app source window could not be resolved; cleared stale binding', { sourceId });
       } else {
@@ -236,7 +282,30 @@ export async function run(options = {}) {
     chromeLaunch = null;
 
     try {
-      await Promise.resolve(currentLaunch.stop());
+      const stopPromise = Promise.resolve(currentLaunch.stop());
+      // A stop that rejects after the timeout wins the race must not surface
+      // as an unhandled rejection.
+      stopPromise.catch(() => {});
+
+      let timedOut = false;
+      let timer = null;
+      try {
+        await Promise.race([
+          stopPromise,
+          new Promise((resolve) => {
+            timer = setTimeout(() => {
+              timedOut = true;
+              resolve(undefined);
+            }, shutdownStopTimeoutMs);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (timedOut) {
+        logger.warn('Timed out stopping launched Chrome; continuing shutdown', { timeoutMs: shutdownStopTimeoutMs });
+      }
     } catch {
       // best-effort cleanup
     }
@@ -290,8 +359,9 @@ export async function run(options = {}) {
           continue;
         }
 
-        const cached = resolvedMacWindowBindings[sourceId];
+        const cached = resolvedMacWindowBindings[sourceId] ?? shutdownWindowBindings[sourceId];
         if (cached?.macWindowId === undefined && cached?.sessionId === undefined && cached?.pid === undefined) {
+          logger.warn('No window binding available for owned app source; leaving its window open', { source: sourceId });
           continue;
         }
 
@@ -309,7 +379,28 @@ export async function run(options = {}) {
           });
 
           if (isPromiseLike(closeResult)) {
-            await closeResult;
+            let timedOut = false;
+            let timer = null;
+            try {
+              await Promise.race([
+                closeResult,
+                new Promise((resolve) => {
+                  timer = setTimeout(() => {
+                    timedOut = true;
+                    resolve(undefined);
+                  }, shutdownCloseTimeoutMs);
+                }),
+              ]);
+            } finally {
+              // A close that rejects before the timeout must not leak the
+              // pending timer into the rest of shutdown.
+              clearTimeout(timer);
+            }
+
+            if (timedOut) {
+              logger.warn('Timed out closing owned app window; continuing shutdown', { source: sourceId, timeoutMs: shutdownCloseTimeoutMs });
+              continue;
+            }
           }
 
           logger.info('Closed owned app window', { source: sourceId });
@@ -321,7 +412,32 @@ export async function run(options = {}) {
         }
       }
 
-      await stopBrowserRuntime();
+      const stopPromise = Promise.resolve(stopBrowserRuntime());
+      // A stop that rejects after the timeout wins the race must not surface
+      // as an unhandled rejection.
+      stopPromise.catch(() => {});
+
+      let stopTimedOut = false;
+      let stopTimer = null;
+      try {
+        await Promise.race([
+          stopPromise,
+          new Promise((resolve) => {
+            stopTimer = setTimeout(() => {
+              stopTimedOut = true;
+              resolve(undefined);
+            }, shutdownStopTimeoutMs);
+          }),
+        ]);
+      } finally {
+        // A stop that settles before the timeout must not leak the pending
+        // timer into the rest of shutdown.
+        clearTimeout(stopTimer);
+      }
+
+      if (stopTimedOut) {
+        logger.warn('Timed out stopping coordinator/browser runtime; continuing shutdown', { timeoutMs: shutdownStopTimeoutMs });
+      }
 
       const chromePid = chromeLaunch?.chromePid;
 
@@ -374,6 +490,7 @@ export async function run(options = {}) {
     hub.on('observerWindowBindings', (payload) => {
       for (const source of payload?.cleared ?? []) {
         if (resolvedMacWindowBindings[source] !== undefined) {
+          shutdownWindowBindings[source] = resolvedMacWindowBindings[source];
           delete resolvedMacWindowBindings[source];
           logger.info('Invalidated cached macWindowId', { source });
         }

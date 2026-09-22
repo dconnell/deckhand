@@ -90,7 +90,9 @@ is corrected.
 
 Advancing the deck runs a freeze → mutate → reveal sequence: the previous
 audience frame is held as a still image while windows resize and tabs navigate
-behind it, then the new scene is revealed. This is on by default.
+behind it, then the new scene is revealed. This is on by default. Advances
+that would not change the audience frame (same scene, same slots, no browser
+actions) skip the sequence and update presenter state only.
 
 | Config | Behavior |
 | --- | --- |
