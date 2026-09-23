@@ -1,5 +1,7 @@
 # Deckhand
 
+[![Status: Beta](https://img.shields.io/badge/status-beta%E2%80%93early%2C%20expect%20bugs-orange.svg)](https://github.com/dconnell/deckhand/issues)
+
 Deckhand is a **macOS-only** local presentation coordinator for remote talks.
 It mixes slides, a live terminal, VS Code, and other apps, switching between
 them — including split views — so the audience sees a single composed OBS feed
