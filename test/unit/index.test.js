@@ -303,6 +303,7 @@ test('run discovers the actual DevTools port from the launched Chrome session', 
           async start() { await cdpClient.connect(); },
           async stop() { await cdpClient.disconnect(); },
           async openWindow() {},
+          async measureMinimumWindowSize() { return null; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           async activateTab() {},
           async navigateTab() {},
@@ -460,6 +461,7 @@ test('run clears the stale Chrome launch handle on transportLost so recovery rel
             }
           },
           async openWindow() {},
+          async measureMinimumWindowSize() { return null; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           async activateTab() {},
           async navigateTab() {},
@@ -592,6 +594,7 @@ function buildResumeRunOptions({ currentSlideId, sentCommands }) {
         async stop() { await cdpClient.disconnect(); },
         on() {},
         async openWindow() {},
+        async measureMinimumWindowSize() { return null; },
         getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
         async activateTab() {},
         async navigateTab() {},
@@ -776,6 +779,7 @@ function buildRelaunchRunOptions({ captures }) {
         async stop() {},
         on() {},
         async openWindow() {},
+        async measureMinimumWindowSize() { return null; },
         async openAuxWindow() { return { macWindowId: null }; },
         getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
         getRegistry() { return { sources: {}, auxWindows: {} }; },
@@ -1469,6 +1473,7 @@ function createBrowserSessionMock(chromePid) {
     async stop() {},
     async openWindow() { return { windowId: 999 }; },
     async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
+    async measureMinimumWindowSize() { return null; },
     getStatus() {
       return { connected: true, chromePid, sources: {} };
     },
@@ -1745,6 +1750,7 @@ test('run resolves and caches the presenter teleprompter window binding without 
         return {
           async start() {},
           async stop() {},
+          async measureMinimumWindowSize() { return null; },
           async openAuxWindow() { return { key: 'presenter-teleprompter', targetId: 'TARGET_1', cdpWindowId: 777, macWindowId: 22222, title: 'Deckhand Presenter', url: 'http://127.0.0.1:3001/presenter/teleprompter.html' }; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() {
@@ -1797,6 +1803,680 @@ test('run resolves and caches the presenter teleprompter window binding without 
       macWindowId: 22222,
     });
     assert.equal(reconcileCalls.some((call) => Object.prototype.hasOwnProperty.call(call, 'Presenter')), false);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('run registers the presenter console window binding for Hammerspoon positioning', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-console-binding-'));
+  let capturedGetManagedWindowBindings = null;
+  // Registration-time pid; mutated after run() so the bindings callback
+  // observes a different chromePid and the cached pid's precedence is pinned.
+  let currentChromePid = 47213;
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      installSignalHandlers: false,
+      consoleLike: createSilentConsole(),
+      createHubFn() {
+        const handlers = new Map();
+        return {
+          on(eventName, handler) { handlers.set(eventName, handler); },
+          async start() {},
+          async stop() {},
+          getAddress() { return { host: '127.0.0.1', port: 8765 }; },
+          getSnapshot() {
+            return { activeDriver: null, observers: [{ role: 'observer', subscriptions: ['presentationState'] }], sticky: {}, targets: [] };
+          },
+          emit(eventName, payload) { return handlers.get(eventName)?.(payload); },
+        };
+      },
+      createObsClientFn() {
+        return {
+          async connect() {}, async disconnect() {}, async setScene() {}, async applyInputSettings() {},
+          getClient() { return this; }, isConnected() { return false; },
+        };
+      },
+      launchChromeSessionFn: async () => ({
+        chromePid: 47213,
+        debugPort: 9222,
+        profileDir: '/tmp/deckhand-console-binding',
+        async stop() {},
+      }),
+      discoverCdpEndpointFn: async () => ({
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc',
+        chromePid: null,
+      }),
+      createCdpClientFn() {
+        return createCdpClientMock(47213);
+      },
+      createBrowserSessionFn() {
+        return {
+          async start() {},
+          async stop() {},
+          async measureMinimumWindowSize() { return null; },
+          async openWindow() { return { windowId: 999 }; },
+          async openAuxWindow({ key }) {
+            if (key === 'presenter-console') {
+              return { key, targetId: 'TARGET_CONSOLE', cdpWindowId: 888, macWindowId: 33333, title: 'Deckhand Console', url: 'http://127.0.0.1:3001/presenter/' };
+            }
+            return { key: 'presenter-teleprompter', targetId: 'TARGET_1', cdpWindowId: 777, macWindowId: 22222, title: 'Deckhand Presenter', url: 'http://127.0.0.1:3001/presenter/teleprompter.html' };
+          },
+          getStatus() { return { connected: true, chromePid: currentChromePid, sources: {} }; },
+          getRegistry() {
+            return {
+              sources: {
+                Slide: { title: 'Deckhand Deck' },
+                BrowserA: { title: 'Deckhand Demo Primary' },
+                BrowserB: { title: 'Deckhand Demo Secondary' },
+              },
+              auxWindows: {},
+            };
+          },
+          async activateTab() {},
+          async navigateTab() {},
+        };
+      },
+      createCoordinatorFn(options) {
+        capturedGetManagedWindowBindings = options.getManagedWindowBindings;
+        return { async start() {}, async stop() {}, getCurrentPresentationState() { return null; } };
+      },
+      createPresenterHttpFn() { return { async start() {}, async stop() {} }; },
+      createPresentationServerFn() {
+        return { async start() {}, async stop() {}, getAddress() { return { host: '127.0.0.1', port: 3000 }; } };
+      },
+      reconcileObsFn: async () => {},
+      waitForDriverPositionFn: async () => {},
+      waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
+      resolvePresenterTeleprompterBindingFn: async () => null,
+      resolveMacWindowBindingsFn: async () => ({
+        Slide: { macWindowId: 11111, pid: 47213 },
+        BrowserA: { macWindowId: 12345, pid: 47213 },
+        BrowserB: { macWindowId: 67890, pid: 47213 },
+      }),
+      resolveOwnedWindowBindingsFn: async () => ({}),
+    });
+
+    assert.equal(exitCode, 0);
+
+    // Simulate Chrome relaunching after registration: the bindings callback now
+    // observes a different chromePid than the one cached at console-open time.
+    currentChromePid = 99999;
+
+    const bindings = capturedGetManagedWindowBindings();
+    // The cached registration pid (47213) must win over the current chromePid.
+    assert.deepEqual(bindings.Console, {
+      app: 'Google Chrome',
+      titleIncludes: 'Deckhand Console',
+      pid: 47213,
+      macWindowId: 33333,
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('run refreshes the presentation state after the presenter console window opens', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-console-refresh-'));
+  const refreshReasons = [];
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      installSignalHandlers: false,
+      consoleLike: createSilentConsole(),
+      createHubFn() {
+        const handlers = new Map();
+        return {
+          on(eventName, handler) { handlers.set(eventName, handler); },
+          async start() {},
+          async stop() {},
+          getAddress() { return { host: '127.0.0.1', port: 8765 }; },
+          getSnapshot() {
+            return { activeDriver: null, observers: [{ role: 'observer', subscriptions: ['presentationState'] }], sticky: {}, targets: [] };
+          },
+          emit(eventName, payload) { return handlers.get(eventName)?.(payload); },
+        };
+      },
+      createObsClientFn() {
+        return {
+          async connect() {}, async disconnect() {}, async setScene() {}, async applyInputSettings() {},
+          getClient() { return this; }, isConnected() { return false; },
+        };
+      },
+      launchChromeSessionFn: async () => ({
+        chromePid: 47213,
+        debugPort: 9222,
+        profileDir: '/tmp/deckhand-console-refresh',
+        async stop() {},
+      }),
+      discoverCdpEndpointFn: async () => ({
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc',
+        chromePid: null,
+      }),
+      createCdpClientFn() {
+        return createCdpClientMock(47213);
+      },
+      createBrowserSessionFn() {
+        return {
+          async start() {},
+          async stop() {},
+          async measureMinimumWindowSize() { return null; },
+          async openWindow() { return { windowId: 999 }; },
+          async openAuxWindow({ key }) {
+            if (key === 'presenter-console') {
+              return { key, targetId: 'TARGET_CONSOLE', cdpWindowId: 888, macWindowId: 33333, title: 'Deckhand Console', url: 'http://127.0.0.1:3001/presenter/' };
+            }
+            return { key: 'presenter-teleprompter', targetId: 'TARGET_1', cdpWindowId: 777, macWindowId: 22222, title: 'Deckhand Presenter', url: 'http://127.0.0.1:3001/presenter/teleprompter.html' };
+          },
+          getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
+          getRegistry() {
+            return {
+              sources: {
+                Slide: { title: 'Deckhand Deck' },
+                BrowserA: { title: 'Deckhand Demo Primary' },
+                BrowserB: { title: 'Deckhand Demo Secondary' },
+              },
+              auxWindows: {},
+            };
+          },
+          async activateTab() {},
+          async navigateTab() {},
+        };
+      },
+      createCoordinatorFn() {
+        return {
+          async start() {},
+          async stop() {},
+          getCurrentPresentationState() { return null; },
+          async refreshCurrentPresentationState(reason) {
+            refreshReasons.push(reason);
+          },
+        };
+      },
+      createPresenterHttpFn() { return { async start() {}, async stop() {} }; },
+      createPresentationServerFn() {
+        return { async start() {}, async stop() {}, getAddress() { return { host: '127.0.0.1', port: 3000 }; } };
+      },
+      reconcileObsFn: async () => {},
+      waitForDriverPositionFn: async () => {},
+      waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
+      resolvePresenterTeleprompterBindingFn: async () => null,
+      resolveMacWindowBindingsFn: async () => ({
+        Slide: { macWindowId: 11111, pid: 47213 },
+        BrowserA: { macWindowId: 12345, pid: 47213 },
+        BrowserB: { macWindowId: 67890, pid: 47213 },
+      }),
+      resolveOwnedWindowBindingsFn: async () => ({}),
+    });
+
+    assert.equal(exitCode, 0);
+    assert.deepEqual(refreshReasons, ['consoleOpened']);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('run warns accurately when the presentation state refresh fails after console open', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-console-refresh-fail-'));
+  const warnings = [];
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      installSignalHandlers: false,
+      consoleLike: {
+        error() {},
+        info() {},
+        log() {},
+        warn(message) { warnings.push(message); },
+      },
+      createHubFn() {
+        const handlers = new Map();
+        return {
+          on(eventName, handler) { handlers.set(eventName, handler); },
+          async start() {},
+          async stop() {},
+          getAddress() { return { host: '127.0.0.1', port: 8765 }; },
+          getSnapshot() {
+            return { activeDriver: null, observers: [{ role: 'observer', subscriptions: ['presentationState'] }], sticky: {}, targets: [] };
+          },
+          emit(eventName, payload) { return handlers.get(eventName)?.(payload); },
+        };
+      },
+      createObsClientFn() {
+        return {
+          async connect() {}, async disconnect() {}, async setScene() {}, async applyInputSettings() {},
+          getClient() { return this; }, isConnected() { return false; },
+        };
+      },
+      launchChromeSessionFn: async () => ({
+        chromePid: 47213,
+        debugPort: 9222,
+        profileDir: '/tmp/deckhand-console-refresh-fail',
+        async stop() {},
+      }),
+      discoverCdpEndpointFn: async () => ({
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc',
+        chromePid: null,
+      }),
+      createCdpClientFn() {
+        return createCdpClientMock(47213);
+      },
+      createBrowserSessionFn() {
+        return {
+          async start() {},
+          async stop() {},
+          async measureMinimumWindowSize() { return null; },
+          async openWindow() { return { windowId: 999 }; },
+          async openAuxWindow({ key }) {
+            if (key === 'presenter-console') {
+              return { key, targetId: 'TARGET_CONSOLE', cdpWindowId: 888, macWindowId: 33333, title: 'Deckhand Console', url: 'http://127.0.0.1:3001/presenter/' };
+            }
+            return { key: 'presenter-teleprompter', targetId: 'TARGET_1', cdpWindowId: 777, macWindowId: 22222, title: 'Deckhand Presenter', url: 'http://127.0.0.1:3001/presenter/teleprompter.html' };
+          },
+          getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
+          getRegistry() {
+            return {
+              sources: {
+                Slide: { title: 'Deckhand Deck' },
+                BrowserA: { title: 'Deckhand Demo Primary' },
+                BrowserB: { title: 'Deckhand Demo Secondary' },
+              },
+              auxWindows: {},
+            };
+          },
+          async activateTab() {},
+          async navigateTab() {},
+        };
+      },
+      createCoordinatorFn() {
+        return {
+          async start() {},
+          async stop() {},
+          getCurrentPresentationState() { return null; },
+          async refreshCurrentPresentationState() {
+            throw new Error('refresh boom');
+          },
+        };
+      },
+      createPresenterHttpFn() { return { async start() {}, async stop() {} }; },
+      createPresentationServerFn() {
+        return { async start() {}, async stop() {}, getAddress() { return { host: '127.0.0.1', port: 3000 }; } };
+      },
+      reconcileObsFn: async () => {},
+      waitForDriverPositionFn: async () => {},
+      waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
+      resolvePresenterTeleprompterBindingFn: async () => null,
+      resolveMacWindowBindingsFn: async () => ({
+        Slide: { macWindowId: 11111, pid: 47213 },
+        BrowserA: { macWindowId: 12345, pid: 47213 },
+        BrowserB: { macWindowId: 67890, pid: 47213 },
+      }),
+      resolveOwnedWindowBindingsFn: async () => ({}),
+    });
+
+    assert.equal(exitCode, 0);
+    assert.ok(
+      warnings.some((message) => message.includes('Failed to refresh presentation state after console open') && message.includes('refresh boom')),
+      `expected a refresh-failure warn, got: ${JSON.stringify(warnings)}`,
+    );
+    assert.equal(
+      warnings.some((message) => message.includes('Failed to open presenter console window')),
+      false,
+      `the open itself succeeded, so the open-window warn must not appear, got: ${JSON.stringify(warnings)}`,
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('run warns and skips the console binding when the console window fails to open', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-console-open-fail-'));
+  const warnings = [];
+  let capturedGetManagedWindowBindings = null;
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      installSignalHandlers: false,
+      consoleLike: {
+        error() {},
+        info() {},
+        log() {},
+        warn(message) { warnings.push(message); },
+      },
+      createHubFn() {
+        const handlers = new Map();
+        return {
+          on(eventName, handler) { handlers.set(eventName, handler); },
+          async start() {},
+          async stop() {},
+          getAddress() { return { host: '127.0.0.1', port: 8765 }; },
+          getSnapshot() {
+            return { activeDriver: null, observers: [{ role: 'observer', subscriptions: ['presentationState'] }], sticky: {}, targets: [] };
+          },
+          emit(eventName, payload) { return handlers.get(eventName)?.(payload); },
+        };
+      },
+      createObsClientFn() {
+        return {
+          async connect() {}, async disconnect() {}, async setScene() {}, async applyInputSettings() {},
+          getClient() { return this; }, isConnected() { return false; },
+        };
+      },
+      launchChromeSessionFn: async () => ({
+        chromePid: 47213,
+        debugPort: 9222,
+        profileDir: '/tmp/deckhand-console-open-fail',
+        async stop() {},
+      }),
+      discoverCdpEndpointFn: async () => ({
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc',
+        chromePid: null,
+      }),
+      createCdpClientFn() {
+        return createCdpClientMock(47213);
+      },
+      createBrowserSessionFn() {
+        return {
+          async start() {},
+          async stop() {},
+          async measureMinimumWindowSize() { return null; },
+          async openWindow() { return { windowId: 999 }; },
+          async openAuxWindow({ key }) {
+            if (key === 'presenter-console') {
+              throw new Error('open boom');
+            }
+            return { key: 'presenter-teleprompter', targetId: 'TARGET_1', cdpWindowId: 777, macWindowId: 22222, title: 'Deckhand Presenter', url: 'http://127.0.0.1:3001/presenter/teleprompter.html' };
+          },
+          getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
+          getRegistry() {
+            return {
+              sources: {
+                Slide: { title: 'Deckhand Deck' },
+                BrowserA: { title: 'Deckhand Demo Primary' },
+                BrowserB: { title: 'Deckhand Demo Secondary' },
+              },
+              auxWindows: {},
+            };
+          },
+          async activateTab() {},
+          async navigateTab() {},
+        };
+      },
+      createCoordinatorFn(options) {
+        capturedGetManagedWindowBindings = options.getManagedWindowBindings;
+        return {
+          async start() {},
+          async stop() {},
+          getCurrentPresentationState() { return null; },
+          async refreshCurrentPresentationState() {
+            throw new Error('refresh boom');
+          },
+        };
+      },
+      createPresenterHttpFn() { return { async start() {}, async stop() {} }; },
+      createPresentationServerFn() {
+        return { async start() {}, async stop() {}, getAddress() { return { host: '127.0.0.1', port: 3000 }; } };
+      },
+      reconcileObsFn: async () => {},
+      waitForDriverPositionFn: async () => {},
+      waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
+      resolvePresenterTeleprompterBindingFn: async () => null,
+      resolveMacWindowBindingsFn: async () => ({
+        Slide: { macWindowId: 11111, pid: 47213 },
+        BrowserA: { macWindowId: 12345, pid: 47213 },
+        BrowserB: { macWindowId: 67890, pid: 47213 },
+      }),
+      resolveOwnedWindowBindingsFn: async () => ({}),
+    });
+
+    assert.equal(exitCode, 0);
+    assert.ok(
+      warnings.some((message) => message.includes('Failed to open presenter console window') && message.includes('open boom')),
+      `expected the open-failure warn with the error text, got: ${JSON.stringify(warnings)}`,
+    );
+    assert.equal(
+      warnings.some((message) => message.includes('Failed to refresh presentation state after console open')),
+      false,
+      `the open failed, so the refresh must never run, got: ${JSON.stringify(warnings)}`,
+    );
+    const bindings = capturedGetManagedWindowBindings();
+    assert.equal(Object.prototype.hasOwnProperty.call(bindings, 'Console'), false);
+    assert.equal(bindings.Console, undefined);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('run drops the presenter console binding when the console window has no macWindowId', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-console-no-macwindow-'));
+  let capturedGetManagedWindowBindings = null;
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      installSignalHandlers: false,
+      consoleLike: createSilentConsole(),
+      createHubFn() {
+        const handlers = new Map();
+        return {
+          on(eventName, handler) { handlers.set(eventName, handler); },
+          async start() {},
+          async stop() {},
+          getAddress() { return { host: '127.0.0.1', port: 8765 }; },
+          getSnapshot() {
+            return { activeDriver: null, observers: [{ role: 'observer', subscriptions: ['presentationState'] }], sticky: {}, targets: [] };
+          },
+          emit(eventName, payload) { return handlers.get(eventName)?.(payload); },
+        };
+      },
+      createObsClientFn() {
+        return {
+          async connect() {}, async disconnect() {}, async setScene() {}, async applyInputSettings() {},
+          getClient() { return this; }, isConnected() { return false; },
+        };
+      },
+      launchChromeSessionFn: async () => ({
+        chromePid: 47213,
+        debugPort: 9222,
+        profileDir: '/tmp/deckhand-console-no-macwindow',
+        async stop() {},
+      }),
+      discoverCdpEndpointFn: async () => ({
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc',
+        chromePid: null,
+      }),
+      createCdpClientFn() {
+        return createCdpClientMock(47213);
+      },
+      createBrowserSessionFn() {
+        return {
+          async start() {},
+          async stop() {},
+          async measureMinimumWindowSize() { return null; },
+          async openWindow() { return { windowId: 999 }; },
+          async openAuxWindow() { return { key: 'presenter-console', targetId: 'TARGET_CONSOLE', cdpWindowId: 888, macWindowId: null, title: 'Deckhand Console', url: 'http://127.0.0.1:3001/presenter/' }; },
+          getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
+          getRegistry() {
+            return {
+              sources: {
+                Slide: { title: 'Deckhand Deck' },
+                BrowserA: { title: 'Deckhand Demo Primary' },
+                BrowserB: { title: 'Deckhand Demo Secondary' },
+              },
+              auxWindows: {},
+            };
+          },
+          async activateTab() {},
+          async navigateTab() {},
+        };
+      },
+      createCoordinatorFn(options) {
+        capturedGetManagedWindowBindings = options.getManagedWindowBindings;
+        return { async start() {}, async stop() {}, getCurrentPresentationState() { return null; } };
+      },
+      createPresenterHttpFn() { return { async start() {}, async stop() {} }; },
+      createPresentationServerFn() {
+        return { async start() {}, async stop() {}, getAddress() { return { host: '127.0.0.1', port: 3000 }; } };
+      },
+      reconcileObsFn: async () => {},
+      waitForDriverPositionFn: async () => {},
+      waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
+      resolvePresenterTeleprompterBindingFn: async () => null,
+      resolveMacWindowBindingsFn: async () => ({
+        Slide: { macWindowId: 11111, pid: 47213 },
+        BrowserA: { macWindowId: 12345, pid: 47213 },
+        BrowserB: { macWindowId: 67890, pid: 47213 },
+      }),
+      resolveOwnedWindowBindingsFn: async () => ({}),
+    });
+
+    assert.equal(exitCode, 0);
+    const bindings = capturedGetManagedWindowBindings();
+    assert.equal(Object.prototype.hasOwnProperty.call(bindings, 'Console'), false);
+    assert.equal(bindings.Console, undefined);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('run never sends the presenter console binding to OBS reconciliation', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-console-obs-isolation-'));
+  let capturedGetManagedWindowBindings = null;
+  const reconcileCalls = [];
+
+  try {
+    const config = await readFile(exampleConfigPath, 'utf8');
+    await writePresentationConfig(tempDir, 'demo', config);
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      installSignalHandlers: false,
+      consoleLike: createSilentConsole(),
+      createHubFn() {
+        const handlers = new Map();
+        return {
+          on(eventName, handler) { handlers.set(eventName, handler); },
+          async start() {},
+          async stop() {},
+          getAddress() { return { host: '127.0.0.1', port: 8765 }; },
+          getSnapshot() {
+            return { activeDriver: null, observers: [{ role: 'observer', subscriptions: ['presentationState'] }], sticky: {}, targets: [] };
+          },
+          emit(eventName, payload) { return handlers.get(eventName)?.(payload); },
+        };
+      },
+      createObsClientFn() {
+        return {
+          async connect() {}, async disconnect() {}, async setScene() {}, async applyInputSettings() {},
+          getClient() { return this; }, isConnected() { return false; },
+        };
+      },
+      launchChromeSessionFn: async () => ({
+        chromePid: 47213,
+        debugPort: 9222,
+        profileDir: '/tmp/deckhand-console-obs-isolation',
+        async stop() {},
+      }),
+      discoverCdpEndpointFn: async () => ({
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc',
+        chromePid: null,
+      }),
+      createCdpClientFn() {
+        return createCdpClientMock(47213);
+      },
+      createBrowserSessionFn() {
+        return {
+          async start() {},
+          async stop() {},
+          async measureMinimumWindowSize() { return null; },
+          async openWindow() { return { windowId: 999 }; },
+          async openAuxWindow({ key }) {
+            if (key === 'presenter-console') {
+              return { key, targetId: 'TARGET_CONSOLE', cdpWindowId: 888, macWindowId: 33333, title: 'Deckhand Console', url: 'http://127.0.0.1:3001/presenter/' };
+            }
+            return { key: 'presenter-teleprompter', targetId: 'TARGET_1', cdpWindowId: 777, macWindowId: 22222, title: 'Deckhand Presenter', url: 'http://127.0.0.1:3001/presenter/teleprompter.html' };
+          },
+          getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
+          getRegistry() {
+            return {
+              sources: {
+                Slide: { title: 'Deckhand Deck' },
+                BrowserA: { title: 'Deckhand Demo Primary' },
+                BrowserB: { title: 'Deckhand Demo Secondary' },
+              },
+              auxWindows: {},
+            };
+          },
+          async activateTab() {},
+          async navigateTab() {},
+        };
+      },
+      createCoordinatorFn(options) {
+        capturedGetManagedWindowBindings = options.getManagedWindowBindings;
+        return { async start() {}, async stop() {}, getCurrentPresentationState() { return null; } };
+      },
+      createPresenterHttpFn() { return { async start() {}, async stop() {} }; },
+      createPresentationServerFn() {
+        return { async start() {}, async stop() {}, getAddress() { return { host: '127.0.0.1', port: 3000 }; } };
+      },
+      reconcileObsFn: async ({ windowBindings }) => {
+        reconcileCalls.push({ ...windowBindings });
+      },
+      waitForDriverPositionFn: async () => {},
+      waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
+      resolvePresenterTeleprompterBindingFn: async () => null,
+      resolveMacWindowBindingsFn: async () => ({
+        Slide: { macWindowId: 11111, pid: 47213 },
+        BrowserA: { macWindowId: 12345, pid: 47213 },
+        BrowserB: { macWindowId: 67890, pid: 47213 },
+      }),
+      resolveOwnedWindowBindingsFn: async () => ({}),
+    });
+
+    assert.equal(exitCode, 0);
+    const bindings = capturedGetManagedWindowBindings();
+    assert.deepEqual(bindings.Console, {
+      app: 'Google Chrome',
+      titleIncludes: 'Deckhand Console',
+      pid: 47213,
+      macWindowId: 33333,
+    });
+
+    assert.equal(exitCode, 0);
+    assert.equal(reconcileCalls.length >= 1, true);
+    assert.equal(reconcileCalls.every((call) => Object.prototype.hasOwnProperty.call(call, 'Console') === false), true);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -1988,6 +2668,7 @@ test('run derives owner names and publishes strict macWindowId bindings for owne
       createBrowserSessionFn() {
         return {
           async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
+          async measureMinimumWindowSize() { return null; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -2111,6 +2792,7 @@ test('run requests stability confirmation for owned app-window binding resolutio
       createBrowserSessionFn() {
         return {
           async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
+          async measureMinimumWindowSize() { return null; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -2223,6 +2905,7 @@ test('run closes owned app windows on shutdown via closeOwnedWindowsFn', async (
       createBrowserSessionFn() {
         return {
           async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
+          async measureMinimumWindowSize() { return null; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -2348,6 +3031,7 @@ test('run requests discardUnsavedChanges when shutting down owned app windows', 
       createBrowserSessionFn() {
         return {
           async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
+          async measureMinimumWindowSize() { return null; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -2474,6 +3158,7 @@ test('run does not terminate the owned app process when tracked window close doe
       createBrowserSessionFn() {
         return {
           async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
+          async measureMinimumWindowSize() { return null; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -2595,6 +3280,7 @@ test('run app shutdown closes only tracked macWindowId and never invokes process
       createBrowserSessionFn() {
         return {
           async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
+          async measureMinimumWindowSize() { return null; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -2718,6 +3404,7 @@ test('run shutdown closes app window whose binding was cleared mid-run', async (
       createBrowserSessionFn() {
         return {
           async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
+          async measureMinimumWindowSize() { return null; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -2850,6 +3537,7 @@ test('run shutdown keeps the stashed binding when a later relaunch fails after c
       createBrowserSessionFn() {
         return {
           async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
+          async measureMinimumWindowSize() { return null; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -2997,6 +3685,7 @@ test('run shutdown warns for unbound owned app source and still closes bound sou
       createBrowserSessionFn() {
         return {
           async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
+          async measureMinimumWindowSize() { return null; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -3134,6 +3823,7 @@ test('run shutdown continues past an owned-window close that hangs', async () =>
       createBrowserSessionFn() {
         return {
           async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
+          async measureMinimumWindowSize() { return null; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -3255,6 +3945,7 @@ test('run shutdown continues past a coordinator stop that hangs', async () => {
       createBrowserSessionFn() {
         return {
           async start() {}, async stop() {}, async openWindow() {}, async openAuxWindow() { return { key: 'mock', targetId: 'TARGET_MOCK', cdpWindowId: 999, macWindowId: null, title: 'Mock', url: '' }; },
+          async measureMinimumWindowSize() { return null; },
           getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
           getRegistry() { return { sources: { Slide: { title: 'Deckhand Deck' } } }; },
           async activateTab() {}, async navigateTab() {},
@@ -3653,6 +4344,222 @@ test('run proceeds normally when the preflight finds no gated app windows open',
       'reconcileObs',
       'waitForDriverPosition',
     ]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+function buildBelowMinimumOverlayConfig() {
+  return JSON.stringify({
+    driver: { type: 'revealjs' },
+    obs: { url: 'ws://127.0.0.1:4455', password: '' },
+    hub: { port: 8765 },
+    sources: {
+      Slide: { kind: 'browser', browser: { tabs: { deck: { url: 'http://127.0.0.1:3000/deck/', initial: true } } } },
+    },
+    layouts: {
+      'full-slide': { audienceScene: 'Full Slide', slots: [{ source: 'Slide', position: 'full' }] },
+    },
+    slides: { intro: { layout: 'full-slide' } },
+    presenter: {
+      platform: 'macos',
+      stage: { x: 0, y: 0, width: 1800, height: 1168 },
+      windows: {
+        Slide: { app: 'Google Chrome', titleIncludes: 'Deckhand Deck' },
+      },
+      overlays: [
+        { source: 'Presenter', rect: { x: 0, y: 0, w: 300, h: 400 } },
+        { source: 'Console', rect: { x: 0, y: 0, w: 965, h: 710 } },
+      ],
+      teleprompter: {
+        window: { app: 'Google Chrome', titleIncludes: 'Deckhand Presenter' },
+      },
+    },
+  }, null, 2);
+}
+
+function createMinimumProbeBrowserSessionFn(probeMinimum) {
+  return () => ({
+    async start() {},
+    async stop() {},
+    on() {},
+    async openWindow() { return { windowId: 999 }; },
+    async openAuxWindow({ key }) {
+      if (key === 'presenter-console') {
+        return { key, targetId: 'TARGET_CONSOLE', cdpWindowId: 888, macWindowId: 33333, title: 'Deckhand Console', url: 'http://127.0.0.1:3001/presenter/' };
+      }
+      return { key: 'presenter-teleprompter', targetId: 'TARGET_1', cdpWindowId: 777, macWindowId: 22222, title: 'Deckhand Presenter', url: 'http://127.0.0.1:3001/presenter/teleprompter.html' };
+    },
+    async measureMinimumWindowSize() { return probeMinimum; },
+    getStatus() { return { connected: true, chromePid: 47213, sources: {} }; },
+    getRegistry() {
+      return { sources: { Slide: { title: 'Deckhand Deck' } }, auxWindows: {} };
+    },
+    async activateTab() {},
+    async navigateTab() {},
+  });
+}
+
+test('run warns once per overlay rect below the measured Chrome minimum window size', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-below-minimum-warn-'));
+  const warnings = [];
+
+  try {
+    await writePresentationConfig(tempDir, 'demo', buildBelowMinimumOverlayConfig());
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      installSignalHandlers: false,
+      consoleLike: {
+        error() {},
+        info() {},
+        log() {},
+        warn(message) { warnings.push(message); },
+      },
+      createHubFn() {
+        const handlers = new Map();
+        return {
+          on(eventName, handler) { handlers.set(eventName, handler); },
+          async start() {},
+          async stop() {},
+          getAddress() { return { host: '127.0.0.1', port: 8765 }; },
+          getSnapshot() {
+            return { activeDriver: null, observers: [{ role: 'observer', subscriptions: ['presentationState'] }], sticky: {}, targets: [] };
+          },
+          emit(eventName, payload) { return handlers.get(eventName)?.(payload); },
+        };
+      },
+      createObsClientFn() {
+        return {
+          async connect() {}, async disconnect() {}, async setScene() {}, async applyInputSettings() {},
+          getClient() { return this; }, isConnected() { return false; },
+        };
+      },
+      launchChromeSessionFn: async () => ({
+        chromePid: 47213,
+        debugPort: 9222,
+        profileDir: '/tmp/deckhand-below-minimum-warn',
+        async stop() {},
+      }),
+      discoverCdpEndpointFn: async () => ({
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc',
+        chromePid: null,
+      }),
+      createCdpClientFn() { return createCdpClientMock(47213); },
+      createBrowserSessionFn: createMinimumProbeBrowserSessionFn({ width: 500, height: 272 }),
+      createCoordinatorFn() {
+        return {
+          async start() {},
+          async stop() {},
+          getCurrentPresentationState() { return null; },
+        };
+      },
+      createPresenterHttpFn() { return { async start() {}, async stop() {} }; },
+      createPresentationServerFn() {
+        return { async start() {}, async stop() {}, getAddress() { return { host: '127.0.0.1', port: 3000 }; } };
+      },
+      reconcileObsFn: async () => {},
+      waitForDriverPositionFn: async () => {},
+      waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
+      resolvePresenterTeleprompterBindingFn: async () => null,
+      resolveMacWindowBindingsFn: async () => ({
+        Slide: { macWindowId: 11111, pid: 47213 },
+      }),
+      resolveOwnedWindowBindingsFn: async () => ({}),
+    });
+
+    assert.equal(exitCode, 0);
+
+    const minimumWarns = warnings.filter((message) => message.includes('Configured overlay rect is below Chrome minimum window size'));
+    // Only the Presenter rect (300x400) is below the 500x272 minimum; the
+    // Console rect (965x710) must not produce a warn.
+    assert.equal(minimumWarns.length, 1, `expected exactly one below-minimum warn, got: ${JSON.stringify(warnings)}`);
+    assert.ok(minimumWarns[0].includes('"Presenter"'), `the warn must identify the source, got: ${minimumWarns[0]}`);
+    assert.ok(minimumWarns[0].includes('presenter.overlays'), `the warn must identify the origin, got: ${minimumWarns[0]}`);
+    assert.ok(minimumWarns[0].includes('"minimum":{"width":500,"height":272}'), `the warn must carry the measured minimum, got: ${minimumWarns[0]}`);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('run skips the below-minimum warn when the Chrome minimum probe returns null', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-below-minimum-null-'));
+  const warnings = [];
+
+  try {
+    await writePresentationConfig(tempDir, 'demo', buildBelowMinimumOverlayConfig());
+
+    const exitCode = await run({
+      cwd: tempDir,
+      presentationName: 'demo',
+      installSignalHandlers: false,
+      consoleLike: {
+        error() {},
+        info() {},
+        log() {},
+        warn(message) { warnings.push(message); },
+      },
+      createHubFn() {
+        const handlers = new Map();
+        return {
+          on(eventName, handler) { handlers.set(eventName, handler); },
+          async start() {},
+          async stop() {},
+          getAddress() { return { host: '127.0.0.1', port: 8765 }; },
+          getSnapshot() {
+            return { activeDriver: null, observers: [{ role: 'observer', subscriptions: ['presentationState'] }], sticky: {}, targets: [] };
+          },
+          emit(eventName, payload) { return handlers.get(eventName)?.(payload); },
+        };
+      },
+      createObsClientFn() {
+        return {
+          async connect() {}, async disconnect() {}, async setScene() {}, async applyInputSettings() {},
+          getClient() { return this; }, isConnected() { return false; },
+        };
+      },
+      launchChromeSessionFn: async () => ({
+        chromePid: 47213,
+        debugPort: 9222,
+        profileDir: '/tmp/deckhand-below-minimum-null',
+        async stop() {},
+      }),
+      discoverCdpEndpointFn: async () => ({
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc',
+        chromePid: null,
+      }),
+      createCdpClientFn() { return createCdpClientMock(47213); },
+      createBrowserSessionFn: createMinimumProbeBrowserSessionFn(null),
+      createCoordinatorFn() {
+        return {
+          async start() {},
+          async stop() {},
+          getCurrentPresentationState() { return null; },
+        };
+      },
+      createPresenterHttpFn() { return { async start() {}, async stop() {} }; },
+      createPresentationServerFn() {
+        return { async start() {}, async stop() {}, getAddress() { return { host: '127.0.0.1', port: 3000 }; } };
+      },
+      reconcileObsFn: async () => {},
+      waitForDriverPositionFn: async () => {},
+      waitForPresentationObserverFn: async () => {},
+      runSttObserverFn: async () => {},
+      resolvePresenterTeleprompterBindingFn: async () => null,
+      resolveMacWindowBindingsFn: async () => ({
+        Slide: { macWindowId: 11111, pid: 47213 },
+      }),
+      resolveOwnedWindowBindingsFn: async () => ({}),
+    });
+
+    assert.equal(exitCode, 0);
+    assert.equal(
+      warnings.some((message) => message.includes('Configured overlay rect is below Chrome minimum window size')),
+      false,
+      `no below-minimum warn may appear when the probe fails, got: ${JSON.stringify(warnings)}`,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

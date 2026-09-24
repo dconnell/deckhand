@@ -534,6 +534,29 @@ test('normalizeConfig rejects the removed terminal kind', () => {
   assertConfigError(() => normalizeConfig(config), 'sources.Terminal.kind', /browser, app/i);
 });
 
+test('normalizeConfig rejects reserved overlay source ids in the sources catalog', () => {
+  const cases = [
+    { name: 'reserved Presenter id', id: 'Presenter' },
+    { name: 'reserved Console id', id: 'Console' },
+  ];
+
+  for (const { name, id } of cases) {
+    const config = createValidConfig();
+    config.sources[id] = { kind: 'app', app: 'Keynote' };
+
+    assertConfigError(
+      () => normalizeConfig(config),
+      `sources.${id}`,
+      /is a reserved overlay source id \(reserved: Presenter, Console\)/,
+    );
+  }
+
+  // Ordinary ids that look like overlay sources are still accepted.
+  const normalized = normalizeConfig(createValidConfig());
+  assert.equal(normalized.sources.Slide.id, 'Slide');
+  assert.equal(normalized.sources.Terminal.id, 'Terminal');
+});
+
 test('normalizeConfig normalizes iTerm2 app command and cwd fields', () => {
   const config = normalizeConfig(createValidConfig());
 
@@ -949,6 +972,200 @@ test('normalizeConfig requires presenter.teleprompter.window when overlays refer
   delete config.presenter.teleprompter.window;
 
   assertConfigError(() => normalizeConfig(config), 'presenter.teleprompter.window', /required/i);
+});
+
+test('normalizeConfig accepts a Console-sourced layout overlay', () => {
+  const config = createValidConfig();
+  config.layouts['full-slide'].overlays = [{ source: 'Console', rect: { x: 10, y: 20, w: 300, h: 200 } }];
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.layouts['full-slide'].overlays, [
+    { source: 'Console', rect: { x: 10, y: 20, w: 300, h: 200 } },
+  ]);
+});
+
+test('normalizeConfig accepts a Console-only layout overlay without a teleprompter window', () => {
+  const config = createValidConfig();
+  delete config.slides['code-walkthrough'].overlays;
+  delete config.presenter.teleprompter.window;
+  config.layouts['full-slide'].overlays = [{ source: 'Console', rect: { x: 10, y: 20, w: 300, h: 200 } }];
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.layouts['full-slide'].overlays, [
+    { source: 'Console', rect: { x: 10, y: 20, w: 300, h: 200 } },
+  ]);
+});
+
+test('normalizeConfig requires a presenter block when Console-only layout overlays are used', () => {
+  const config = createValidConfig();
+  delete config.presenter;
+  delete config.slides['code-walkthrough'].overlays;
+  config.layouts['full-slide'].overlays = [{ source: 'Console', rect: { x: 10, y: 20, w: 300, h: 200 } }];
+
+  assertConfigError(() => normalizeConfig(config), 'presenter', /must be configured when overlays are used/i);
+});
+
+test('normalizeConfig accepts layout overlays sourced from presenter.externalWindows keys', () => {
+  const config = createValidConfig();
+  config.presenter.externalWindows = { Obs: { app: 'OBS', titleIncludes: 'OBS' } };
+  config.layouts['full-slide'].overlays = [{ source: 'Obs', rect: { x: 0, y: 0, w: 640, h: 360 } }];
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.layouts['full-slide'].overlays, [
+    { source: 'Obs', rect: { x: 0, y: 0, w: 640, h: 360 } },
+  ]);
+  assert.deepEqual(normalized.presenter.externalWindows, { Obs: { app: 'OBS', titleIncludes: 'OBS' } });
+});
+
+test('normalizeConfig rejects layout overlays with unknown sources', () => {
+  const config = createValidConfig();
+  config.presenter.externalWindows = { Obs: { app: 'OBS' } };
+  config.layouts['full-slide'].overlays = [{ source: 'Mystery', rect: { x: 0, y: 0, w: 1, h: 1 } }];
+
+  assertConfigError(
+    () => normalizeConfig(config),
+    'layouts.full-slide.overlays[0].source',
+    /must be one of: Presenter, Console, Obs/i,
+  );
+});
+
+test('normalizeConfig normalizes presenter.externalWindows selectors', () => {
+  const config = createValidConfig();
+  config.presenter.externalWindows = { Obs: { app: 'OBS', titleIncludes: 'OBS' } };
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.presenter.externalWindows, { Obs: { app: 'OBS', titleIncludes: 'OBS' } });
+});
+
+test('normalizeConfig rejects malformed presenter.externalWindows', () => {
+  const cases = [
+    {
+      name: 'externalWindows not an object',
+      mutate: (c) => { c.presenter.externalWindows = 'OBS'; },
+      path: 'presenter.externalWindows',
+      pattern: /must be an object/i,
+    },
+    {
+      name: 'entry not an object',
+      mutate: (c) => { c.presenter.externalWindows = { Obs: 'OBS' }; },
+      path: 'presenter.externalWindows.Obs',
+      pattern: /must be an object/i,
+    },
+    {
+      name: 'missing app',
+      mutate: (c) => { c.presenter.externalWindows = { Obs: { titleIncludes: 'OBS' } }; },
+      path: 'presenter.externalWindows.Obs.app',
+      pattern: /non-empty string/i,
+    },
+    {
+      name: 'empty app',
+      mutate: (c) => { c.presenter.externalWindows = { Obs: { app: '   ' } }; },
+      path: 'presenter.externalWindows.Obs.app',
+      pattern: /non-empty string/i,
+    },
+    {
+      name: 'empty titleIncludes',
+      mutate: (c) => { c.presenter.externalWindows = { Obs: { app: 'OBS', titleIncludes: '' } }; },
+      path: 'presenter.externalWindows.Obs.titleIncludes',
+      pattern: /non-empty string/i,
+    },
+    {
+      name: 'reserved Presenter key',
+      mutate: (c) => { c.presenter.externalWindows = { Presenter: { app: 'Keynote' } }; },
+      path: 'presenter.externalWindows.Presenter',
+      pattern: /reserved/i,
+    },
+    {
+      name: 'reserved Console key',
+      mutate: (c) => { c.presenter.externalWindows = { Console: { app: 'Deckhand' } }; },
+      path: 'presenter.externalWindows.Console',
+      pattern: /reserved/i,
+    },
+    {
+      name: 'key colliding with a declared source id',
+      mutate: (c) => { c.presenter.externalWindows = { Slide: { app: 'OBS' } }; },
+      path: 'presenter.externalWindows.Slide',
+      pattern: /collides with a declared source/i,
+    },
+  ];
+
+  for (const { name, mutate, path, pattern } of cases) {
+    const config = createValidConfig();
+    mutate(config);
+
+    assertConfigError(() => normalizeConfig(config), path, pattern);
+  }
+});
+
+test('normalizeConfig accepts presenter.overlays with rect and hidden variants and defaults to empty', () => {
+  const config = createValidConfig();
+  delete config.layouts['full-slide'].overlays;
+  delete config.slides['code-walkthrough'].overlays;
+  config.presenter.overlays = [
+    { source: 'Presenter', rect: { x: 1, y: 2, w: 3, h: 4 } },
+    { source: 'Console', hidden: true },
+  ];
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.presenter.overlays, [
+    { source: 'Presenter', rect: { x: 1, y: 2, w: 3, h: 4 } },
+    { source: 'Console', hidden: true },
+  ]);
+  assert.deepEqual(normalizeConfig(createValidConfig()).presenter.overlays, []);
+});
+
+test('normalizeConfig accepts presenter.overlays sourced from presenter.externalWindows keys', () => {
+  const config = createValidConfig();
+  config.presenter.externalWindows = { Obs: { app: 'OBS', titleIncludes: 'OBS' } };
+  config.presenter.overlays = [{ source: 'Obs', rect: { x: 0, y: 0, w: 640, h: 360 } }];
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.presenter.overlays, [{ source: 'Obs', rect: { x: 0, y: 0, w: 640, h: 360 } }]);
+});
+
+test('normalizeConfig rejects duplicate sources in presenter.overlays', () => {
+  const config = createValidConfig();
+  delete config.layouts['full-slide'].overlays;
+  delete config.slides['code-walkthrough'].overlays;
+  config.presenter.overlays = [
+    { source: 'Presenter', rect: { x: 1, y: 2, w: 3, h: 4 } },
+    { source: 'Presenter', hidden: true },
+  ];
+
+  assertConfigError(() => normalizeConfig(config), 'presenter.overlays[1].source', /must be unique within overlays/i);
+});
+
+test('normalizeConfig requires presenter.teleprompter.window when only presenter.overlays reference Presenter', () => {
+  const config = createValidConfig();
+  delete config.layouts['full-slide'].overlays;
+  delete config.slides['code-walkthrough'].overlays;
+  delete config.presenter.teleprompter.window;
+  config.presenter.overlays = [{ source: 'Presenter', rect: { x: 1, y: 2, w: 3, h: 4 } }];
+
+  assertConfigError(() => normalizeConfig(config), 'presenter.teleprompter.window', /required/i);
+
+  config.presenter.teleprompter.window = { app: 'Google Chrome', titleIncludes: 'Deckhand Presenter' };
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.presenter.overlays, [{ source: 'Presenter', rect: { x: 1, y: 2, w: 3, h: 4 } }]);
+});
+
+test('normalizeConfig accepts Console-only presenter.overlays without a teleprompter window', () => {
+  const config = createValidConfig();
+  delete config.layouts['full-slide'].overlays;
+  delete config.slides['code-walkthrough'].overlays;
+  delete config.presenter.teleprompter.window;
+  config.presenter.overlays = [{ source: 'Console', rect: { x: 1, y: 2, w: 3, h: 4 } }];
+
+  const normalized = normalizeConfig(config);
+
+  assert.deepEqual(normalized.presenter.overlays, [{ source: 'Console', rect: { x: 1, y: 2, w: 3, h: 4 } }]);
 });
 
 test('normalizeConfig rejects focus on Presenter because overlays are never focus targets', () => {

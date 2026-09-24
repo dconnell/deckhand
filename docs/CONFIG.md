@@ -93,6 +93,12 @@ model for OBS, the presenter stage, and slide actions.
       "BrowserA": { "app": "Google Chrome", "titleIncludes": "Primary" },
       "BrowserB": { "app": "Google Chrome", "titleIncludes": "Secondary" }
     },
+    "externalWindows": {
+      "Obs": { "app": "OBS", "titleIncludes": "OBS" }
+    },
+    "overlays": [
+      { "source": "Obs", "rect": { "x": 0, "y": 0, "w": 620, "h": 560 } }
+    ],
     "stt": {
       "whisperBin": "/opt/homebrew/bin/whisper-stream",
       "model": "/absolute/path/to/ggml-large-v3-turbo.bin",
@@ -477,15 +483,31 @@ Rules:
 - slot source names must be unique within a layout
 - every slot source must exist in `sources`
 - overlay source names must be unique within a layout
-- `Presenter` is reserved for presenter-only overlays and is not allowed in
-  `slots`
+- overlay sources may be the reserved `Presenter` (teleprompter window), the
+  reserved `Console` (Deckhand Console window), or any `presenter.externalWindows`
+  key; these overlay source IDs are never allowed in `slots` — the reserved IDs
+  are rejected in `sources` and external-window IDs may not collide with it
 - `audienceScene` should be unique across layouts
 
-Overlay entries currently support only the reserved source `Presenter` and must
-declare exactly one of:
+Overlay entries must declare exactly one of:
 
-- `rect` — absolute macOS desktop rect `{ x, y, w, h }`
-- `hidden: true` — minimize the teleprompter for that layout or slide
+- `rect` — absolute macOS desktop rect `{ x, y, w, h }`. The rect is applied as
+  the **window frame**: `x`/`y` is the window's upper-left corner and `w`/`h` is
+  the full window width/height including any title/tab bar — not the
+  page-content viewport inside the window. macOS keeps normal windows below the
+  menu bar, so a rect at `y: 0` lands ~30px lower (the menu-bar height); when
+  stacking overlay rows vertically, offset lower rows by the menu-bar height
+- `hidden: true` — minimize the overlay's window for that layout or slide
+
+`Presenter` and `Console` overlays are Deckhand-owned Chrome windows, so Chrome
+enforces a minimum window size on them (version-dependent; Deckhand measures it
+at startup by probing the live session). When a configured `Presenter`/`Console`
+rect is below that minimum, Deckhand logs
+`Configured overlay rect is below Chrome minimum window size` with the source,
+origin, rect, and minimum at startup. This is warn-only — Chrome clamps the
+actual window — so widen the rect to at least the reported minimum. Overlays
+sourced from `presenter.externalWindows` (e.g. OBS) are positioned by the OS and
+are not subject to Chrome's minimum.
 
 ## Slides
 
@@ -497,7 +519,9 @@ Each slide entry supports:
 - `script` — optional teleprompter text; absent means clear the presenter
   script
 - `overlays` — optional presenter-only overlay overrides, merged by source on
-  top of the layout's `overlays`
+  top of the layout's `overlays`, which in turn sit on top of the
+  `presenter.overlays` defaults; for any one source, the slide-level entry wins
+  over the layout-level entry, which wins over the presenter-level default
 - `browser` — optional array of browser actions executed against Deckhand-owned
   tabs
 
@@ -622,8 +646,20 @@ flow. When present:
 - `teleprompter.tracking` tunes follow-mode recovery: `farJumpLines`,
   `offScriptMs`, `lostMs`, and `minConfidence`
 - `teleprompter.window` is the presenter-window selector used to bind the
-  teleprompter window; required when any layout or slide uses `overlays` for
-  `Presenter`
+  teleprompter window; required when any presenter-level, layout, or slide
+  overlay references `Presenter`
+- `overlays` is the array of presenter-level default overlays, merged by source
+  beneath the layout-level and slide-level overlays (slide wins over layout,
+  layout wins over presenter for the same source). Allowed sources are
+  `Presenter` (the teleprompter window), `Console` (the Deckhand Console
+  window), or any `presenter.externalWindows` key; a `Presenter`-sourced overlay
+  anywhere requires `presenter.teleprompter.window`. Overlay `rect`s follow the
+  window-frame and Chrome-minimum semantics documented under
+  [Layouts](#layouts)
+- `externalWindows` maps developer-chosen overlay source IDs to macOS window
+  selectors (`{ app, titleIncludes? }`) for windows Deckhand does not own, such
+  as OBS. IDs must not be the reserved `Presenter` or `Console` and must not
+  collide with `sources` IDs
 - `http` configures the presenter web app/status surface
 
 Window selectors contain:
@@ -707,10 +743,15 @@ The config loader returns path-based errors for invalid input, including:
 - `navigate`/`browser` actions that reference unknown sources, tabs, or
   non-browser-capable sources
 - invalid `focus` source for the chosen layout
-- invalid overlay source or overlay shape
+- invalid overlay source or overlay shape; overlay sources must be `Presenter`,
+  `Console`, or a `presenter.externalWindows` key
+- duplicate overlay sources within one `overlays` array
+- reserved overlay source ids (`Presenter`, `Console`) used in `sources`
+- `presenter.externalWindows` ids that are reserved or collide with `sources`
+  ids
 - legacy `presenter.stt.chunkSeconds`; use `mode`/`stepMs`/`lengthMs`/`keepMs`
 - `presenter.windows` entries that reference unknown sources
-- missing `presenter.teleprompter.window` when overlays are configured
+- missing `presenter.teleprompter.window` when overlays reference `Presenter`
 - malformed browser action selectors or URLs
 - browser sources that omit a tab catalog
 - browser catalogs with zero or multiple initial tabs

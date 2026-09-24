@@ -229,6 +229,77 @@ test('createTab creates a background target and resolves its targetId and owning
   assert.deepEqual(await pending, { targetId: 'TARGET_TAB_CHECKOUT', windowId: 91 });
 });
 
+test('measureMinimumWindowSize probes 1x1 and reads back the clamped enforced minimum', async () => {
+  const transport = createFakeTransport();
+  const client = createCdpClient({
+    discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://browser', chromePid: 1 }),
+    createTransport() {
+      return transport;
+    },
+  });
+
+  await client.connect();
+
+  const pending = client.measureMinimumWindowSize({ targetId: 'TARGET_TAB_HOME' });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(transport.sent[0], {
+    id: 1,
+    method: 'Browser.getWindowForTarget',
+    params: { targetId: 'TARGET_TAB_HOME' },
+  });
+
+  respondTo(transport, 1, {
+    windowId: 91,
+    bounds: { left: 0, top: 0, width: 1280, height: 800, windowState: 'normal' },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(transport.sent[1], {
+    id: 2,
+    method: 'Browser.setWindowBounds',
+    params: {
+      windowId: 91,
+      bounds: { windowState: 'normal', width: 1, height: 1 },
+    },
+  });
+
+  respondTo(transport, 2, {});
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(transport.sent[2], {
+    id: 3,
+    method: 'Browser.getWindowForTarget',
+    params: { targetId: 'TARGET_TAB_HOME' },
+  });
+
+  respondTo(transport, 3, {
+    windowId: 91,
+    bounds: { left: 0, top: 0, width: 500, height: 272, windowState: 'normal' },
+  });
+
+  assert.deepEqual(await pending, { width: 500, height: 272 });
+});
+
+test('measureMinimumWindowSize rejects when the probe fails at the cdp layer', async () => {
+  const transport = createFakeTransport();
+  const client = createCdpClient({
+    discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://browser', chromePid: 1 }),
+    createTransport() {
+      return transport;
+    },
+  });
+
+  await client.connect();
+
+  const pending = client.measureMinimumWindowSize({ targetId: 'MISSING' });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  respondWithError(transport, 1, 'No target with given id found');
+
+  await assert.rejects(pending, /No target with given id found/);
+});
+
 test('activateTab sends Target.activateTarget for the named handle', async () => {
   const transport = createFakeTransport();
   const client = createCdpClient({

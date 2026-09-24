@@ -191,10 +191,10 @@
   "presenter": {
     "platform": "macos",
     "stage": {
-      "x": 0,
+      "x": 1720,
       "y": 0,
-      "width": 1800,
-      "height": 1168
+      "width": 1720,
+      "height": 1440
     },
     "windows": {
       "Slide": {
@@ -213,6 +213,17 @@
         "titleIncludes": "Deckhand Demo Secondary"
       }
     },
+    "externalWindows": {
+      "Obs": {
+        "app": "OBS",
+        "titleIncludes": "OBS"
+      }
+    },
+    "overlays": [
+      { "source": "Obs",       "rect": { "x": 0,    "y": 0,   "w": 1210, "h": 700 } },
+      { "source": "Presenter", "rect": { "x": 1210, "y": 0,   "w": 510,  "h": 700 } },
+      { "source": "Console",   "rect": { "x": 755,   "y": 730, "w": 965,  "h": 710 } }
+    ],
     "stt": {
       "whisperBin": "/absolute/path/to/whisper-stream",
       "model": "/absolute/path/to/ggml-base.en.bin",

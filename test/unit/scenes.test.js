@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   BOUNDS_TYPE,
   buildPresentationState,
+  findBelowMinimumOverlayRects,
   listAudienceScenes,
   listLayoutSources,
   regionTransform,
@@ -276,6 +277,84 @@ test('buildPresentationState leaves overlays absent when neither layout nor slid
   });
 });
 
+test('buildPresentationState includes presenter-level default overlays when layout and slides declare none', () => {
+  const config = createConfig();
+  config.presenter.overlays = [{ source: 'Console', rect: { x: 10, y: 20, w: 300, h: 200 } }];
+  config.layouts['full-slide'].overlays = [];
+  config.slides.welcome.overlays = [];
+
+  const state = buildPresentationState('welcome', config, 21);
+
+  assert.deepEqual(state.overlays, [{ source: 'Console', rect: { x: 10, y: 20, w: 300, h: 200 } }]);
+});
+
+test('buildPresentationState applies overlay precedence presenter defaults < layout < slide', () => {
+  const config = createConfig();
+  config.presenter.overlays = [
+    { source: 'Presenter', rect: { x: 0, y: 0, w: 100, h: 100 } },
+    { source: 'Obs', rect: { x: 1, y: 1, w: 200, h: 200 } },
+    { source: 'Console', rect: { x: 4, y: 4, w: 500, h: 500 } },
+  ];
+  config.layouts['dual-browser'].overlays = [
+    { source: 'Presenter', rect: { x: 2, y: 2, w: 300, h: 300 } },
+    { source: 'Obs', hidden: true },
+  ];
+  config.slides['dual-demo'].overlays = [
+    { source: 'Presenter', rect: { x: 3, y: 3, w: 400, h: 400 } },
+  ];
+
+  const state = buildPresentationState('dual-demo', config, 22);
+
+  assert.deepEqual(state.overlays, [
+    { source: 'Presenter', rect: { x: 3, y: 3, w: 400, h: 400 } },
+    { source: 'Obs', hidden: true },
+    { source: 'Console', rect: { x: 4, y: 4, w: 500, h: 500 } },
+  ]);
+
+  // Rects must be per-state clones, not aliases of the config objects they
+  // were merged from — the deepEqual above cannot distinguish shared references.
+  const configRects = [
+    ...config.presenter.overlays,
+    ...config.layouts['dual-browser'].overlays,
+    ...config.slides['dual-demo'].overlays,
+  ]
+    .map((overlay) => overlay.rect)
+    .filter((rect) => rect !== undefined);
+
+  for (const overlay of state.overlays) {
+    if (overlay.rect !== undefined) {
+      for (const rect of configRects) {
+        assert.notEqual(overlay.rect, rect);
+      }
+    }
+  }
+});
+
+test('buildPresentationState surfaces externalWindows selectors as managed bindings and window bindings when overlaid', () => {
+  const config = createConfig();
+  config.presenter.externalWindows = { Obs: { app: 'OBS', titleIncludes: 'OBS Studio' } };
+  config.layouts['full-slide'].overlays = [{ source: 'Obs', rect: { x: 1400, y: 900, w: 400, h: 225 } }];
+
+  const state = buildPresentationState('welcome', config, 23);
+
+  assert.deepEqual(state.managedWindowBindings.Obs, { app: 'OBS', titleIncludes: 'OBS Studio' });
+  assert.deepEqual(state.windowBindings, {
+    Slide: { app: 'Safari', titleIncludes: 'Deckhand Deck' },
+    Obs: { app: 'OBS', titleIncludes: 'OBS Studio' },
+  });
+  assert.deepEqual(state.overlays, [{ source: 'Obs', rect: { x: 1400, y: 900, w: 400, h: 225 } }]);
+});
+
+test('buildPresentationState surfaces runtime Console bindings in managedWindowBindings without a presenter.windows entry', () => {
+  const config = createConfig();
+
+  const state = buildPresentationState('dual-demo', config, 24, {
+    windowBindings: { Console: { pid: 123, macWindowId: 456 } },
+  });
+
+  assert.deepEqual(state.managedWindowBindings.Console, { pid: 123, macWindowId: 456 });
+});
+
 test('shouldSkipAudienceTransition only skips advances that cannot change the audience frame', () => {
   const dualBrowserState = {
     audienceScene: 'Dual Browser',
@@ -426,4 +505,119 @@ test('shouldSkipAudienceTransition only skips advances that cannot change the au
       testCase.name,
     );
   }
+});
+
+/**
+ * Minimal normalized-config shape for `findBelowMinimumOverlayRects` tests:
+ * one layout and one slide with empty overlays, plus an empty presenter block.
+ */
+function createOverlayScanConfig() {
+  return {
+    layouts: {
+      'dual-browser': {
+        id: 'dual-browser',
+        audienceScene: 'Dual Browser',
+        slots: [
+          { source: 'BrowserA', position: 'left' },
+          { source: 'BrowserB', position: 'right' },
+        ],
+        overlays: [],
+      },
+    },
+    slides: {
+      'dual-demo': {
+        layoutId: 'dual-browser',
+        focus: null,
+        script: null,
+        commands: [],
+        overlays: [],
+      },
+    },
+    presenter: {
+      overlays: [],
+    },
+  };
+}
+
+test('findBelowMinimumOverlayRects returns no findings when presenter mode is disabled', () => {
+  const config = createOverlayScanConfig();
+  config.presenter = null;
+
+  assert.deepEqual(findBelowMinimumOverlayRects(config, { width: 500, height: 272 }), []);
+});
+
+test('findBelowMinimumOverlayRects finds a below-minimum Presenter rect at presenter level', () => {
+  const config = createOverlayScanConfig();
+  config.presenter.overlays = [{ source: 'Presenter', rect: { x: 10, y: 20, w: 300, h: 400 } }];
+
+  assert.deepEqual(findBelowMinimumOverlayRects(config, { width: 500, height: 272 }), [
+    { source: 'Presenter', origin: 'presenter.overlays', rect: { x: 10, y: 20, w: 300, h: 400 } },
+  ]);
+});
+
+test('findBelowMinimumOverlayRects finds a below-minimum Console rect at layout level', () => {
+  const config = createOverlayScanConfig();
+  config.layouts['dual-browser'].overlays = [{ source: 'Console', rect: { x: 1, y: 2, w: 600, h: 200 } }];
+
+  assert.deepEqual(findBelowMinimumOverlayRects(config, { width: 500, height: 272 }), [
+    { source: 'Console', origin: 'layout:dual-browser', rect: { x: 1, y: 2, w: 600, h: 200 } },
+  ]);
+});
+
+test('findBelowMinimumOverlayRects finds a below-minimum rect at slide level', () => {
+  const config = createOverlayScanConfig();
+  config.slides['dual-demo'].overlays = [{ source: 'Presenter', rect: { x: 3, y: 4, w: 200, h: 500 } }];
+
+  assert.deepEqual(findBelowMinimumOverlayRects(config, { width: 500, height: 272 }), [
+    { source: 'Presenter', origin: 'slide:dual-demo', rect: { x: 3, y: 4, w: 200, h: 500 } },
+  ]);
+});
+
+test('findBelowMinimumOverlayRects excludes foreign sources even when below minimum', () => {
+  const config = createOverlayScanConfig();
+  config.presenter.overlays = [{ source: 'Obs', rect: { x: 0, y: 0, w: 10, h: 10 } }];
+  config.layouts['dual-browser'].overlays = [{ source: 'Obs', rect: { x: 0, y: 0, w: 10, h: 10 } }];
+  config.slides['dual-demo'].overlays = [{ source: 'Obs', rect: { x: 0, y: 0, w: 10, h: 10 } }];
+
+  assert.deepEqual(findBelowMinimumOverlayRects(config, { width: 500, height: 272 }), []);
+});
+
+test('findBelowMinimumOverlayRects excludes hidden overlays without a rect', () => {
+  const config = createOverlayScanConfig();
+  config.presenter.overlays = [{ source: 'Presenter', hidden: true }];
+  config.slides['dual-demo'].overlays = [{ source: 'Console', hidden: true }];
+
+  assert.deepEqual(findBelowMinimumOverlayRects(config, { width: 500, height: 272 }), []);
+});
+
+test('findBelowMinimumOverlayRects excludes rects exactly at the minimum', () => {
+  const config = createOverlayScanConfig();
+  config.presenter.overlays = [{ source: 'Presenter', rect: { x: 0, y: 0, w: 500, h: 272 } }];
+
+  assert.deepEqual(findBelowMinimumOverlayRects(config, { width: 500, height: 272 }), []);
+});
+
+test('findBelowMinimumOverlayRects includes rects below the minimum in only one dimension', () => {
+  const config = createOverlayScanConfig();
+  config.presenter.overlays = [
+    { source: 'Presenter', rect: { x: 0, y: 0, w: 499, h: 1000 } },
+    { source: 'Console', rect: { x: 0, y: 0, w: 1000, h: 271 } },
+  ];
+
+  assert.deepEqual(findBelowMinimumOverlayRects(config, { width: 500, height: 272 }), [
+    { source: 'Presenter', origin: 'presenter.overlays', rect: { x: 0, y: 0, w: 499, h: 1000 } },
+    { source: 'Console', origin: 'presenter.overlays', rect: { x: 0, y: 0, w: 1000, h: 271 } },
+  ]);
+});
+
+test('findBelowMinimumOverlayRects scans presenter overlays before layouts before slides', () => {
+  const config = createOverlayScanConfig();
+  config.presenter.overlays = [{ source: 'Console', rect: { x: 0, y: 0, w: 100, h: 100 } }];
+  config.layouts['dual-browser'].overlays = [{ source: 'Presenter', rect: { x: 1, y: 1, w: 100, h: 100 } }];
+  config.slides['dual-demo'].overlays = [{ source: 'Presenter', rect: { x: 2, y: 2, w: 100, h: 100 } }];
+
+  assert.deepEqual(
+    findBelowMinimumOverlayRects(config, { width: 500, height: 272 }).map((finding) => finding.origin),
+    ['presenter.overlays', 'layout:dual-browser', 'slide:dual-demo'],
+  );
 });

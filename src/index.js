@@ -15,6 +15,7 @@ import { loadPresentationConfig } from './presentations.js';
 import { parsePresentationCliArgs } from './presentations.js';
 import { resolvePresentationPaths } from './presentations.js';
 import { buildRuntimeStatus } from './runtimeStatus.js';
+import { findBelowMinimumOverlayRects } from './scenes.js';
 import { loadResumableSlide, persistSlideId } from './recovery/slideResume.js';
 import {
   buildBootstrapBinding,
@@ -46,6 +47,7 @@ import { randomUUID } from 'node:crypto';
 const PRESENTATION_SERVER_HOST = '127.0.0.1';
 const PRESENTATION_SERVER_PORT = Number(process.env.PORT ?? 3000);
 const PRESENTER_SOURCE_ID = 'Presenter';
+const CONSOLE_SOURCE_ID = 'Console';
 
 function resolveProfileDir(config, presentationName) {
   if (config.chrome?.profileDir !== undefined) {
@@ -631,6 +633,26 @@ export async function run(options = {}) {
           }
         }
 
+        // Unlike the teleprompter there is no config selector gate: the Console
+        // window only exists when deckhand opened it, which is exactly when the
+        // cached binding exists.
+        const consoleCached = resolvedMacWindowBindings[CONSOLE_SOURCE_ID];
+        if (consoleCached !== undefined) {
+          result[CONSOLE_SOURCE_ID] = {
+            app: getSourceOwnerName(config, CONSOLE_SOURCE_ID),
+            titleIncludes: 'Deckhand Console',
+          };
+
+          if (typeof chromePid === 'number') {
+            result[CONSOLE_SOURCE_ID].pid = chromePid;
+          }
+          if (consoleCached.pid !== undefined) {
+            result[CONSOLE_SOURCE_ID].pid = consoleCached.pid;
+          }
+
+          result[CONSOLE_SOURCE_ID].macWindowId = consoleCached.macWindowId;
+        }
+
         return result;
       },
       getManagedBrowserPid() {
@@ -730,12 +752,56 @@ export async function run(options = {}) {
           });
         });
 
+        // Warn-only probe: Chrome silently clamps Deckhand-owned overlay
+        // windows to its enforced minimum, so a configured rect below that
+        // minimum can never be honored. This runs before the console-open
+        // refresh below, i.e. before any presentation-state publish, so the
+        // warning precedes Hammerspoon's first positioning pass and the
+        // probed window is immediately repositioned by that first apply.
+        // Must never fail startup: measureMinimumWindowSize returns null
+        // instead of throwing.
+        const chromeMinimum = await browserSession.measureMinimumWindowSize();
+
+        if (chromeMinimum !== null) {
+          for (const finding of findBelowMinimumOverlayRects(config, chromeMinimum)) {
+            logger.warn('Configured overlay rect is below Chrome minimum window size', {
+              source: finding.source,
+              origin: finding.origin,
+              rect: finding.rect,
+              minimum: chromeMinimum,
+            });
+          }
+        }
+
         try {
-          await browserSession.openAuxWindow({
+          const auxWindow = await browserSession.openAuxWindow({
             key: 'presenter-console',
             title: 'Deckhand Console',
             url: `http://${config.presenter.http.host}:${config.presenter.http.port}/presenter/`,
           });
+          const chromePid = browserSession.getStatus().chromePid;
+
+          if (typeof auxWindow?.macWindowId === 'number') {
+            resolvedMacWindowBindings[CONSOLE_SOURCE_ID] = {
+              macWindowId: auxWindow.macWindowId,
+              ...(Number.isInteger(chromePid) && chromePid > 0 ? { pid: chromePid } : {}),
+            };
+          } else {
+            delete resolvedMacWindowBindings[CONSOLE_SOURCE_ID];
+          }
+
+          // The window is already open at this point, so a refresh failure must
+          // not be reported as a failure to open it. Binding registration above
+          // cannot throw, so this catch only sees the refresh.
+          try {
+            if (coordinator !== undefined && coordinator !== null && typeof coordinator.refreshCurrentPresentationState === 'function') {
+              await coordinator.refreshCurrentPresentationState('consoleOpened');
+            }
+          } catch (error) {
+            logger.warn('Failed to refresh presentation state after console open', {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         } catch (error) {
           logger.warn('Failed to open presenter console window', {
             error: error instanceof Error ? error.message : String(error),

@@ -249,6 +249,21 @@ To defuse this risk before a talk: hide Chrome from the Dock and Cmd-Tab chain
 by running it in its own Space, or keep the managed Chrome windows away
 from your normal browser Space.
 
+### Presenter or Console overlay renders smaller than its configured rect
+
+The overlay window comes up smaller (or at a different width) than the
+configured overlay `rect` even though positioning otherwise works. Chrome
+enforces a minimum window size and silently clamps Deckhand-owned overlay
+windows (`Presenter`, `Console`) whose configured rect falls below it.
+Deckhand measures Chrome's minimum at startup by probing the live session and
+logs `Configured overlay rect is below Chrome minimum window size` identifying
+the offending source, origin, rect, and minimum. Overlays sourced from
+`presenter.externalWindows` (e.g. OBS) are not affected.
+
+**Recovery**: widen the overlay rect in config to at least the minimum reported
+in the startup warning (or larger), then restart Deckhand. The minimum depends
+on the Chrome version and is printed in the warning.
+
 ### Custom `chrome.profileDir` and shutdown sweeps
 
 On shutdown Deckhand kills the Chrome process group by PID and runs two

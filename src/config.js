@@ -4,6 +4,9 @@ import path from 'node:path';
 const BUILTIN_DRIVER_TYPES = ['revealjs'];
 const VALID_SLOT_POSITIONS = new Set(['full', 'left', 'right']);
 const PRESENTER_OVERLAY_SOURCE = 'Presenter';
+const CONSOLE_OVERLAY_SOURCE = 'Console';
+// Overlay sources Deckhand owns itself; externalWindows must not shadow them.
+const RESERVED_OVERLAY_SOURCES = new Set([PRESENTER_OVERLAY_SOURCE, CONSOLE_OVERLAY_SOURCE]);
 const BROWSER_SOURCE_KIND = 'browser';
 const APP_SOURCE_KIND = 'app';
 const VALID_SOURCE_KINDS = new Set([BROWSER_SOURCE_KIND, APP_SOURCE_KIND]);
@@ -268,6 +271,13 @@ function normalizeBrowserCatalog(browser, pathName) {
 function normalizeSourceEntry(sourceId, entry, baseDir) {
   const pathName = `sources.${sourceId}`;
   const value = assertPlainObject(entry, pathName);
+
+  // Presenter/Console are Deckhand-owned overlay bindings; a catalog source
+  // with the same id would silently collide with them in the overlay model.
+  if (RESERVED_OVERLAY_SOURCES.has(sourceId)) {
+    throw new ConfigError(pathName, `is a reserved overlay source id (reserved: ${[...RESERVED_OVERLAY_SOURCES].join(', ')})`);
+  }
+
   const kind = assertNonEmptyString(value.kind, `${pathName}.kind`);
 
   if (!VALID_SOURCE_KINDS.has(kind)) {
@@ -535,12 +545,21 @@ function normalizeOverlayRect(rect, pathName) {
   };
 }
 
-function normalizeOverlay(overlay, pathName) {
+/**
+ * Normalize a single overlay entry against a set of allowed window sources.
+ *
+ * @param {unknown} overlay The raw overlay entry.
+ * @param {string} pathName The config path used in errors.
+ * @param {Set<string>} allowedSources Overlay sources currently allowed
+ *   (`Presenter`, `Console`, plus any `presenter.externalWindows` keys).
+ * @returns {{ source: string, rect?: { x: number, y: number, w: number, h: number }, hidden?: true }}
+ */
+function normalizeOverlay(overlay, pathName, allowedSources) {
   const value = assertPlainObject(overlay, pathName);
   const source = assertNonEmptyString(value.source, `${pathName}.source`);
 
-  if (source !== PRESENTER_OVERLAY_SOURCE) {
-    throw new ConfigError(`${pathName}.source`, `must be ${PRESENTER_OVERLAY_SOURCE} in v1`);
+  if (!allowedSources.has(source)) {
+    throw new ConfigError(`${pathName}.source`, `must be one of: ${[...allowedSources].join(', ')}`);
   }
 
   const hasRect = value.rect !== undefined;
@@ -571,7 +590,15 @@ function normalizeOverlay(overlay, pathName) {
   };
 }
 
-function normalizeOverlays(value, pathName) {
+/**
+ * Normalize an overlays array, rejecting duplicate sources within it.
+ *
+ * @param {unknown} value The raw overlays value.
+ * @param {string} pathName The config path of the owning block.
+ * @param {Set<string>} allowedSources Overlay sources currently allowed.
+ * @returns {Array<{ source: string, rect?: { x: number, y: number, w: number, h: number }, hidden?: true }>}
+ */
+function normalizeOverlays(value, pathName, allowedSources) {
   if (value === undefined) {
     return [];
   }
@@ -583,7 +610,7 @@ function normalizeOverlays(value, pathName) {
   const seenSources = new Set();
 
   return value.map((overlay, index) => {
-    const normalized = normalizeOverlay(overlay, `${pathName}.overlays[${index}]`);
+    const normalized = normalizeOverlay(overlay, `${pathName}.overlays[${index}]`, allowedSources);
 
     if (seenSources.has(normalized.source)) {
       throw new ConfigError(`${pathName}.overlays[${index}].source`, 'must be unique within overlays');
@@ -594,12 +621,12 @@ function normalizeOverlays(value, pathName) {
   });
 }
 
-function normalizeLayout(layoutId, layout, sources) {
+function normalizeLayout(layoutId, layout, sources, allowedOverlaySources) {
   const pathName = `layouts.${layoutId}`;
   const value = assertPlainObject(layout, pathName);
   const audienceScene = assertNonEmptyString(value.audienceScene, `${pathName}.audienceScene`);
   const slots = value.slots;
-  const overlays = normalizeOverlays(value.overlays, pathName);
+  const overlays = normalizeOverlays(value.overlays, pathName, allowedOverlaySources);
 
   if (!Array.isArray(slots)) {
     throw new ConfigError(`${pathName}.slots`, 'must be an array');
@@ -633,7 +660,7 @@ function normalizeLayout(layoutId, layout, sources) {
   };
 }
 
-function normalizeLayouts(layouts, sources) {
+function normalizeLayouts(layouts, sources, allowedOverlaySources) {
   const value = assertPlainObject(layouts, 'layouts');
   const entries = Object.entries(value);
 
@@ -641,7 +668,9 @@ function normalizeLayouts(layouts, sources) {
     throw new ConfigError('layouts', 'must define at least one layout');
   }
 
-  return Object.fromEntries(entries.map(([layoutId, layout]) => [layoutId, normalizeLayout(layoutId, layout, sources)]));
+  return Object.fromEntries(
+    entries.map(([layoutId, layout]) => [layoutId, normalizeLayout(layoutId, layout, sources, allowedOverlaySources)]),
+  );
 }
 
 function normalizeBrowserActionEntry(entry, pathName, sources) {
@@ -681,11 +710,11 @@ function normalizeBrowserActionEntry(entry, pathName, sources) {
   return command;
 }
 
-function normalizeSlideEntry(slideId, entry, layouts, sources) {
+function normalizeSlideEntry(slideId, entry, layouts, sources, allowedOverlaySources) {
   const pathName = `slides.${slideId}`;
   const value = assertPlainObject(entry, pathName);
   const layoutId = assertNonEmptyString(value.layout, `${pathName}.layout`);
-  const overlays = normalizeOverlays(value.overlays, pathName);
+  const overlays = normalizeOverlays(value.overlays, pathName, allowedOverlaySources);
 
   if (!Object.prototype.hasOwnProperty.call(layouts, layoutId)) {
     throw new ConfigError(`${pathName}.layout`, 'must reference a known layout');
@@ -728,11 +757,14 @@ function normalizeSlideEntry(slideId, entry, layouts, sources) {
   };
 }
 
-function normalizeSlides(slides, layouts, sources) {
+function normalizeSlides(slides, layouts, sources, allowedOverlaySources) {
   const value = assertPlainObject(slides, 'slides');
 
   return Object.fromEntries(
-    Object.entries(value).map(([slideId, entry]) => [slideId, normalizeSlideEntry(slideId, entry, layouts, sources)]),
+    Object.entries(value).map(([slideId, entry]) => [
+      slideId,
+      normalizeSlideEntry(slideId, entry, layouts, sources, allowedOverlaySources),
+    ]),
   );
 }
 
@@ -769,6 +801,46 @@ function normalizePresenterWindows(windows) {
 
   return Object.fromEntries(
     Object.entries(value).map(([source, selector]) => [source, normalizeWindowSelector(selector, `presenter.windows.${source}`)]),
+  );
+}
+
+/**
+ * Normalize `presenter.externalWindows`: a map of developer-chosen overlay
+ * source ids to window selectors for apps Deckhand does not own (e.g. OBS).
+ *
+ * Keys become valid overlay `source` values, so they must not shadow the
+ * built-in `Presenter`/`Console` sources or collide with declared `sources`
+ * catalog ids, which describe windows Deckhand manages through its own
+ * source model.
+ *
+ * @param {unknown} value The raw `presenter.externalWindows` value.
+ * @param {Record<string, unknown>} sources The normalized sources catalog.
+ * @returns {Record<string, { app: string, titleIncludes?: string }>}
+ */
+function normalizePresenterExternalWindows(value, sources) {
+  if (value === undefined) {
+    return {};
+  }
+
+  const raw = assertPlainObject(value, 'presenter.externalWindows');
+
+  return Object.fromEntries(
+    Object.entries(raw).map(([id, selector]) => {
+      const cleanId = assertNonEmptyString(id, 'presenter.externalWindows');
+
+      if (RESERVED_OVERLAY_SOURCES.has(cleanId)) {
+        throw new ConfigError(
+          `presenter.externalWindows.${cleanId}`,
+          `is a reserved overlay source (reserved: ${[...RESERVED_OVERLAY_SOURCES].join(', ')})`,
+        );
+      }
+
+      if (Object.prototype.hasOwnProperty.call(sources, cleanId)) {
+        throw new ConfigError(`presenter.externalWindows.${cleanId}`, 'collides with a declared source id');
+      }
+
+      return [cleanId, normalizeWindowSelector(selector, `presenter.externalWindows.${cleanId}`)];
+    }),
   );
 }
 
@@ -901,9 +973,41 @@ function normalizePresenterTracking(tracking) {
   };
 }
 
-function usesPresenterOverlays(layouts, slides) {
+/**
+ * Determine whether any overlay positions the presenter's own window.
+ *
+ * Only `Presenter`-sourced overlays need a teleprompter window selector:
+ * Console and external-window overlays describe other windows Deckhand does
+ * not follow for script tracking. This predicate backs only that requirement;
+ * the `presenter` block guard uses {@link usesAnyOverlays}.
+ *
+ * @param {Record<string, { overlays: Array<{ source: string }> }>} layouts Normalized layouts.
+ * @param {Record<string, { overlays: Array<{ source: string }> }>} slides Normalized slides.
+ * @param {Array<{ source: string }>} [presenterOverlays] Normalized presenter-level overlays.
+ * @returns {boolean}
+ */
+function usesPresenterOverlays(layouts, slides, presenterOverlays = []) {
+  return Object.values(layouts).some((layout) => layout.overlays.some((overlay) => overlay.source === PRESENTER_OVERLAY_SOURCE))
+    || Object.values(slides).some((slide) => slide.overlays.some((overlay) => overlay.source === PRESENTER_OVERLAY_SOURCE))
+    || presenterOverlays.some((overlay) => overlay.source === PRESENTER_OVERLAY_SOURCE);
+}
+
+/**
+ * Determine whether any layout, slide, or presenter-level overlay exists.
+ *
+ * Unlike {@link usesPresenterOverlays}, the overlay source does not matter:
+ * overlays of any source only render in presenter mode, so a config that
+ * declares one must configure the `presenter` block.
+ *
+ * @param {Record<string, { overlays: Array<{ source: string }> }>} layouts Normalized layouts.
+ * @param {Record<string, { overlays: Array<{ source: string }> }>} slides Normalized slides.
+ * @param {Array<{ source: string }>} [presenterOverlays] Normalized presenter-level overlays.
+ * @returns {boolean}
+ */
+function usesAnyOverlays(layouts, slides, presenterOverlays = []) {
   return Object.values(layouts).some((layout) => layout.overlays.length > 0)
-    || Object.values(slides).some((slide) => slide.overlays.length > 0);
+    || Object.values(slides).some((slide) => slide.overlays.length > 0)
+    || presenterOverlays.length > 0;
 }
 
 function normalizePresenterHttp(http) {
@@ -994,13 +1098,19 @@ function normalizePresenter(presenter, layouts, slides, sources) {
     }
   }
 
+  const externalWindows = normalizePresenterExternalWindows(value.externalWindows, sources);
+  const allowedOverlaySources = new Set([PRESENTER_OVERLAY_SOURCE, CONSOLE_OVERLAY_SOURCE, ...Object.keys(externalWindows)]);
+  const overlays = normalizeOverlays(value.overlays, 'presenter', allowedOverlaySources);
+
   return {
     platform: platformName,
     stage,
     windows,
+    overlays,
+    externalWindows,
     stt: normalizePresenterStt(value.stt),
     teleprompter: normalizePresenterTeleprompter(value.teleprompter, {
-      requireWindow: usesPresenterOverlays(layouts, slides),
+      requireWindow: usesPresenterOverlays(layouts, slides, overlays),
     }),
     http: normalizePresenterHttp(value.http),
   };
@@ -1028,15 +1138,25 @@ export class ConfigError extends Error {
  * @param {{ baseDir?: string }} [options] Loader options. `baseDir` resolves
  *   relative `files` paths (e.g. a presentation's committed image assets)
  *   against the presentation directory.
- * @returns {{ driver: { type: string }, obs: { url: string, password: string, prune: boolean, transitions: null | { forward: string | null, backward: string | null, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number, windowSettleMs: number, freezeDimPercent: number } }, hub: { host: string, port: number }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[], files?: string[] }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, profileName?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, mode: 'step' | 'vad', captureId: number, stepMs: number, lengthMs: number, keepMs: number, threads: number, audioCtx: number, beamSize: number, keepContext: boolean, noFallback: boolean, useGpu: boolean, flashAttn: boolean, language?: string, vadThreshold?: number, freqThreshold?: number }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } }, recovery: { obsReconnect: { enabled: boolean, initialDelayMs: number, maxDelayMs: number }, browserRecover: { enabled: boolean, initialDelayMs: number, maxDelayMs: number }, resumeSlide: { enabled: boolean } } }}
+ * @returns {{ driver: { type: string }, obs: { url: string, password: string, prune: boolean, transitions: null | { forward: string | null, backward: string | null, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number, windowSettleMs: number, freezeDimPercent: number } }, hub: { host: string, port: number }, sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string }, command?: string, cwd?: string, app?: string, args?: string[], files?: string[] }>, layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, sources: string[] }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<{ type: 'activateTab' | 'navigate', source: string, tab: string, url?: string }> }>, chrome: null | { executablePath?: string, profileDir?: string, profileName?: string, debugPort?: number, extraArgs?: string[] }, presenter: null | { platform: 'macos', stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, overlays: Array<{ source: string, rect?: { x: number, y: number, w: number, h: number }, hidden?: true }>, externalWindows: Record<string, { app: string, titleIncludes?: string }>, stt: null | { whisperBin: string, model: string, mode: 'step' | 'vad', captureId: number, stepMs: number, lengthMs: number, keepMs: number, threads: number, audioCtx: number, beamSize: number, keepContext: boolean, noFallback: boolean, useGpu: boolean, flashAttn: boolean, language?: string, vadThreshold?: number, freqThreshold?: number }, teleprompter: { followEnabledByDefault: boolean }, http: { host: string, port: number } }, recovery: { obsReconnect: { enabled: boolean, initialDelayMs: number, maxDelayMs: number }, browserRecover: { enabled: boolean, initialDelayMs: number, maxDelayMs: number }, resumeSlide: { enabled: boolean } } }}
  */
 export function normalizeConfig(rawConfig, { baseDir } = {}) {
   const root = assertPlainObject(rawConfig, 'config');
   const sources = normalizeSources(root.sources, baseDir);
-  const layouts = normalizeLayouts(root.layouts, sources);
-  const slides = normalizeSlides(root.slides, layouts, sources);
 
-  if (root.presenter === undefined && usesPresenterOverlays(layouts, slides)) {
+  // Layouts and slides normalize before the presenter block, but their valid
+  // overlay sources already depend on `presenter.externalWindows` keys, so
+  // extract the ids here from the raw value (shape validation still happens
+  // in normalizePresenter). A non-object presenter block contributes no ids.
+  const externalWindowIds = isPlainObject(root.presenter?.externalWindows)
+    ? Object.keys(root.presenter.externalWindows)
+    : [];
+  const allowedOverlaySources = new Set([PRESENTER_OVERLAY_SOURCE, CONSOLE_OVERLAY_SOURCE, ...externalWindowIds]);
+
+  const layouts = normalizeLayouts(root.layouts, sources, allowedOverlaySources);
+  const slides = normalizeSlides(root.slides, layouts, sources, allowedOverlaySources);
+
+  if (root.presenter === undefined && usesAnyOverlays(layouts, slides)) {
     throw new ConfigError('presenter', 'must be configured when overlays are used');
   }
 

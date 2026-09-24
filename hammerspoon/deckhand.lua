@@ -128,10 +128,17 @@ function M.start(options)
         -- The coordinator awaits this (by seq) so a slide change never reveals
         -- the audience scene until the physical windows have actually settled,
         -- instead of guessing with a fixed delay.
-        socket:send(encode_json({
+        -- The ack stays unconditional (fail-open): frameMismatches are
+        -- informational (e.g. OBS clamping a configured rect) and never
+        -- suppress it.
+        local settled = {
           type = "windowSettled",
           seq = seq,
-        }), false)
+        }
+        if result and result.frameMismatches and #result.frameMismatches > 0 then
+          settled.frameMismatches = result.frameMismatches
+        end
+        socket:send(encode_json(settled), false)
         return
       end
 

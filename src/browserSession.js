@@ -121,7 +121,7 @@ async function resolveNewMacWindowId({ pid, before, enumerateFn, delayFn, logger
  * always a runtime handle created by Deckhand, never URL or title lookup.
  *
  * @param {{ sources: Record<string, { id: string, kind: string, browser?: { windowLabel: string | null, tabs: Record<string, { url: string, preload: boolean }>, initialTab: string } }>, createCdpClient(): { connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string, width?: number, height?: number }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string, loadTimeoutMs?: number }): Promise<void>, waitForTabPaint(details: { targetId: string, paintTimeoutMs?: number }): Promise<void>, setWindowTitle(details: { targetId: string, title: string }): Promise<void>, closeTarget(details: { targetId: string }): Promise<void> }, enumerateWindowIdsByPidFn?: (pid: number) => Array<{ windowId: number, width?: number, height?: number }>, recovery?: { browserRecover?: { enabled?: boolean, initialDelayMs?: number, maxDelayMs?: number } }, timer?: { setTimeout(fn: () => void, ms: number): unknown, clearTimeout(handle: unknown): void }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Session dependencies.
- * @returns {{ start(): Promise<void>, stop(): Promise<void>, openWindow(url: string): Promise<void>, openAuxWindow(details: { key: string, title: string, url: string, reopen?: boolean }): Promise<{ key: string, targetId: string, cdpWindowId: number, macWindowId: number | null, title: string, url: string }>, activateTab(sourceId: string, tabAlias: string): Promise<void>, navigateTab(sourceId: string, tabAlias: string, url: string): Promise<void>, relaunchBrowserSource(sourceId: string): Promise<{ macWindowId: number | null }>, on(event: 'recovered' | 'transportLost', handler: () => void): void, getStatus(): { connected: boolean, phase: 'connected' | 'reconnecting' | 'recovering' | 'disconnected', chromePid: number | null, sources: Record<string, { ready: boolean, activeTab: string | null, tabs: string[] }> }, getRegistry(): { sources: Record<string, { cdpWindowId: number | null, mainTargetId: string | null, title: string, tabs: Record<string, { targetId: string, initialUrl: string }>, activeTab: string | null }>, auxWindows: Record<string, { key: string, targetId: string, cdpWindowId: number, macWindowId: number | null, title: string, url: string }> } }}
+ * @returns {{ start(): Promise<void>, stop(): Promise<void>, openWindow(url: string): Promise<void>, openAuxWindow(details: { key: string, title: string, url: string, reopen?: boolean }): Promise<{ key: string, targetId: string, cdpWindowId: number, macWindowId: number | null, title: string, url: string }>, activateTab(sourceId: string, tabAlias: string): Promise<void>, navigateTab(sourceId: string, tabAlias: string, url: string): Promise<void>, relaunchBrowserSource(sourceId: string): Promise<{ macWindowId: number | null }>, measureMinimumWindowSize(): Promise<{ width: number, height: number } | null>, on(event: 'recovered' | 'transportLost', handler: () => void): void, getStatus(): { connected: boolean, phase: 'connected' | 'reconnecting' | 'recovering' | 'disconnected', chromePid: number | null, sources: Record<string, { ready: boolean, activeTab: string | null, tabs: string[] }> }, getRegistry(): { sources: Record<string, { cdpWindowId: number | null, mainTargetId: string | null, title: string, tabs: Record<string, { targetId: string, initialUrl: string }>, activeTab: string | null }>, auxWindows: Record<string, { key: string, targetId: string, cdpWindowId: number, macWindowId: number | null, title: string, url: string }> } }}
  */
 export function createBrowserSession(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -594,6 +594,40 @@ export function createBrowserSession(options) {
       await buildSource(descriptor);
 
       return { macWindowId: registry.sources[sourceId]?.macWindowId ?? null };
+    },
+
+    /**
+     * Best-effort measurement of Chrome's enforced minimum window size.
+     *
+     * The probe momentarily resizes the probed window to Chrome's minimum;
+     * Hammerspoon repositions managed windows on the next state apply, so no
+     * restore is needed. Unlike command methods this never throws: it returns
+     * `null` before start, during recovery, when no tracked target exists, or
+     * when the CDP probe fails.
+     *
+     * @returns {Promise<{ width: number, height: number } | null>}
+     */
+    async measureMinimumWindowSize() {
+      if (cdpClient === null || recovering) {
+        return null;
+      }
+
+      const firstSource = Object.values(registry.sources)[0];
+      const firstAuxWindow = Object.values(registry.auxWindows)[0];
+      const probeTargetId = firstSource?.mainTargetId ?? firstAuxWindow?.targetId ?? null;
+
+      if (probeTargetId === null) {
+        return null;
+      }
+
+      try {
+        return await cdpClient.measureMinimumWindowSize({ targetId: probeTargetId });
+      } catch (error) {
+        logger.warn('Failed to measure Chrome minimum window size', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
     },
 
     getStatus() {

@@ -24,6 +24,48 @@ local sockets = {}
 local connect_count = 0
 local hotkey_bindings = {}
 
+local function apply_result_for(state)
+  local result = {
+    missing = {},
+    resolvedBindings = {
+      Slide = {
+        app = "Safari",
+        pid = 2002,
+        macWindowId = 4002,
+        strict = true,
+      },
+      BrowserA = {
+        app = "Google Chrome",
+        pid = 47213,
+        macWindowId = 4003,
+        strict = true,
+      },
+      BrowserB = {
+        app = "Google Chrome",
+        pid = 47213,
+        macWindowId = 4004,
+        strict = true,
+      },
+    },
+    clearedBindings = {},
+  }
+
+  -- OBS-style clamped window: only the second apply reports a mismatch so the
+  -- test can assert the windowSettled ack carries it verbatim, and a clean
+  -- apply omits the field entirely.
+  if state.seq == 8 then
+    result.frameMismatches = {
+      {
+        source = "Presenter",
+        requested = { x = 0, y = 1120, w = 1800, h = 560 },
+        observed = { x = 0, y = 900, w = 1800, h = 611 },
+      },
+    }
+  end
+
+  return result
+end
+
 local function websocket_factory(url, callback)
   connect_count = connect_count + 1
   local socket = {
@@ -48,30 +90,7 @@ end
 local controller = deckhand.start({
   applyStateFn = function(state)
     table.insert(apply_calls, state.seq)
-    return {
-      missing = {},
-      resolvedBindings = {
-        Slide = {
-          app = "Safari",
-          pid = 2002,
-          macWindowId = 4002,
-          strict = true,
-        },
-        BrowserA = {
-          app = "Google Chrome",
-          pid = 47213,
-          macWindowId = 4003,
-          strict = true,
-        },
-        BrowserB = {
-          app = "Google Chrome",
-          pid = 47213,
-          macWindowId = 4004,
-          strict = true,
-        },
-      },
-      clearedBindings = {},
-    }
+    return apply_result_for(state)
   end,
   decodeJson = function(message)
     return message
@@ -159,9 +178,13 @@ assert_equal(sockets[1].sent[4].bindings.Slide.pid, 2002, "expected slide pid in
 assert_equal(sockets[1].sent[4].cleared[1], nil, "expected no cleared bindings in initial report")
 assert_equal(sockets[1].sent[5].type, "windowSettled", "expected window-settled ack after applying state")
 assert_equal(sockets[1].sent[5].seq, 7, "expected window-settled ack to echo the applied seq")
+assert_equal(sockets[1].sent[5].frameMismatches, nil, "expected a clean apply to omit frameMismatches from the ack")
 assert_equal(sockets[1].sent[6].type, "windowBindings", "expected a second report when other managed bindings are first resolved")
 assert_equal(sockets[1].sent[7].type, "windowSettled", "expected window-settled ack for the second applied state")
 assert_equal(sockets[1].sent[7].seq, 8, "expected second window-settled ack to echo the applied seq")
+assert_equal(sockets[1].sent[7].frameMismatches[1].source, "Presenter", "expected the ack to carry the mismatch source")
+assert_equal(sockets[1].sent[7].frameMismatches[1].requested.h, 560, "expected the ack to carry the requested rect verbatim")
+assert_equal(sockets[1].sent[7].frameMismatches[1].observed.h, 611, "expected the ack to carry the observed rect verbatim")
 
 sockets[1].callback("closed", "server restart")
 assert_equal(connect_count, 2, "expected reconnect after close")

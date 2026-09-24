@@ -527,6 +527,44 @@ test('hub emits observer window-settled acks keyed by presentation seq', async (
   }
 });
 
+test('hub forwards window-settled frame mismatches to the coordinator event', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+  const events = [];
+  hub.on('observerWindowSettled', (payload) => {
+    events.push(payload);
+  });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const observer = await createClient(port);
+
+  try {
+    await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+    const frameMismatches = [{
+      source: 'Presenter',
+      requested: { x: 0, y: 1120, w: 1210, h: 560 },
+      observed: { x: 0, y: 900, w: 1210, h: 611 },
+    }];
+    await observer.send({ type: 'windowSettled', seq: 13, frameMismatches });
+    await flushMessages();
+
+    assert.deepEqual(events, [{
+      seq: 13,
+      frameMismatches,
+      sender: {
+        role: 'observer',
+        sessionId: events[0]?.sender.sessionId,
+        capabilities: [],
+        subscriptions: ['presentationState'],
+      },
+    }]);
+  } finally {
+    await observer.close();
+    await hub.stop();
+  }
+});
+
 test('hub snapshot no longer exposes a target catalog', async () => {
   const logger = createLogger();
   const hub = createHub({ host: '127.0.0.1', port: 0, logger });

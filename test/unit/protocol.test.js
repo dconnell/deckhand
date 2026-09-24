@@ -312,6 +312,59 @@ test('validateClientMessage accepts observer window-settled acks', () => {
   );
 });
 
+test('validateClientMessage accepts observer window-settled acks with frame mismatches', () => {
+  const frameMismatches = [
+    {
+      source: 'Presenter',
+      requested: { x: 0, y: 1120, w: 1800, h: 560 },
+      observed: { x: 0, y: 900, w: 1800, h: 611 },
+    },
+  ];
+
+  assert.deepEqual(
+    validateClientMessage({ type: 'windowSettled', seq: 7, frameMismatches }),
+    { type: 'windowSettled', seq: 7, frameMismatches },
+  );
+});
+
+test('validateClientMessage rejects malformed window-settled frame mismatches', () => {
+  const requested = { x: 0, y: 1120, w: 1800, h: 560 };
+  const observed = { x: 0, y: 900, w: 1800, h: 611 };
+
+  assert.throws(
+    () => validateClientMessage({
+      type: 'windowSettled',
+      seq: 7,
+      frameMismatches: [{ source: 'Presenter', requested: { x: 0, y: 1120, w: 1800 }, observed }],
+    }),
+    /requested\.h/i,
+  );
+  assert.throws(
+    () => validateClientMessage({
+      type: 'windowSettled',
+      seq: 7,
+      frameMismatches: [{ source: 'Presenter', requested, observed: { x: '0', y: 900, w: 1800, h: 611 } }],
+    }),
+    /observed\.x/i,
+  );
+  assert.throws(
+    () => validateClientMessage({
+      type: 'windowSettled',
+      seq: 7,
+      frameMismatches: [{ source: '  ', requested, observed }],
+    }),
+    /source/i,
+  );
+  assert.throws(
+    () => validateClientMessage({ type: 'windowSettled', seq: 7, frameMismatches: 'nope' }),
+    /frameMismatches/i,
+  );
+  assert.throws(
+    () => validateClientMessage({ type: 'windowSettled', seq: 7, frameMismatches: [{}] }),
+    /frameMismatches\[0\]/i,
+  );
+});
+
 test('validateClientMessage accepts driver position-settled acks', () => {
   assert.deepEqual(
     validateClientMessage({ type: 'positionSettled', eventId: 7 }),

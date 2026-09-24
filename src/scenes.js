@@ -15,6 +15,10 @@
  */
 export const BOUNDS_TYPE = 'OBS_BOUNDS_SCALE_INNER';
 const PRESENTER_OVERLAY_SOURCE = 'Presenter';
+const CONSOLE_OVERLAY_SOURCE = 'Console';
+// Overlay sources whose windows Deckhand owns inside its own Chrome session;
+// only their rects are subject to Chrome's enforced minimum window size.
+const CHROME_OWNED_OVERLAY_SOURCES = new Set([PRESENTER_OVERLAY_SOURCE, CONSOLE_OVERLAY_SOURCE]);
 
 function cloneOverlay(overlay) {
   if (overlay.rect !== undefined) {
@@ -30,8 +34,12 @@ function cloneOverlay(overlay) {
   };
 }
 
-function mergeOverlays(layoutOverlays = [], slideOverlays = []) {
+function mergeOverlays(presenterOverlays = [], layoutOverlays = [], slideOverlays = []) {
   const bySource = new Map();
+
+  for (const overlay of presenterOverlays) {
+    bySource.set(overlay.source, cloneOverlay(overlay));
+  }
 
   for (const overlay of layoutOverlays) {
     bySource.set(overlay.source, cloneOverlay(overlay));
@@ -221,10 +229,10 @@ export function shouldSkipAudienceTransition(previousState, nextState, slideConf
  * Resolve a configured slide to a full presentation-state payload.
  *
  * @param {string} slideId Normalized slide identifier.
- * @param {{ layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }> }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<Record<string, unknown>> }>, presenter: null | { stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }> } }} config Normalized config.
+ * @param {{ layouts: Record<string, { id: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right' }>, overlays: Array<{ source: string, rect?: { x: number, y: number, w: number, h: number }, hidden?: true }> }>, slides: Record<string, { layoutId: string, focus: string | null, script: string | null, commands: Array<Record<string, unknown>>, overlays: Array<{ source: string, rect?: { x: number, y: number, w: number, h: number }, hidden?: true }> }>, presenter: null | { stage: { x: number, y: number, width: number, height: number }, windows: Record<string, { app: string, titleIncludes?: string }>, overlays: Array<{ source: string, rect?: { x: number, y: number, w: number, h: number }, hidden?: true }>, externalWindows: Record<string, { app: string, titleIncludes?: string }> } }} config Normalized config.
  * @param {number} seq Monotonic presentation-state sequence number.
  * @param {{ windowBindings?: Record<string, { app?: string, titleIncludes?: string, pid?: number, macWindowId?: number, strict?: boolean }> }} [runtime] Runtime binding overlays.
- * @returns {{ type: 'presentationState', seq: number, slideId: string, layoutId: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right', rect?: { x: number, y: number, w: number, h: number } }>, windowBindings?: Record<string, { app: string, titleIncludes?: string, pid?: number, macWindowId?: number, strict?: boolean }>, managedWindowBindings?: Record<string, { app: string, titleIncludes?: string, pid?: number, macWindowId?: number, strict?: boolean }>, focus: string | null, script: string | null, commands: Array<Record<string, unknown>> }}
+ * @returns {{ type: 'presentationState', seq: number, slideId: string, layoutId: string, audienceScene: string, slots: Array<{ source: string, position: 'full' | 'left' | 'right', rect?: { x: number, y: number, w: number, h: number } }>, windowBindings?: Record<string, { app: string, titleIncludes?: string, pid?: number, macWindowId?: number, strict?: boolean }>, managedWindowBindings?: Record<string, { app: string, titleIncludes?: string, pid?: number, macWindowId?: number, strict?: boolean }>, overlays?: Array<{ source: string, rect?: { x: number, y: number, w: number, h: number }, hidden?: true }>, focus: string | null, script: string | null, commands: Array<Record<string, unknown>> }}
  */
 export function buildPresentationState(slideId, config, seq, runtime = {}) {
   const slide = config.slides[slideId];
@@ -262,6 +270,13 @@ export function buildPresentationState(slideId, config, seq, runtime = {}) {
     };
   }
 
+  for (const [sourceId, binding] of Object.entries(config.presenter.externalWindows ?? {})) {
+    managedWindowBindings[sourceId] = {
+      ...binding,
+      ...(runtime.windowBindings?.[sourceId] ?? {}),
+    };
+  }
+
   if (config.presenter.teleprompter?.window !== null && config.presenter.teleprompter?.window !== undefined) {
     managedWindowBindings[PRESENTER_OVERLAY_SOURCE] = {
       ...config.presenter.teleprompter.window,
@@ -279,7 +294,8 @@ export function buildPresentationState(slideId, config, seq, runtime = {}) {
     }
   }
 
-  const overlays = mergeOverlays(layout.overlays, slide.overlays);
+  // Precedence (later wins, keyed by source): presenter defaults < layout < slide.
+  const overlays = mergeOverlays(config.presenter.overlays, layout.overlays, slide.overlays);
   const windowBindings = {};
   state.slots = layout.slots.map((slot) => {
     windowBindings[slot.source] = managedWindowBindings[slot.source];
@@ -305,4 +321,54 @@ export function buildPresentationState(slideId, config, seq, runtime = {}) {
   }
 
   return state;
+}
+
+/**
+ * Find configured overlay rects that fall below Chrome's enforced minimum
+ * window size.
+ *
+ * Deckhand-owned Chrome overlay windows (`Presenter`, `Console`) are silently
+ * clamped by Chrome when their configured rect is smaller than the enforced
+ * minimum, so such rects can never be honored. Foreign app windows (e.g.
+ * `presenter.externalWindows` entries) are positioned by the OS and are
+ * ignored, as are hidden overlays (no rect). Exactly-at-minimum rects are not
+ * below. The result is warn-only input: callers must not clamp config or fail
+ * startup because of a finding.
+ *
+ * @param {{ layouts: Record<string, { overlays: Array<{ source: string, rect?: { x: number, y: number, w: number, h: number }, hidden?: true }> }>, slides: Record<string, { overlays: Array<{ source: string, rect?: { x: number, y: number, w: number, h: number }, hidden?: true }> }>, presenter: null | { overlays: Array<{ source: string, rect?: { x: number, y: number, w: number, h: number }, hidden?: true }> } }} config Normalized config.
+ * @param {{ width: number, height: number }} minimum Chrome's enforced minimum window size.
+ * @returns {Array<{ source: string, origin: string, rect: { x: number, y: number, w: number, h: number } }>} Findings in scan order: presenter-level overlays (`origin: 'presenter.overlays'`), then layouts in object order (`origin: 'layout:<layoutId>'`), then slides in object order (`origin: 'slide:<slideId>'`).
+ */
+export function findBelowMinimumOverlayRects(config, minimum) {
+  const findings = [];
+
+  const scanOverlays = (overlays, origin) => {
+    for (const overlay of overlays) {
+      if (!CHROME_OWNED_OVERLAY_SOURCES.has(overlay.source) || overlay.rect === undefined) {
+        continue;
+      }
+
+      if (overlay.rect.w >= minimum.width && overlay.rect.h >= minimum.height) {
+        continue;
+      }
+
+      findings.push({
+        source: overlay.source,
+        origin,
+        rect: { ...overlay.rect },
+      });
+    }
+  };
+
+  scanOverlays(config.presenter?.overlays ?? [], 'presenter.overlays');
+
+  for (const [layoutId, layout] of Object.entries(config.layouts)) {
+    scanOverlays(layout.overlays ?? [], `layout:${layoutId}`);
+  }
+
+  for (const [slideId, slide] of Object.entries(config.slides)) {
+    scanOverlays(slide.overlays ?? [], `slide:${slideId}`);
+  }
+
+  return findings;
 }

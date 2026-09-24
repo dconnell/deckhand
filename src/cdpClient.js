@@ -20,7 +20,7 @@ function isPlainObject(value) {
  * mocked WebSocket traffic without a real Chrome process.
  *
  * @param {{ discover(): Promise<{ webSocketDebuggerUrl: string, chromePid?: number | null }>, createTransport(url: string): { send(raw: string): void, close(): void, on(event: 'message' | 'close' | 'error', handler: (payload?: string) => void): void, waitUntilReady?(): Promise<void> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Client dependencies.
- * @returns {{ connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string, width?: number, height?: number }): Promise<{ targetId: string, windowId: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string, loadTimeoutMs?: number }): Promise<void>, waitForTabPaint(details: { targetId: string, paintTimeoutMs?: number }): Promise<void>, setWindowTitle(details: { targetId: string, title: string }): Promise<void>, closeTarget(details: { targetId: string }): Promise<void>, getTargets(): Promise<Array<Record<string, unknown>>> }}
+ * @returns {{ connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string, width?: number, height?: number }): Promise<{ targetId: string, windowId: number }>, measureMinimumWindowSize(details: { targetId: string }): Promise<{ width: number, height: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string, loadTimeoutMs?: number }): Promise<void>, waitForTabPaint(details: { targetId: string, paintTimeoutMs?: number }): Promise<void>, setWindowTitle(details: { targetId: string, title: string }): Promise<void>, closeTarget(details: { targetId: string }): Promise<void>, getTargets(): Promise<Array<Record<string, unknown>>> }}
  */
 export function createCdpClient(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -300,6 +300,37 @@ export function createCdpClient(options) {
       return {
         targetId,
         windowId: windowResult.windowId,
+      };
+    },
+
+    /**
+     * Measure Chrome's enforced minimum window size for the window owning
+     * `targetId`.
+     *
+     * Chrome silently clamps window bounds to a per-window minimum, so the
+     * probe asks for a 1x1 normal window and reads back what Chrome actually
+     * applied: the clamped values ARE the enforced minimum. The probe leaves
+     * the probed window at the minimum size; Deckhand repositions managed
+     * windows on the next state apply anyway. Throws on CDP errors — the
+     * caller decides whether to fail open.
+     *
+     * @param {{ targetId: string }} details Probe target handle.
+     * @returns {Promise<{ width: number, height: number }>} The enforced minimum bounds.
+     */
+    async measureMinimumWindowSize({ targetId }) {
+      const initial = await send('Browser.getWindowForTarget', { targetId });
+      const windowId = initial.windowId;
+
+      await send('Browser.setWindowBounds', {
+        windowId,
+        bounds: { windowState: 'normal', width: 1, height: 1 },
+      });
+
+      const clamped = await send('Browser.getWindowForTarget', { targetId });
+
+      return {
+        width: clamped.bounds.width,
+        height: clamped.bounds.height,
       };
     },
 

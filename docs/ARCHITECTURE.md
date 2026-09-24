@@ -186,6 +186,8 @@ Presenter-state payload shape:
     }
   },
   overlays: [
+    { source: 'Obs', rect: { x: 0, y: 0, w: 620, h: 560 } },
+    { source: 'Console', rect: { x: 1120, y: 750, w: 600, h: 690 } },
     { source: 'Presenter', hidden: true }
   ],
   focus: 'Terminal',
@@ -196,7 +198,10 @@ Presenter-state payload shape:
 `windowBindings` may begin as bootstrap app/title selectors and then be
 republished with exact runtime bindings once managed windows are resolved.
 `Presenter` is a reserved presenter-only binding; it never appears in OBS
-layouts or the source catalog.
+layouts or the source catalog. Overlay sources can also be the reserved
+`Console` or any `presenter.externalWindows` key (such as `Obs` above);
+presenter-level default overlays from `presenter.overlays` are merged beneath
+the layout-level and slide-level overlays for each source.
 
 ## Hub protocol
 

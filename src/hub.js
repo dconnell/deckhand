@@ -354,47 +354,50 @@ export function createHub(options) {
       return;
     }
 
-      if (message.type === 'driverCommand') {
-        if (client.role !== 'observer') {
-          await sendProtocolError(socket, 'invalid_message', 'Only observer clients can send driverCommand messages');
-          return;
-        }
-
-        await events.emit('observerDriverCommand', {
-          command: message.command,
-          sender: serializeClient(client),
-        });
+    if (message.type === 'driverCommand') {
+      if (client.role !== 'observer') {
+        await sendProtocolError(socket, 'invalid_message', 'Only observer clients can send driverCommand messages');
         return;
       }
 
-      if (message.type === 'windowBindings') {
-        if (client.role !== 'observer') {
-          await sendProtocolError(socket, 'invalid_message', 'Only observer clients can send windowBindings messages');
-          return;
-        }
+      await events.emit('observerDriverCommand', {
+        command: message.command,
+        sender: serializeClient(client),
+      });
+      return;
+    }
 
-        await events.emit('observerWindowBindings', {
-          bindings: message.bindings,
-          cleared: message.cleared,
-          sender: serializeClient(client),
-        });
+    if (message.type === 'windowBindings') {
+      if (client.role !== 'observer') {
+        await sendProtocolError(socket, 'invalid_message', 'Only observer clients can send windowBindings messages');
         return;
       }
 
-      if (message.type === 'windowSettled') {
-        if (client.role !== 'observer') {
-          await sendProtocolError(socket, 'invalid_message', 'Only observer clients can send windowSettled messages');
-          return;
-        }
+      await events.emit('observerWindowBindings', {
+        bindings: message.bindings,
+        cleared: message.cleared,
+        sender: serializeClient(client),
+      });
+      return;
+    }
 
-        await events.emit('observerWindowSettled', {
-          seq: message.seq,
-          sender: serializeClient(client),
-        });
+    if (message.type === 'windowSettled') {
+      if (client.role !== 'observer') {
+        await sendProtocolError(socket, 'invalid_message', 'Only observer clients can send windowSettled messages');
         return;
       }
 
-      await sendProtocolError(socket, 'unsupported_type', `Unsupported message type: ${message.type}`);
+      await events.emit('observerWindowSettled', {
+        seq: message.seq,
+        // Optional per-source frame mismatches (warn-only diagnostics);
+        // omitted when the presenter reported none.
+        ...(message.frameMismatches === undefined ? {} : { frameMismatches: message.frameMismatches }),
+        sender: serializeClient(client),
+      });
+      return;
+    }
+
+    await sendProtocolError(socket, 'unsupported_type', `Unsupported message type: ${message.type}`);
     }
 
   return {

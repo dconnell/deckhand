@@ -70,6 +70,10 @@ function createFakeCdpClient() {
     async closeTarget({ targetId }) {
       calls.push({ type: 'closeTarget', targetId });
     },
+    async measureMinimumWindowSize({ targetId }) {
+      calls.push({ type: 'measureMinimumWindowSize', targetId });
+      return { width: 500, height: 272 };
+    },
   };
 }
 
@@ -854,4 +858,103 @@ test('relaunchBrowserSource rejects while a recovery is in flight', async () => 
   cdpClient.simulateDisconnect();
 
   await assert.rejects(session.relaunchBrowserSource('BrowserA'), /recovering/i);
+});
+
+test('measureMinimumWindowSize returns null before the session has started', async () => {
+  const session = createBrowserSession({ sources: {}, createCdpClient: () => createFakeCdpClient() });
+
+  assert.equal(await session.measureMinimumWindowSize(), null);
+});
+
+test('measureMinimumWindowSize returns null without throwing while a recovery is in flight', async () => {
+  const cdpClient = createFakeCdpClient();
+  const timer = createFakeTimer();
+  const session = createBrowserSession({
+    sources: createRecoverableSources(),
+    createCdpClient: () => cdpClient,
+    timer,
+  });
+
+  await session.start();
+  cdpClient.simulateDisconnect();
+
+  assert.equal(await session.measureMinimumWindowSize(), null);
+});
+
+test('measureMinimumWindowSize probes the first source main target and returns the measurement', async () => {
+  const cdpClient = createFakeCdpClient();
+  const sources = createSources(
+    createBrowserSource('Slide', { deck: { url: 'http://deck/' } }, { initialTab: 'deck' }),
+    createBrowserSource('BrowserA', { home: { url: 'https://example.com/home' } }),
+  );
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient });
+
+  await session.start();
+  const result = await session.measureMinimumWindowSize();
+
+  assert.deepEqual(
+    cdpClient.calls.filter((call) => call.type === 'measureMinimumWindowSize'),
+    [{ type: 'measureMinimumWindowSize', targetId: 'TARGET_1' }],
+  );
+  assert.deepEqual(result, { width: 500, height: 272 });
+});
+
+test('measureMinimumWindowSize falls back to the first aux window target when no sources exist', async () => {
+  const cdpClient = createFakeCdpClient();
+  const session = createBrowserSession({ sources: {}, createCdpClient: () => cdpClient });
+
+  await session.start();
+  await session.openAuxWindow({
+    key: 'presenter-teleprompter',
+    title: 'Deckhand Presenter',
+    url: 'http://127.0.0.1:3001/presenter/teleprompter.html',
+  });
+  await session.openAuxWindow({
+    key: 'presenter-console',
+    title: 'Deckhand Console',
+    url: 'http://127.0.0.1:3001/presenter/',
+  });
+
+  const result = await session.measureMinimumWindowSize();
+
+  assert.deepEqual(
+    cdpClient.calls.filter((call) => call.type === 'measureMinimumWindowSize'),
+    [{ type: 'measureMinimumWindowSize', targetId: 'TARGET_1' }],
+  );
+  assert.deepEqual(result, { width: 500, height: 272 });
+});
+
+test('measureMinimumWindowSize returns null when the session has no tracked targets', async () => {
+  const cdpClient = createFakeCdpClient();
+  const session = createBrowserSession({ sources: {}, createCdpClient: () => cdpClient });
+
+  await session.start();
+
+  assert.equal(await session.measureMinimumWindowSize(), null);
+  assert.equal(cdpClient.calls.some((call) => call.type === 'measureMinimumWindowSize'), false);
+});
+
+test('measureMinimumWindowSize returns null and warns when the cdp probe rejects', async () => {
+  const cdpClient = createFakeCdpClient();
+  cdpClient.measureMinimumWindowSize = async () => {
+    throw new Error('cdp exploded');
+  };
+  const warnings = [];
+  const logger = {
+    info() {},
+    warn(message, context) {
+      warnings.push({ message, context });
+    },
+    error() {},
+  };
+  const sources = createSources(createBrowserSource('BrowserA', { home: { url: 'https://example.com/home' } }));
+  const session = createBrowserSession({ sources, createCdpClient: () => cdpClient, logger });
+
+  await session.start();
+  const result = await session.measureMinimumWindowSize();
+
+  assert.equal(result, null);
+  assert.deepEqual(warnings, [
+    { message: 'Failed to measure Chrome minimum window size', context: { error: 'cdp exploded' } },
+  ]);
 });

@@ -23,9 +23,13 @@ local function default_sleep()
   end
 end
 
+-- Polls until the window reports the target frame. Returns nil when the window
+-- settled (or the wait was skipped for an unmockable/missing window); returns
+-- the last observed frame as a plain { x, y, w, h } table when the window gave
+-- up, so callers can surface the mismatch to the coordinator.
 local function wait_for_window_frame(window, target_rect, source, options)
   if window == nil or target_rect == nil or window.frame == nil then
-    return true
+    return nil
   end
 
   local sleep = options.sleep or default_sleep
@@ -37,7 +41,7 @@ local function wait_for_window_frame(window, target_rect, source, options)
   for attempt = 1, max_attempts do
     actual = window:frame()
     if rect_matches(actual, target_rect, tolerance) then
-      return true
+      return nil
     end
 
     if attempt < max_attempts then
@@ -53,7 +57,26 @@ local function wait_for_window_frame(window, target_rect, source, options)
     tostring(actual and actual.w),
     tostring(actual and actual.h)
   ))
-  return false
+  if actual == nil then
+    return nil
+  end
+
+  return { x = actual.x, y = actual.y, w = actual.w, h = actual.h }
+end
+
+-- Records a give-up as a plain-table mismatch entry; the requested rect is
+-- flattened because hs.geometry objects carry extra table parts the JSON
+-- encoder would serialize.
+local function record_frame_mismatch(frame_mismatches, source, target_rect, observed)
+  if observed == nil then
+    return
+  end
+
+  table.insert(frame_mismatches, {
+    source = source,
+    requested = { x = target_rect.x, y = target_rect.y, w = target_rect.w, h = target_rect.h },
+    observed = { x = observed.x, y = observed.y, w = observed.w, h = observed.h },
+  })
 end
 
 local function exact_binding_for(window, fallback_binding)
@@ -90,11 +113,21 @@ function M.apply(state, dependencies)
     hs.window.setFrameCorrectness = true
   end
 
+  -- Zero Hammerspoon's window animation (default 0.2s) so setFrame applies
+  -- geometry immediately and deterministically: with animation enabled the
+  -- settle wait below would read intermediate geometry mid-flight and never
+  -- observe the target frame. Guarded so the Lua contract tests, which mock
+  -- `hs` minimally, still run.
+  if hs and hs.window and hs.window.animationDuration ~= nil then
+    hs.window.animationDuration = 0
+  end
+
   local resolved = {}
   local applied = {}
   local missing = {}
   local resolved_bindings = {}
   local cleared_bindings = {}
+  local frame_mismatches = {}
   local binding_catalog = state.managedWindowBindings or state.windowBindings or {}
 
   for source, binding in pairs(binding_catalog) do
@@ -118,12 +151,13 @@ function M.apply(state, dependencies)
       if window and slot.rect then
         local target_rect = make_rect(slot.rect)
         window:setFrame(target_rect)
-        wait_for_window_frame(window, target_rect, slot.source, {
+        local observed = wait_for_window_frame(window, target_rect, slot.source, {
           frameTolerance = deps.frameTolerance,
           logFn = log_fn,
           settleMaxAttempts = deps.settleMaxAttempts,
           sleep = deps.sleep,
         })
+        record_frame_mismatch(frame_mismatches, slot.source, target_rect, observed)
         table.insert(applied, slot.source)
       else
         table.insert(missing, slot.source)
@@ -165,14 +199,23 @@ function M.apply(state, dependencies)
           if window.unminimize then
             window:unminimize()
           end
-          window:setFrame(make_rect(overlay.rect))
+          local target_rect = make_rect(overlay.rect)
+          window:setFrame(target_rect)
+          local observed = wait_for_window_frame(window, target_rect, overlay.source, {
+            frameTolerance = deps.frameTolerance,
+            logFn = log_fn,
+            settleMaxAttempts = deps.settleMaxAttempts,
+            sleep = deps.sleep,
+          })
+          record_frame_mismatch(frame_mismatches, overlay.source, target_rect, observed)
           -- Chrome enforces a minimum window width above the configured overlay
-          -- width, and setFrame can mis-position windows flush to an edge; pull
-          -- the actual frame fully on-screen so the teleprompter is always
-          -- visible regardless. (Overlay windows are presenter-only, never OBS
-          -- sources, so clamping them is safe.)
+          -- width, so it may clamp the size below (the settle wait logs that and
+          -- continues), and setFrame can mis-position windows flush to an edge;
+          -- pass the intended rect (not the mid-flight current frame) to
+          -- setFrameInScreenBounds so the overlay (presenter window or an
+          -- external app window) stays clamped fully on-screen.
           if window.setFrameInScreenBounds then
-            window:setFrameInScreenBounds()
+            window:setFrameInScreenBounds(target_rect)
           end
           table.insert(applied, overlay.source)
           if window.raise then
@@ -182,6 +225,10 @@ function M.apply(state, dependencies)
       else
         table.insert(missing, overlay.source)
       end
+    else
+      -- No binding for this overlay source: report it so the observer logs
+      -- the gap instead of silently skipping the overlay.
+      table.insert(missing, overlay.source)
     end
   end
 
@@ -189,6 +236,7 @@ function M.apply(state, dependencies)
     applied = applied,
     clearedBindings = cleared_bindings,
     focused = focused,
+    frameMismatches = frame_mismatches,
     missing = missing,
     resolvedBindings = resolved_bindings,
   }

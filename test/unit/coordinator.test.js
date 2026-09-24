@@ -1462,6 +1462,186 @@ test('coordinator gates the reveal on the presenter window-settle ack', async ()
   assert.equal(trace.includes('switchProgramScene:Deckhand_Dual Browser'), true, 'reveal proceeds once the ack arrives');
 });
 
+test('coordinator warns once per distinct presenter frame mismatch', async () => {
+  const trace = [];
+  const config = createTransitionsConfig({ windowSettleMs: 2000 });
+
+  // Hub that records handlers so the test can drive the windowSettled ack.
+  const handlers = new Map();
+  const hub = {
+    on(eventName, handler) {
+      handlers.set(eventName, handler);
+    },
+    emit(eventName, payload) {
+      return handlers.get(eventName)?.(payload);
+    },
+    async start() {},
+    async stop() {},
+    async sendCommand() {},
+    async publishSticky() {
+      trace.push('publishSticky');
+    },
+    getSnapshot() {
+      return { activeDriver: null, observers: [], sticky: {} };
+    },
+  };
+
+  const logger = createLogger();
+  const coordinator = createCoordinator({
+    config,
+    obs: createTracingObs(trace),
+    hub,
+    executor: createTracingExecutor(trace),
+    logger,
+  });
+
+  await coordinator.start();
+
+  const mismatches = [
+    {
+      source: 'Presenter',
+      requested: { x: 0, y: 1120, w: 1210, h: 560 },
+      observed: { x: 0, y: 900, w: 1210, h: 611 },
+    },
+    {
+      source: 'Console',
+      requested: { x: 40, y: 40, w: 480, h: 720 },
+      observed: { x: 40, y: 40, w: 620, h: 720 },
+    },
+  ];
+
+  const first = coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  hub.emit('observerWindowSettled', { seq: 1, frameMismatches: mismatches });
+  await first;
+
+  assert.equal(logger.warns.length, 2, 'one warning per mismatch entry');
+  assert.equal(logger.warns[0].message, 'Window did not settle to configured rect');
+  assert.deepEqual(logger.warns[0].context, { source: 'Presenter', requested: mismatches[0].requested, observed: mismatches[0].observed });
+  assert.deepEqual(logger.warns[1].context, { source: 'Console', requested: mismatches[1].requested, observed: mismatches[1].observed });
+
+  // Slide advances re-apply identical rects, so the same ack on a later seq
+  // must not repeat the warnings.
+  const second = coordinator.handleDriverPositionChanged({ id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  hub.emit('observerWindowSettled', { seq: 2, frameMismatches: mismatches });
+  await second;
+
+  assert.equal(logger.warns.length, 2, 'the same mismatch warns only once per process');
+});
+
+test('coordinator warns separately for mismatches that differ only in requested origin', async () => {
+  const trace = [];
+  const config = createTransitionsConfig({ windowSettleMs: 2000 });
+
+  const handlers = new Map();
+  const hub = {
+    on(eventName, handler) {
+      handlers.set(eventName, handler);
+    },
+    emit(eventName, payload) {
+      return handlers.get(eventName)?.(payload);
+    },
+    async start() {},
+    async stop() {},
+    async sendCommand() {},
+    async publishSticky() {
+      trace.push('publishSticky');
+    },
+    getSnapshot() {
+      return { activeDriver: null, observers: [], sticky: {} };
+    },
+  };
+
+  const logger = createLogger();
+  const coordinator = createCoordinator({
+    config,
+    obs: createTracingObs(trace),
+    hub,
+    executor: createTracingExecutor(trace),
+    logger,
+  });
+
+  await coordinator.start();
+
+  // Same source, same requested size, and the same clamped result — only the
+  // requested origin differs (e.g. a source applied to a left-slot rect and a
+  // right-slot rect that both clamp to the same place). These are distinct
+  // mismatches and must each warn.
+  const mismatches = [
+    {
+      source: 'Presenter',
+      requested: { x: 0, y: 1120, w: 1210, h: 560 },
+      observed: { x: 0, y: 900, w: 1210, h: 611 },
+    },
+    {
+      source: 'Presenter',
+      requested: { x: 660, y: 1120, w: 1210, h: 560 },
+      observed: { x: 0, y: 900, w: 1210, h: 611 },
+    },
+  ];
+
+  const first = coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  hub.emit('observerWindowSettled', { seq: 1, frameMismatches: mismatches });
+  await first;
+
+  assert.equal(logger.warns.length, 2, 'a mismatch at a second requested origin warns again');
+  assert.deepEqual(logger.warns[0].context.requested, mismatches[0].requested);
+  assert.deepEqual(logger.warns[1].context.requested, mismatches[1].requested);
+
+  // Replaying the identical ack on a later seq must still not warn again.
+  const second = coordinator.handleDriverPositionChanged({ id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  hub.emit('observerWindowSettled', { seq: 2, frameMismatches: mismatches });
+  await second;
+
+  assert.equal(logger.warns.length, 2, 'identical mismatches still dedupe to one warning each');
+});
+
+test('coordinator resolves the settle waiter without warnings when the ack carries no frame mismatches', async () => {
+  const trace = [];
+  const config = createTransitionsConfig({ windowSettleMs: 2000 });
+
+  const handlers = new Map();
+  const hub = {
+    on(eventName, handler) {
+      handlers.set(eventName, handler);
+    },
+    emit(eventName, payload) {
+      return handlers.get(eventName)?.(payload);
+    },
+    async start() {},
+    async stop() {},
+    async sendCommand() {},
+    async publishSticky() {
+      trace.push('publishSticky');
+    },
+    getSnapshot() {
+      return { activeDriver: null, observers: [], sticky: {} };
+    },
+  };
+
+  const logger = createLogger();
+  const coordinator = createCoordinator({
+    config,
+    obs: createTracingObs(trace),
+    hub,
+    executor: createTracingExecutor(trace),
+    logger,
+  });
+
+  await coordinator.start();
+
+  const pending = coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  hub.emit('observerWindowSettled', { seq: 1 });
+  await pending;
+
+  assert.equal(logger.warns.length, 0, 'an ack without frameMismatches warns nothing');
+  assert.equal(trace.includes('switchProgramScene:Deckhand_Dual Browser'), true, 'the waiter still resolves without frameMismatches');
+});
+
 test('coordinator gates the reveal on the driver position-settle ack', async () => {
   const trace = [];
   const config = createTransitionsConfig({ windowSettleMs: 2000 });

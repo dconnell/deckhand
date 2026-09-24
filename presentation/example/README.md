@@ -13,17 +13,17 @@ This example demonstrates the full Deckhand flow:
 
 ## How It Differs From The Other Examples
 
-| Concern                    | `example`                            | `example2`                                      | `example-laptop`                                |
-| -------------------------- | ------------------------------------ | ----------------------------------------------- | ----------------------------------------------- |
-| Editor (VS Code)           | not present                          | `Editor` source (`kind: "app"`)                 | not present                                     |
-| Terminals                  | single `Terminal` window             | three: `TerminalA`, `TerminalB`, `TerminalC`    | single `Terminal` window                        |
-| Terminal cwds              | one (`/repos/demo`)                  | one per terminal (`app`, `infra`, `docs`)       | one (`/repos/demo`)                             |
-| Browser targets            | `BrowserA` + `BrowserB` (dual)       | only the `Slide` deck browser                   | `BrowserA` + `BrowserB` (dual)                  |
-| Dual-browser layout        | `dual-browser`                       | none                                            | `dual-browser`                                  |
-| Deck theme                 | `black.css`                          | `white.css`                                     | `black.css`                                     |
-| Teleprompter overlays      | none                                 | none                                            | per-layout + one per-slide override             |
-| OBS slide transitions      | configured (`Slide Right` / `Left`)  | not configured (instant cut)                    | configured (`Slide Right` / `Left`)             |
-| Intended display           | multi-monitor presenter stage        | multi-monitor presenter stage                   | single-screen laptop                            |
+| Concern               | `example`                                                           | `example2`                                   | `example-laptop`                    |
+| --------------------- | ------------------------------------------------------------------- | -------------------------------------------- | ----------------------------------- |
+| Editor (VS Code)      | not present                                                         | `Editor` source (`kind: "app"`)              | not present                         |
+| Terminals             | single `Terminal` window                                            | three: `TerminalA`, `TerminalB`, `TerminalC` | single `Terminal` window            |
+| Terminal cwds         | one (`/repos/demo`)                                                 | one per terminal (`app`, `infra`, `docs`)    | one (`/repos/demo`)                 |
+| Browser targets       | `BrowserA` + `BrowserB` (dual)                                      | only the `Slide` deck browser                | `BrowserA` + `BrowserB` (dual)      |
+| Dual-browser layout   | `dual-browser`                                                      | none                                         | `dual-browser`                      |
+| Deck theme            | `black.css`                                                         | `white.css`                                  | `black.css`                         |
+| Presenter overlays    | presenter-level: OBS top-left, Presenter top-right, Console beneath | none                                         | per-layout + one per-slide override |
+| OBS slide transitions | configured (`Slide Right` / `Left`)                                 | not configured (instant cut)                 | configured (`Slide Right` / `Left`) |
+| Intended display      | multi-monitor presenter stage                                       | multi-monitor presenter stage                | single-screen laptop                |
 
 See [`../README.md`](../README.md) for the side-by-side index of all examples.
 

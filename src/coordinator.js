@@ -195,6 +195,11 @@ export function createCoordinator(options) {
   // change reveals only after the physical windows have actually moved/resized
   // instead of after a guessed fixed delay.
   const windowSettleWaiters = new Map();
+  // Signatures of frame mismatches already warned about, so the same mismatch
+  // (same source, requested, observed) warns only once per process: slide
+  // changes re-apply identical rects and would otherwise repeat the warning
+  // on every advance.
+  const warnedFrameMismatches = new Set();
   const driverSettleWaiters = new Map();
   const completedDriverSettleEvents = new Set();
   const pendingDriverPositions = new Map();
@@ -1205,6 +1210,24 @@ export function createCoordinator(options) {
     }
 
     logger.info('Received presenter window-settle ack', { seq });
+
+    // Warn-only: frame mismatches (e.g. OBS clamping a configured rect) are
+    // informational and never suppress the ack or the waiter resolution.
+    for (const mismatch of payload?.frameMismatches ?? []) {
+      const signature = `${mismatch.source}|${mismatch.requested.x},${mismatch.requested.y},${mismatch.requested.w}x${mismatch.requested.h}|${mismatch.observed.x},${mismatch.observed.y},${mismatch.observed.w}x${mismatch.observed.h}`;
+
+      if (warnedFrameMismatches.has(signature)) {
+        continue;
+      }
+
+      warnedFrameMismatches.add(signature);
+      logger.warn('Window did not settle to configured rect', {
+        source: mismatch.source,
+        requested: mismatch.requested,
+        observed: mismatch.observed,
+      });
+    }
+
     windowSettleWaiters.get(seq)?.resolve();
   }
 

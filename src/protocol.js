@@ -94,6 +94,53 @@ function normalizeWindowBinding(binding, fieldName) {
   return normalized;
 }
 
+/**
+ * Validate a frame rect ({ x, y, w, h } with finite numbers) reported by the
+ * presenter, e.g. inside a `windowSettled` frame mismatch.
+ *
+ * @param {unknown} rect The rect to validate.
+ * @param {string} fieldName Field name used in error messages.
+ * @returns {{ x: number, y: number, w: number, h: number }}
+ */
+function normalizeFrameRect(rect, fieldName) {
+  if (!isPlainObject(rect)) {
+    throw new TypeError(`${fieldName} must be an object`);
+  }
+
+  for (const key of ['x', 'y', 'w', 'h']) {
+    if (typeof rect[key] !== 'number' || !Number.isFinite(rect[key])) {
+      throw new TypeError(`${fieldName}.${key} must be a finite number`);
+    }
+  }
+
+  return { x: rect.x, y: rect.y, w: rect.w, h: rect.h };
+}
+
+/**
+ * Validate the optional `frameMismatches` array carried by a `windowSettled`
+ * message: one entry per source window that did not reach its configured rect.
+ *
+ * @param {unknown} value The frameMismatches value to validate.
+ * @returns {Array<{ source: string, requested: { x: number, y: number, w: number, h: number }, observed: { x: number, y: number, w: number, h: number } }>}
+ */
+function normalizeFrameMismatches(value) {
+  if (!Array.isArray(value)) {
+    throw new TypeError('frameMismatches must be an array');
+  }
+
+  return value.map((entry, index) => {
+    if (!isPlainObject(entry)) {
+      throw new TypeError(`frameMismatches[${index}] must be an object`);
+    }
+
+    return {
+      source: assertNonEmptyString(entry.source, `frameMismatches[${index}].source`),
+      requested: normalizeFrameRect(entry.requested, `frameMismatches[${index}].requested`),
+      observed: normalizeFrameRect(entry.observed, `frameMismatches[${index}].observed`),
+    };
+  });
+}
+
 function normalizeWindowBindingsMessage(message) {
   if (!isPlainObject(message.bindings)) {
     throw new TypeError('bindings must be an object');
@@ -582,10 +629,18 @@ export function validateClientMessage(message) {
   }
 
   if (type === 'windowSettled') {
-    return {
+    // frameMismatches is optional so older presenter-web observers without it
+    // stay backward compatible.
+    const normalized = {
       type,
       seq: normalizePositiveInteger(message.seq, 'seq'),
     };
+
+    if (message.frameMismatches !== undefined) {
+      normalized.frameMismatches = normalizeFrameMismatches(message.frameMismatches);
+    }
+
+    return normalized;
   }
 
   if (type === 'positionSettled') {
