@@ -318,3 +318,86 @@ export function buildProgramPreviewUrl(path, revision) {
     ? `${normalizedPath}?rev=${revision}`
     : normalizedPath;
 }
+
+// One rendered teleprompter line step is 36px min-height + 8px margin, so the
+// wheel threshold mirrors it: crossing it should feel like one ArrowDown press.
+const WHEEL_NUDGE_THRESHOLD_PX = 44;
+// Trackpad momentum tails keep delivering small deltas long after the gesture;
+// anything arriving after this gap is a new gesture, so stale remainder must
+// not turn it into an unwanted extra nudge.
+const WHEEL_IDLE_RESET_MS = 250;
+
+const DOM_DELTA_PIXEL = 0;
+const DOM_DELTA_LINE = 1;
+const DOM_DELTA_PAGE = 2;
+
+/**
+ * Normalize a vertical wheel delta to pixels for the nudge accumulator.
+ *
+ * Browsers on macOS Chrome send pixel mode, but line/page modes exist in the
+ * wild; without scaling them a line-mode event would be misread as a fraction
+ * of a line. The API is intentionally single-axis: horizontal deltaX never
+ * reaches this helper and never drives a nudge.
+ *
+ * @param {{ deltaY: number, deltaMode?: number, viewportHeightPx?: number }} event Wheel event fields.
+ * @returns {number} Delta in pixels (0 for non-finite input).
+ */
+export function normalizeWheelDelta({ deltaY, deltaMode = DOM_DELTA_PIXEL, viewportHeightPx = 0 }) {
+  if (!Number.isFinite(deltaY)) {
+    return 0;
+  }
+
+  if (deltaMode === DOM_DELTA_LINE) {
+    return deltaY * WHEEL_NUDGE_THRESHOLD_PX;
+  }
+
+  if (deltaMode === DOM_DELTA_PAGE) {
+    const viewportHeightPxSafe = Number.isFinite(viewportHeightPx) ? viewportHeightPx : 0;
+    return deltaY * viewportHeightPxSafe;
+  }
+
+  return deltaY;
+}
+
+/**
+ * Accumulate wheel deltas and translate them into teleprompter nudge counts.
+ *
+ * Raw trackpad gestures fire dozens of events per flick, so deltas are summed
+ * and only every threshold crossing becomes a nudge, with the remainder
+ * carried over — otherwise one gesture would advance several lines. The
+ * remainder is dropped when events stop arriving for the idle window, so a
+ * momentum tail cannot trigger a late nudge. Time is injected (`nowMs`) so
+ * reset semantics are testable without timers.
+ *
+ * @param {{ thresholdPx?: number, idleResetMs?: number }} [options] Overrides for tests.
+ * @returns {{ push(input: { deltaY: number, nowMs: number }): number, reset(): void }}
+ *   `push` returns the signed number of line-steps crossed (positive = scroll
+ *   down = nudge forward, 0 = nothing to send); `reset` clears any pending
+ *   remainder.
+ */
+export function createWheelNudgeAccumulator({ thresholdPx = WHEEL_NUDGE_THRESHOLD_PX, idleResetMs = WHEEL_IDLE_RESET_MS } = {}) {
+  let remainderPx = 0;
+  let lastEventAtMs = null;
+
+  return {
+    push({ deltaY, nowMs }) {
+      if (!Number.isFinite(deltaY) || !Number.isFinite(nowMs)) {
+        return 0;
+      }
+
+      if (lastEventAtMs !== null && nowMs - lastEventAtMs >= idleResetMs) {
+        remainderPx = 0;
+      }
+      lastEventAtMs = nowMs;
+
+      remainderPx += deltaY;
+      const nudges = Math.trunc(remainderPx / thresholdPx);
+      remainderPx -= nudges * thresholdPx;
+      return nudges;
+    },
+    reset() {
+      remainderPx = 0;
+      lastEventAtMs = null;
+    },
+  };
+}

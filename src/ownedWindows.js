@@ -18,7 +18,7 @@ function createNoopLogger() {
  * unit-testable without real windows; `src/index.js` wires the concrete
  * strategies per source kind.
  *
- * @param {{ entries: Array<{ sourceId: string, snapshot: () => Array<{ windowId: number, title?: string }>, launch: () => Promise<{ pid?: number }>, confirm?: { titleIncludes?: string, rejectEmptyTitle?: boolean, stableSamples?: number } }>, delay: (ms: number) => Promise<void>, maxAttempts?: number, retryDelayMs?: number, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Resolver options.
+ * @param {{ entries: Array<{ sourceId: string, snapshot: () => Array<{ windowId: number, title?: string }> | null, launch: () => Promise<{ pid?: number }>, confirm?: { titleIncludes?: string, rejectEmptyTitle?: boolean, stableSamples?: number } }>, delay: (ms: number) => Promise<void>, maxAttempts?: number, retryDelayMs?: number, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Resolver options. A `snapshot` returning `null` reports a FAILED enumeration (see {@link enumerateWindowsByOwnerName}); that source is skipped with a warning instead of being bound.
  * @returns {Promise<Record<string, { macWindowId: number, pid?: number }>>}
  */
 export async function resolveOwnedWindowBindings(options) {
@@ -31,8 +31,21 @@ export async function resolveOwnedWindowBindings(options) {
   for (const entry of options.entries) {
     try {
       const before = entry.snapshot();
+
+      // A `null` before-snapshot is a failed enumeration, NOT an empty
+      // desktop: reading it as empty made the diff treat every pre-existing
+      // window as "new" and pinned the largest one — historically the
+      // terminal hosting deckhand itself. Without a trustworthy before-set
+      // the new window cannot be identified, so this source cannot be bound
+      // (or launched) at all — skip it and leave its window untracked.
+      if (before === null) {
+        logger.warn('Owned-source window snapshot failed before launch; skipping binding for this source', { source: entry.sourceId });
+        continue;
+      }
+
       const launchResult = await entry.launch();
       let resolved = null;
+      let snapshotFailed = false;
       const stableSamples = Number.isInteger(entry.confirm?.stableSamples) && entry.confirm.stableSamples > 0
         ? entry.confirm.stableSamples
         : 1;
@@ -40,6 +53,14 @@ export async function resolveOwnedWindowBindings(options) {
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         const after = entry.snapshot();
+
+        if (after === null) {
+          // Mid-poll snapshot failure: same fail-safe as a failed
+          // before-snapshot — the diff would be garbage, so never bind.
+          snapshotFailed = true;
+          break;
+        }
+
         const newWindows = diffNewWindows(before, after, entry.confirm);
 
         if (newWindows.length > 0) {
@@ -83,6 +104,11 @@ export async function resolveOwnedWindowBindings(options) {
         if (attempt < maxAttempts) {
           await delay(retryDelayMs);
         }
+      }
+
+      if (snapshotFailed) {
+        logger.warn('Owned-source window snapshot failed after launch; skipping binding for this source', { source: entry.sourceId });
+        continue;
       }
 
       if (resolved === null) {

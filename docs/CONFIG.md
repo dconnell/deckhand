@@ -535,6 +535,43 @@ Each `browser` action contains:
 `activateTab` switches to a preloaded tab by its runtime handle without
 reloading it. `navigate` loads a new URL in the named tab.
 
+### Script markup
+
+`script` text is plain prose with light markup. Plain lines are split on
+sentence boundaries (`.`, `!`, `?`) into presenter lines; a blank line is a
+paragraph gap, and a `[mode:...]` line following spoken content also starts a
+new paragraph; paragraph groups are what PageUp/PageDown jump between.
+Inline markers:
+
+- `*emphasis*` — bolded token
+- `...` or `…` — pause token
+
+Full-line markers (must be alone on their line with the closing `]` as the
+final character; marker text cannot contain `]` — such a line is treated as
+ordinary spoken prose):
+
+- `[mode:NAME]` — renders as a label and sets the running mode attached to
+  subsequent lines until the next mode marker (names are uppercased)
+- `[stage:note]` — stage direction, rendered italic and gray
+- `[cmd:command]` — presenter-run command, rendered as a distinct monospace
+  chip so it can be read, typed, or copy/pasted live; text is preserved
+  verbatim (trimmed only — internal spacing is kept) and never sentence-split
+
+Mode, stage, and command lines are not spoken text — the STT follow matcher,
+line navigation, and progress skip them entirely, so they cannot pull the
+teleprompter out of sync.
+
+Example beat:
+
+```text
+[mode:DEMO]
+Switch to the terminal and run the *deploy* script ...
+[stage: wait for the build to go green]
+[cmd:npm run deploy -- --env staging]
+
+Wrap up and take questions.
+```
+
 ## Slide transitions
 
 Slide transitions are **enabled by default**: advancing the deck runs a
@@ -675,6 +712,23 @@ committed config. Deckhand uses the bootstrap selectors to seed OBS
 bindings when runtime window handles are available. The teleprompter window is
 not an OBS source; its selector is used only for the local presenter
 window-management path.
+
+Window placement is guarded against display-arrangement mismatches. Before
+moving any window, the presenter observer compares every configured rect (all
+layout slots plus visible overlays) against the union bounding box of the
+current displays' full frames. If every rect fits, placement proceeds
+normally; if any rect does not fit (for example the deck is configured for a
+three-monitor stage but only the laptop display is attached), placement is
+skipped entirely: no window is resized or moved, windows stay wherever macOS
+launched them, and the coordinator logs a warning. On a mismatch, presenter
+overlays (teleprompter, Console, OBS) are also not raised or unminimized — they
+are kept back (and hidden overlays stay minimized) so they cannot cover the
+slot windows the presenter needs to see/capture — while the presentation
+windows keep their raise/focus choreography. The guard is all-or-nothing
+— a half-placed layout is worse than an untouched one — and fails open when
+displays cannot be enumerated, preserving the previous behavior. Placement
+recovers automatically once the display arrangement matches the configured
+rects again; no config change is needed.
 
 `presenter.stt` fields:
 

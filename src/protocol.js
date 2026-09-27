@@ -141,6 +141,22 @@ function normalizeFrameMismatches(value) {
   });
 }
 
+/**
+ * Validate the optional `placementSkipped` field carried by a `windowSettled`
+ * message: present when the presenter skipped all window placement because the
+ * configured rects do not fit the current display arrangement.
+ *
+ * @param {unknown} value The placementSkipped value to validate.
+ * @returns {{ reason: string }}
+ */
+function normalizePlacementSkipped(value) {
+  if (!isPlainObject(value)) {
+    throw new TypeError('placementSkipped must be an object');
+  }
+
+  return { reason: assertNonEmptyString(value.reason, 'placementSkipped.reason') };
+}
+
 function normalizeWindowBindingsMessage(message) {
   if (!isPlainObject(message.bindings)) {
     throw new TypeError('bindings must be an object');
@@ -638,6 +654,11 @@ export function validateClientMessage(message) {
 
     if (message.frameMismatches !== undefined) {
       normalized.frameMismatches = normalizeFrameMismatches(message.frameMismatches);
+    }
+
+    // placementSkipped is optional for the same backward-compatibility reason.
+    if (message.placementSkipped !== undefined) {
+      normalized.placementSkipped = normalizePlacementSkipped(message.placementSkipped);
     }
 
     return normalized;

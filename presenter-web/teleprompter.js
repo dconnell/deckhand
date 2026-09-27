@@ -2,6 +2,8 @@ import { createObserverClient } from './shared-client.js';
 import {
   buildTeleprompterFrame,
   buildTokenRenderParts,
+  createWheelNudgeAccumulator,
+  normalizeWheelDelta,
   reconcileLineNodes,
   shouldRenderImmediately,
 } from './teleprompterView.js';
@@ -154,6 +156,9 @@ async function main() {
   const state = createInitialState();
   let client = null;
   const shell = document.getElementById('teleprompter-shell');
+  // Idle reset is timestamp-based inside the accumulator, so no glue timer is
+  // needed and none can leak.
+  const wheelNudgeAccumulator = createWheelNudgeAccumulator();
 
   shell.addEventListener('mouseenter', () => {
     state.hovered = true;
@@ -198,6 +203,31 @@ async function main() {
       window.blur();
     }
   });
+
+  // The viewport is transform-driven with no native scrollbar, so two-finger
+  // scrolling must be intercepted and mapped to nudges. Non-passive so the
+  // browser never starts a native scroll or bounce behind our back.
+  shell.addEventListener('wheel', (event) => {
+    event.preventDefault();
+
+    if (state.presenter === null) {
+      return;
+    }
+
+    // deltaX is deliberately ignored: the teleprompter only scrolls vertically.
+    const nudges = wheelNudgeAccumulator.push({
+      deltaY: normalizeWheelDelta({
+        deltaY: event.deltaY,
+        deltaMode: event.deltaMode,
+        viewportHeightPx: window.innerHeight,
+      }),
+      nowMs: Date.now(),
+    });
+
+    if (nudges !== 0) {
+      sendCommand({ op: 'nudge', source: 'teleprompter', delta: nudges });
+    }
+  }, { passive: false });
 
   client = createObserverClient({
     hubUrl: bootstrap.hubUrl,

@@ -9,6 +9,8 @@ import {
   computeTeleprompterOffset,
   buildTokenRenderParts,
   buildTrackingStatusView,
+  createWheelNudgeAccumulator,
+  normalizeWheelDelta,
   reconcileLineNodes,
   shouldRenderImmediately,
 } from '../../../presenter-web/teleprompterView.js';
@@ -248,12 +250,14 @@ test('buildTokenRenderParts maps renderer token classes', () => {
     { kind: 'pause' },
     { kind: 'mode', text: 'DEMO' },
     { kind: 'gap' },
+    { kind: 'command', text: 'dce status' },
   ]), [
     { className: 'token token-stage', text: 'look left' },
     { className: 'token token-emphasis', text: 'important' },
     { className: 'token token-pause', text: '...' },
     { className: 'token token-mode', text: 'DEMO' },
     { className: 'token token-gap', text: '' },
+    { className: 'token token-command', text: 'dce status' },
   ]);
 });
 
@@ -383,4 +387,63 @@ test('computeTeleprompterOffset scrolls down to reveal the next spoken line whil
   assert.ok(currentTop >= 0, `current line stays on screen (got top ${currentTop})`);
   assert.ok(currentBottom <= 160, `current line remains fully visible (got bottom ${currentBottom})`);
   assert.ok(nextBottom <= 160, `next spoken line is scrolled into view (got bottom ${nextBottom})`);
+});
+
+// Wheel nudges: one rendered line step is 36px min-height + 8px margin = 44px,
+// so the accumulator threshold mirrors that value.
+test('createWheelNudgeAccumulator accumulates sub-threshold deltas without emitting a nudge', () => {
+  const accumulator = createWheelNudgeAccumulator();
+
+  assert.equal(accumulator.push({ deltaY: 20, nowMs: 0 }), 0);
+  assert.equal(accumulator.push({ deltaY: 20, nowMs: 50 }), 0);
+});
+
+test('createWheelNudgeAccumulator emits one nudge and carries the remainder when the threshold is crossed', () => {
+  const accumulator = createWheelNudgeAccumulator();
+
+  assert.equal(accumulator.push({ deltaY: 60, nowMs: 0 }), 1);
+  assert.equal(accumulator.push({ deltaY: 30, nowMs: 50 }), 1);
+});
+
+test('createWheelNudgeAccumulator maps downward scroll to positive and upward scroll to negative nudges', () => {
+  const accumulator = createWheelNudgeAccumulator();
+
+  assert.equal(accumulator.push({ deltaY: 60, nowMs: 0 }), 1);
+  assert.equal(accumulator.push({ deltaY: -120, nowMs: 50 }), -2);
+});
+
+test('createWheelNudgeAccumulator drops the accumulated remainder once no wheel delta arrived within the idle window', () => {
+  const accumulator = createWheelNudgeAccumulator();
+
+  assert.equal(accumulator.push({ deltaY: 40, nowMs: 0 }), 0);
+  assert.equal(accumulator.push({ deltaY: 40, nowMs: 1_000 }), 0);
+  assert.equal(accumulator.push({ deltaY: 40, nowMs: 1_050 }), 1);
+});
+
+test('createWheelNudgeAccumulator emits multiple nudges when one gesture crosses several thresholds', () => {
+  const accumulator = createWheelNudgeAccumulator();
+
+  assert.equal(accumulator.push({ deltaY: 132, nowMs: 0 }), 3);
+  assert.equal(accumulator.push({ deltaY: 100, nowMs: 50 }), 2);
+});
+
+test('createWheelNudgeAccumulator reset clears a pending remainder', () => {
+  const accumulator = createWheelNudgeAccumulator();
+
+  assert.equal(accumulator.push({ deltaY: 40, nowMs: 0 }), 0);
+  accumulator.reset();
+  assert.equal(accumulator.push({ deltaY: 10, nowMs: 50 }), 0);
+});
+
+test('normalizeWheelDelta passes pixel-mode deltas through unchanged', () => {
+  assert.equal(normalizeWheelDelta({ deltaY: 60, deltaMode: 0 }), 60);
+});
+
+test('normalizeWheelDelta scales line-mode deltas by the rendered line step', () => {
+  assert.equal(normalizeWheelDelta({ deltaY: 3, deltaMode: 1 }), 132);
+});
+
+test('normalizeWheelDelta scales page-mode deltas by the viewport height and treats non-finite deltas as zero', () => {
+  assert.equal(normalizeWheelDelta({ deltaY: 1, deltaMode: 2, viewportHeightPx: 900 }), 900);
+  assert.equal(normalizeWheelDelta({ deltaY: Number.NaN }), 0);
 });

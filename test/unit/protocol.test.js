@@ -365,6 +365,42 @@ test('validateClientMessage rejects malformed window-settled frame mismatches', 
   );
 });
 
+test('validateClientMessage accepts observer window-settled acks with a placement skip', () => {
+  assert.deepEqual(
+    validateClientMessage({
+      type: 'windowSettled',
+      seq: 7,
+      placementSkipped: { reason: 'display-arrangement-mismatch' },
+    }),
+    { type: 'windowSettled', seq: 7, placementSkipped: { reason: 'display-arrangement-mismatch' } },
+  );
+});
+
+test('validateClientMessage omits placementSkipped when the ack does not carry one', () => {
+  const normalized = validateClientMessage({ type: 'windowSettled', seq: 7 });
+
+  assert.equal(normalized.placementSkipped, undefined, 'absent placementSkipped stays undefined');
+});
+
+test('validateClientMessage rejects malformed window-settled placement skips', () => {
+  assert.throws(
+    () => validateClientMessage({ type: 'windowSettled', seq: 7, placementSkipped: {} }),
+    /placementSkipped\.reason/i,
+  );
+  assert.throws(
+    () => validateClientMessage({ type: 'windowSettled', seq: 7, placementSkipped: { reason: '  ' } }),
+    /placementSkipped\.reason/i,
+  );
+  assert.throws(
+    () => validateClientMessage({ type: 'windowSettled', seq: 7, placementSkipped: { reason: 42 } }),
+    /placementSkipped\.reason/i,
+  );
+  assert.throws(
+    () => validateClientMessage({ type: 'windowSettled', seq: 7, placementSkipped: 'nope' }),
+    /placementSkipped must be an object/i,
+  );
+});
+
 test('validateClientMessage accepts driver position-settled acks', () => {
   assert.deepEqual(
     validateClientMessage({ type: 'positionSettled', eventId: 7 }),

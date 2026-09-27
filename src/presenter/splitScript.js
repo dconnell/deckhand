@@ -69,8 +69,12 @@ function createSpokenLine(text, paragraphIndex, mode) {
 }
 
 function createMetaLine(kind, text, paragraphIndex, mode) {
+  // An empty meta value (e.g. "[cmd: ]") is emitted as a bare token like the
+  // gap precedent: protocol.js rejects token text of ''.
+  const hasText = typeof text === 'string' && text.trim() !== '';
+
   return {
-    tokens: text === null ? [{ kind }] : [{ kind, text }],
+    tokens: hasText ? [{ kind, text }] : [{ kind }],
     spokenText: '',
     paragraphIndex,
     ...(mode === null ? {} : { mode }),
@@ -117,15 +121,29 @@ export function splitScript(text) {
     const modeMatch = /^\[mode:([^\]]+)\]$/i.exec(trimmed);
     if (modeMatch !== null) {
       paragraphIndex += hasSpokenContent ? 1 : 0;
-      currentMode = normalizeWhitespace(modeMatch[1]).toUpperCase();
+      const nextMode = normalizeWhitespace(modeMatch[1]).toUpperCase();
+
+      // An empty mode name must not clear or blank the active mode.
+      if (nextMode !== '') {
+        currentMode = nextMode;
+      }
+
       hasSpokenContent = false;
-      lines.push(createMetaLine('mode', currentMode, paragraphIndex, currentMode));
+      lines.push(createMetaLine('mode', nextMode, paragraphIndex, currentMode));
       continue;
     }
 
     const stageMatch = /^\[stage:([^\]]+)\]$/i.exec(trimmed);
     if (stageMatch !== null) {
       lines.push(createMetaLine('stage', normalizeWhitespace(stageMatch[1]), paragraphIndex, currentMode));
+      continue;
+    }
+
+    // Command text is typed verbatim (flags, paths, double spaces), so only the
+    // edges are trimmed; no whitespace collapsing and no sentence splitting.
+    const commandMatch = /^\[cmd:([^\]]+)\]$/i.exec(trimmed);
+    if (commandMatch !== null) {
+      lines.push(createMetaLine('command', commandMatch[1].trim(), paragraphIndex, currentMode));
       continue;
     }
 

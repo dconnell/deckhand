@@ -200,6 +200,10 @@ export function createCoordinator(options) {
   // changes re-apply identical rects and would otherwise repeat the warning
   // on every advance.
   const warnedFrameMismatches = new Set();
+  // Whether the placement-skip warning already fired: the skip state persists
+  // across slides (the arrangement only changes when displays change), so a
+  // single warning per process is enough and per-slide repeats would be spam.
+  let warnedPlacementSkip = false;
   const driverSettleWaiters = new Map();
   const completedDriverSettleEvents = new Set();
   const pendingDriverPositions = new Map();
@@ -1210,6 +1214,14 @@ export function createCoordinator(options) {
     }
 
     logger.info('Received presenter window-settle ack', { seq });
+
+    // Warn-only: a placement skip means the presenter left every window where
+    // macOS launched it because the configured rects don't fit the current
+    // displays. Never suppresses the ack or the waiter resolution.
+    if (payload?.placementSkipped !== undefined && !warnedPlacementSkip) {
+      warnedPlacementSkip = true;
+      logger.warn('Window placement skipped: configured stage/overlay rects do not fit the current display arrangement; windows left as launched and presenter overlays kept back');
+    }
 
     // Warn-only: frame mismatches (e.g. OBS clamping a configured rect) are
     // informational and never suppress the ack or the waiter resolution.

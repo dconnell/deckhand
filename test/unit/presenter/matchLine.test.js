@@ -31,6 +31,14 @@ test('matchLine uses structured spokenText and ignores non-spoken annotations', 
   ], 1), 3);
 });
 
+test('matchLine steps over command-only meta lines and can never land on them', () => {
+  assert.equal(matchLine('outro line', [
+    { tokens: [{ kind: 'text', text: 'Intro line.' }], spokenText: 'Intro line.', paragraphIndex: 0 },
+    { tokens: [{ kind: 'command', text: 'dce status' }], spokenText: '', paragraphIndex: 1 },
+    { tokens: [{ kind: 'text', text: 'Outro line.' }], spokenText: 'Outro line.', paragraphIndex: 1 },
+  ], 0), 2);
+});
+
 test('matchLine keeps the nearest exact tie instead of jumping to a later duplicate line', () => {
   assert.equal(matchLine('repeat this exactly', [
     'Repeat this exactly.',

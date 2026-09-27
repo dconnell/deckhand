@@ -1599,6 +1599,61 @@ test('coordinator warns separately for mismatches that differ only in requested 
   assert.equal(logger.warns.length, 2, 'identical mismatches still dedupe to one warning each');
 });
 
+test('coordinator warns once per process when the presenter skipped window placement', async () => {
+  const trace = [];
+  const config = createTransitionsConfig({ windowSettleMs: 2000 });
+
+  const handlers = new Map();
+  const hub = {
+    on(eventName, handler) {
+      handlers.set(eventName, handler);
+    },
+    emit(eventName, payload) {
+      return handlers.get(eventName)?.(payload);
+    },
+    async start() {},
+    async stop() {},
+    async sendCommand() {},
+    async publishSticky() {
+      trace.push('publishSticky');
+    },
+    getSnapshot() {
+      return { activeDriver: null, observers: [], sticky: {} };
+    },
+  };
+
+  const logger = createLogger();
+  const coordinator = createCoordinator({
+    config,
+    obs: createTracingObs(trace),
+    hub,
+    executor: createTracingExecutor(trace),
+    logger,
+  });
+
+  await coordinator.start();
+
+  const first = coordinator.handleDriverPositionChanged({ id: 'demo', index: { h: 1, v: 0 }, meta: {} });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  hub.emit('observerWindowSettled', { seq: 1, placementSkipped: { reason: 'display-arrangement-mismatch' } });
+  await first;
+
+  assert.equal(logger.warns.length, 1, 'one warning when the ack reports a placement skip');
+  assert.equal(
+    logger.warns[0].message,
+    'Window placement skipped: configured stage/overlay rects do not fit the current display arrangement; windows left as launched and presenter overlays kept back',
+  );
+  assert.equal(trace.includes('switchProgramScene:Deckhand_Dual Browser'), true, 'the skip must not suppress the reveal');
+
+  // Every later slide re-acks the same skip; no per-slide spam.
+  const second = coordinator.handleDriverPositionChanged({ id: 'intro', index: { h: 0, v: 0 }, meta: {} });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  hub.emit('observerWindowSettled', { seq: 2, placementSkipped: { reason: 'display-arrangement-mismatch' } });
+  await second;
+
+  assert.equal(logger.warns.length, 1, 'placement-skip warnings dedupe to once per process');
+});
+
 test('coordinator resolves the settle waiter without warnings when the ack carries no frame mismatches', async () => {
   const trace = [];
   const config = createTransitionsConfig({ windowSettleMs: 2000 });

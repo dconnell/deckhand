@@ -6,7 +6,9 @@ import {
   buildCloseWindowSwiftScript,
   closeMacWindow,
   diffNewWindows,
+  enumerateWindowsByOwnerName,
   findPidByOwnerName,
+  findUniqueBoundsFallbackCandidate,
 } from '../../src/macWindows.js';
 
 test('diffNewWindows returns windows present in after but absent from before', () => {
@@ -203,4 +205,61 @@ test('findPidByOwnerName returns null when no windows match the owner name', () 
   } finally {
     Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
   }
+});
+
+test('enumerateWindowsByOwnerName returns [] off darwin — a platform guard, not a snapshot failure', () => {
+  const originalPlatform = process.platform;
+  Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+
+  try {
+    assert.deepEqual(enumerateWindowsByOwnerName('Visual Studio Code'), []);
+  } finally {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+  }
+});
+
+test('findUniqueBoundsFallbackCandidate returns the single same-pid window within the bounds tolerance', () => {
+  const target = { windowId: 7, x: 100, y: 200, width: 1200, height: 800 };
+  const windows = [
+    { windowId: 99, x: 103, y: 204, width: 1202, height: 799 },
+    { windowId: 50, x: 900, y: 900, width: 500, height: 400 },
+  ];
+
+  assert.deepEqual(
+    findUniqueBoundsFallbackCandidate(windows, target),
+    { windowId: 99, x: 103, y: 204, width: 1202, height: 799 },
+  );
+});
+
+test('findUniqueBoundsFallbackCandidate keeps the Swift script boundary: total deviation of exactly 12 matches', () => {
+  const target = { windowId: 7, x: 100, y: 200, width: 1200, height: 800 };
+  const boundary = { windowId: 99, x: 104, y: 204, width: 1202, height: 802 };
+
+  assert.deepEqual(findUniqueBoundsFallbackCandidate([boundary], target), boundary);
+});
+
+test('findUniqueBoundsFallbackCandidate refuses to pick when multiple same-pid windows match the tolerance', () => {
+  // The VS Code incident shape: every window of the app shares one pid, so a
+  // same-pid close must never guess between stacked/adjacent windows.
+  const target = { windowId: 7, x: 100, y: 200, width: 1200, height: 800 };
+  const windows = [
+    { windowId: 21, x: 100, y: 200, width: 1200, height: 800 },
+    { windowId: 22, x: 102, y: 202, width: 1200, height: 800 },
+  ];
+
+  assert.equal(findUniqueBoundsFallbackCandidate(windows, target), null);
+});
+
+test('findUniqueBoundsFallbackCandidate returns null when no same-pid window is within the tolerance', () => {
+  const target = { windowId: 7, x: 100, y: 200, width: 1200, height: 800 };
+  const windows = [
+    { windowId: 99, x: 113, y: 200, width: 1200, height: 800 },
+    { windowId: 50, x: 900, y: 900, width: 500, height: 400 },
+  ];
+
+  assert.equal(findUniqueBoundsFallbackCandidate(windows, target), null);
+});
+
+test('findUniqueBoundsFallbackCandidate returns null without a target descriptor', () => {
+  assert.equal(findUniqueBoundsFallbackCandidate([{ windowId: 9, x: 0, y: 0, width: 10, height: 10 }], null), null);
 });

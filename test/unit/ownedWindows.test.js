@@ -213,6 +213,81 @@ test('resolveOwnedWindowBindings launch errors are logged and the source is skip
   assert.ok(/Boom/.test(JSON.stringify(errors[0])));
 });
 
+test('resolveOwnedWindowBindings skips binding when the before-snapshot fails', async () => {
+  const launchCalls = [];
+  const warnings = [];
+  const errors = [];
+  const entry = {
+    sourceId: 'Editor',
+    snapshot() {
+      // `null` = the snapshot itself failed (macWindows enumeration error),
+      // which must never be read as "no windows existed before launch".
+      return null;
+    },
+    launch() {
+      launchCalls.push('Editor');
+      return Promise.resolve({ pid: 4321 });
+    },
+  };
+
+  const result = await resolveOwnedWindowBindings({
+    entries: [entry],
+    delay: async () => {},
+    logger: {
+      ...createNoopLogger(),
+      warn: (m, c) => warnings.push({ m, c }),
+      error: (m, c) => errors.push({ m, c }),
+    },
+  });
+
+  assert.deepEqual(result, {});
+  assert.deepEqual(launchCalls, [], 'must not launch a window it cannot bind');
+  assert.equal(errors.length, 0);
+  assert.equal(warnings.length, 1);
+  assert.ok(/Editor/.test(JSON.stringify(warnings[0])));
+});
+
+test('resolveOwnedWindowBindings skips binding when the post-launch snapshot fails', async () => {
+  let launched = false;
+  const warnings = [];
+  const errors = [];
+  const entry = {
+    sourceId: 'Editor',
+    snapshot() {
+      if (!launched) {
+        return [{ windowId: 1, title: 'existing' }];
+      }
+
+      return null;
+    },
+    async launch() {
+      launched = true;
+      return { pid: 4321 };
+    },
+  };
+
+  const result = await resolveOwnedWindowBindings({
+    entries: [entry],
+    delay: async () => {},
+    maxAttempts: 3,
+    retryDelayMs: 1,
+    logger: {
+      ...createNoopLogger(),
+      warn: (m, c) => warnings.push({ m, c }),
+      error: (m, c) => errors.push({ m, c }),
+    },
+  });
+
+  assert.deepEqual(result, {});
+  assert.equal(errors.length, 0);
+  assert.ok(warnings.length >= 1);
+  assert.ok(warnings.some((w) => /Editor/.test(JSON.stringify(w))));
+  assert.ok(
+    warnings.some((w) => /snapshot failed after launch/.test(JSON.stringify(w))),
+    `expected the dedicated snapshot-failed-after-launch warning, got: ${JSON.stringify(warnings)}`,
+  );
+});
+
 test('resolveOwnedWindowBindings extracts pid from diff-result windows', async () => {
   let launched = false;
   const entry = {

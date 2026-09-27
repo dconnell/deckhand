@@ -27,13 +27,13 @@ function M.start(options)
 
     return nil
   end
+  local log_fn = settings.logFn or function(message)
+    print(message)
+  end
   local apply_state_fn = settings.applyStateFn or function(state)
     return apply_state.apply(state, { logFn = log_fn })
   end
   local timer_after = settings.timerAfterFn or hs.timer.doAfter
-  local log_fn = settings.logFn or function(message)
-    print(message)
-  end
   local hub_url = settings.hubUrl or "ws://127.0.0.1:8765"
   local hotkey_bind = settings.hotkeyBindFn or function(modifiers, key, callback)
     return hs.hotkey.bind(modifiers, key, callback)
@@ -48,6 +48,7 @@ function M.start(options)
   local prev_hotkey = nil
   local socket = nil
   local stopped = false
+  local placement_skip_logged = false
 
   local function stop_reconnect_timer()
     if reconnect_timer and reconnect_timer.stop then
@@ -74,6 +75,7 @@ function M.start(options)
     socket = websocket_factory(hub_url, function(event, message)
       if event == "open" then
         last_seq = 0
+        placement_skip_logged = false
         socket:send(encode_json({
           type = "register",
           role = "observer",
@@ -96,6 +98,15 @@ function M.start(options)
         last_seq = seq
         local result = apply_state_fn(payload)
         local current_bindings = payload.managedWindowBindings or payload.windowBindings or {}
+
+        -- One warning per hub connection (not per presentationState): every
+        -- slide would otherwise repeat that the configured rects don't fit
+        -- the current displays.
+        if result and result.placementSkipped ~= nil and not placement_skip_logged then
+          placement_skip_logged = true
+          log_fn("[deckhand:hammerspoon] Display arrangement does not match configured rects; skipping window placement (windows left as launched)")
+        end
+
         for _, source in ipairs(result and result.missing or {}) do
           log_fn(string.format("[deckhand:hammerspoon] Window not found for source %s", source))
         end
@@ -137,6 +148,9 @@ function M.start(options)
         }
         if result and result.frameMismatches and #result.frameMismatches > 0 then
           settled.frameMismatches = result.frameMismatches
+        end
+        if result and result.placementSkipped ~= nil then
+          settled.placementSkipped = result.placementSkipped
         end
         socket:send(encode_json(settled), false)
         return

@@ -356,6 +356,67 @@ export async function run(options = {}) {
       phase = 'shuttingDown';
       logger.info('Received shutdown signal', { signal });
 
+      // Why window closing runs LAST: closing an owned app window can kill
+      // deckhand's own host process — deckhand often runs inside a VS Code
+      // integrated terminal that is itself an owned app window. Once that
+      // window closes, this process can die mid-teardown, so everything else
+      // (coordinator stop with its OBS studio-mode restore, the Chrome kill)
+      // must complete BEFORE any window is touched. The later steps read
+      // nothing from the window state, so closing windows first was never a
+      // dependency — only a hazard.
+
+      const stopPromise = Promise.resolve(stopBrowserRuntime());
+      // A stop that rejects after the timeout wins the race must not surface
+      // as an unhandled rejection.
+      stopPromise.catch(() => {});
+
+      let stopTimedOut = false;
+      let stopTimer = null;
+      try {
+        await Promise.race([
+          stopPromise,
+          new Promise((resolve) => {
+            stopTimer = setTimeout(() => {
+              stopTimedOut = true;
+              resolve(undefined);
+            }, shutdownStopTimeoutMs);
+          }),
+        ]);
+      } finally {
+        // A stop that settles before the timeout must not leak the pending
+        // timer into the rest of shutdown.
+        clearTimeout(stopTimer);
+      }
+
+      if (stopTimedOut) {
+        logger.warn('Timed out stopping coordinator/browser runtime; continuing shutdown', { timeoutMs: shutdownStopTimeoutMs });
+      }
+
+      const chromePid = chromeLaunch?.chromePid;
+
+      if (typeof chromePid === 'number' && chromePid > 0) {
+        try {
+          process.kill(-chromePid, 'SIGKILL');
+        } catch {
+          // process group may have already exited
+        }
+      }
+
+      try {
+        execSync('pkill -9 -f "deckhand-chrome-profiles"', { stdio: 'ignore' });
+      } catch {
+        // no matching processes
+      }
+
+      try {
+        execSync('pkill -9 -f "deckhand-profile-"', { stdio: 'ignore' });
+      } catch {
+        // no matching processes
+      }
+
+      // Windows last (see the why-comment at the top of this handler): a
+      // close that kills the host terminal must not be able to preempt the
+      // OBS restore or the Chrome kill above.
       for (const [sourceId, source] of Object.entries(config.sources)) {
         if (source.kind !== 'app') {
           continue;
@@ -414,55 +475,6 @@ export async function run(options = {}) {
         }
       }
 
-      const stopPromise = Promise.resolve(stopBrowserRuntime());
-      // A stop that rejects after the timeout wins the race must not surface
-      // as an unhandled rejection.
-      stopPromise.catch(() => {});
-
-      let stopTimedOut = false;
-      let stopTimer = null;
-      try {
-        await Promise.race([
-          stopPromise,
-          new Promise((resolve) => {
-            stopTimer = setTimeout(() => {
-              stopTimedOut = true;
-              resolve(undefined);
-            }, shutdownStopTimeoutMs);
-          }),
-        ]);
-      } finally {
-        // A stop that settles before the timeout must not leak the pending
-        // timer into the rest of shutdown.
-        clearTimeout(stopTimer);
-      }
-
-      if (stopTimedOut) {
-        logger.warn('Timed out stopping coordinator/browser runtime; continuing shutdown', { timeoutMs: shutdownStopTimeoutMs });
-      }
-
-      const chromePid = chromeLaunch?.chromePid;
-
-      if (typeof chromePid === 'number' && chromePid > 0) {
-        try {
-          process.kill(-chromePid, 'SIGKILL');
-        } catch {
-          // process group may have already exited
-        }
-      }
-
-      try {
-        execSync('pkill -9 -f "deckhand-chrome-profiles"', { stdio: 'ignore' });
-      } catch {
-        // no matching processes
-      }
-
-      try {
-        execSync('pkill -9 -f "deckhand-profile-"', { stdio: 'ignore' });
-      } catch {
-        // no matching processes
-      }
-
       process.exit(0);
     };
 
@@ -479,6 +491,10 @@ export async function run(options = {}) {
 
     bindShutdownSignal('SIGINT');
     bindShutdownSignal('SIGTERM');
+    // SIGHUP: the host terminal died (e.g. its window was closed) — run the
+    // same teardown flow. The `shuttingDown` flag at the top of `shutdown`
+    // keeps this idempotent when several signals arrive during one teardown.
+    bindShutdownSignal('SIGHUP');
   }
 
   try {

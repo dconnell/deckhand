@@ -392,6 +392,8 @@ export function createHub(options) {
         // Optional per-source frame mismatches (warn-only diagnostics);
         // omitted when the presenter reported none.
         ...(message.frameMismatches === undefined ? {} : { frameMismatches: message.frameMismatches }),
+        // Optional placement-skip report; omitted on a normal ack.
+        ...(message.placementSkipped === undefined ? {} : { placementSkipped: message.placementSkipped }),
         sender: serializeClient(client),
       });
       return;

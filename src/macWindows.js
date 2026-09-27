@@ -262,7 +262,7 @@ export function enumerateWindowsByPid(pid) {
  * is only a secondary splash-rejection signal, not the identity source of truth.
  *
  * @param {string} ownerName macOS owner (app) name prefix, as in `kCGWindowOwnerName`. Pass an empty string to enumerate all layer-0 windows regardless of owner.
- * @returns {Array<{ windowId: number, title: string, pid?: number, ownerName?: string }>}
+ * @returns {Array<{ windowId: number, title: string, pid?: number, ownerName?: string }> | null} Matching window entries, or `null` when the snapshot itself failed. The distinction matters: the owned-window launch diff (`ownedWindows.js`) reads an empty array as "nothing pre-existed", which would pin the largest pre-existing window as the newly-launched one, while `null` lets callers fail safe and skip binding.
  */
 export function enumerateWindowsByOwnerName(ownerName) {
   if (process.platform !== 'darwin') {
@@ -296,7 +296,11 @@ export function enumerateWindowsByOwnerName(ownerName) {
         return window;
       });
   } catch {
-    return [];
+    // `null` marks a FAILED snapshot, distinct from `[]` ("no windows
+    // matched"): callers that diff before/after launches must not read a
+    // failed enumeration as an empty desktop, or they bind whatever was
+    // already on screen (observed: the terminal hosting deckhand itself).
+    return null;
   }
 }
 
@@ -673,6 +677,47 @@ ${discardAfterClose}    }
 }
 
 /**
+ * Total bounds deviation (Manhattan sum of position and size deltas) at or
+ * below which the bounds-based close fallback considers a window a match.
+ * Mirrors the Swift script's `bestScore <= 12` threshold.
+ *
+ * @type {number}
+ */
+export const BOUNDS_FALLBACK_TOLERANCE = 12;
+
+/**
+ * Identify the unique same-pid window the bounds-based close fallback may
+ * target, or report that no unambiguous target exists.
+ *
+ * Why the uniqueness requirement: the fallback closes whichever window of the
+ * pid scores closest to the remembered bounds, making it the only close path
+ * that can hit a DIFFERENT window of the same pid — and apps like VS Code run
+ * every window on one shared process. With zero or multiple in-tolerance
+ * candidates the intended target cannot be identified, so nothing may be
+ * closed: leave the window open and let the caller warn.
+ *
+ * @param {Array<{ windowId: number, x: number, y: number, width: number, height: number }>} samePidWindows Layer-0 windows of the pid (e.g. from `getAllWindowIdsViaCGList`).
+ * @param {{ windowId: number, x: number, y: number, width: number, height: number } | null} targetWindow Bounds descriptor of the bound window.
+ * @param {number} [tolerance] Maximum total bounds deviation for a match.
+ * @returns {{ windowId: number, x: number, y: number, width: number, height: number } | null} The single in-tolerance window, or `null` when the target is absent or ambiguous.
+ */
+export function findUniqueBoundsFallbackCandidate(samePidWindows, targetWindow, tolerance = BOUNDS_FALLBACK_TOLERANCE) {
+  if (targetWindow === null || !Array.isArray(samePidWindows)) {
+    return null;
+  }
+
+  const matches = samePidWindows.filter((window) => {
+    const dx = Math.abs(window.x - targetWindow.x);
+    const dy = Math.abs(window.y - targetWindow.y);
+    const dw = Math.abs(window.width - targetWindow.width);
+    const dh = Math.abs(window.height - targetWindow.height);
+    return dx + dy + dw + dh <= tolerance;
+  });
+
+  return matches.length === 1 ? matches[0] : null;
+}
+
+/**
  * Close a specific macOS window by CGWindowID via the Accessibility API.
  *
  * Used during shutdown to close owned app windows (iTerm2, generic apps) that
@@ -724,18 +769,31 @@ export function closeMacWindow(macWindowId, pid, options = {}) {
     }
 
     if (targetWindow !== null) {
-      try {
-        execSync(
-          `swift - ${targetWindow.x} ${targetWindow.y} ${targetWindow.width} ${targetWindow.height} ${targetPid}`,
-          {
-            encoding: 'utf8',
-            timeout: 5000,
-            input: buildCloseWindowByBoundsSwiftScript(options),
-            stdio: ['pipe', 'ignore', 'ignore'],
-          },
-        );
-      } catch {
-        // continue with presence check
+      const fallbackCandidate = findUniqueBoundsFallbackCandidate(
+        getAllWindowIdsViaCGList(targetPid),
+        targetWindow,
+      );
+
+      if (fallbackCandidate === null) {
+        // Fail safe: with zero or multiple in-tolerance same-pid windows the
+        // bounds script could close the WRONG window (all VS Code windows
+        // share one process). Leave the window open — the unconfirmed close
+        // surfaces to the caller (`closeOwnedAppWindows`) as a warning naming
+        // the source and binding.
+      } else {
+        try {
+          execSync(
+            `swift - ${targetWindow.x} ${targetWindow.y} ${targetWindow.width} ${targetWindow.height} ${targetPid}`,
+            {
+              encoding: 'utf8',
+              timeout: 5000,
+              input: buildCloseWindowByBoundsSwiftScript(options),
+              stdio: ['pipe', 'ignore', 'ignore'],
+            },
+          );
+        } catch {
+          // continue with presence check
+        }
       }
 
       if (!hasWindowIdForPid(targetWindowId, targetPid)) {
@@ -754,7 +812,8 @@ export function closeMacWindow(macWindowId, pid, options = {}) {
  * @returns {number | null}
  */
 export function findPidByOwnerName(ownerName) {
-  const windows = enumerateWindowsByOwnerName(ownerName);
+  // Snapshot failure (`null`) and "no matching windows" both mean: no pid.
+  const windows = enumerateWindowsByOwnerName(ownerName) ?? [];
 
   for (const window of windows) {
     if (typeof window.pid === 'number' && window.pid > 0) {
