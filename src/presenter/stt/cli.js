@@ -1,5 +1,4 @@
-import { ConfigError } from '../../config.js';
-import { loadPresentationConfig, parsePresentationCliArgs } from '../../presentations.js';
+import { isMainModule, loadPresenterCliContext } from '../cliBootstrap.js';
 import { runSttObserver } from './runner.js';
 
 function createConsoleLogger(consoleLike) {
@@ -29,10 +28,6 @@ function normalizeRetryDelayMs(value) {
   return parsed;
 }
 
-function isMainModule(metaUrl) {
-  return process.argv[1] !== undefined && metaUrl === new URL(`file://${process.argv[1]}`).href;
-}
-
 /**
  * Run the presenter STT CLI.
  *
@@ -44,35 +39,24 @@ export async function runPresenterStt(options = {}) {
   const consoleLike = options.consoleLike ?? console;
   const cwd = options.cwd ?? process.cwd();
   const installSignalHandlers = options.installSignalHandlers ?? true;
-  let parsed;
 
-  try {
-    parsed = parsePresentationCliArgs({
-      args,
-      options: {
-        input: { type: 'string' },
-        once: { type: 'boolean', default: false },
-        'retry-delay-ms': { type: 'string' },
-      },
-    });
-  } catch (error) {
-    consoleLike.error(error instanceof Error ? error.message : String(error));
+  const bootstrap = await loadPresenterCliContext({
+    args,
+    consoleLike,
+    cwd,
+    options: {
+      input: { type: 'string' },
+      once: { type: 'boolean', default: false },
+      'retry-delay-ms': { type: 'string' },
+    },
+  });
+
+  if (!bootstrap.ok) {
     return 1;
   }
 
-  let config;
-
-  try {
-    config = (await loadPresentationConfig({ cwd, presentationName: parsed.presentationName })).config;
-  } catch (error) {
-    if (error instanceof ConfigError) {
-      consoleLike.error(`Invalid configuration at ${error.path}: ${error.message}`);
-      return 1;
-    }
-
-    consoleLike.error(`Failed to load configuration: ${error instanceof Error ? error.message : String(error)}`);
-    return 1;
-  }
+  const parsed = bootstrap.parsed;
+  const config = bootstrap.config;
 
   if (config.presenter === null || config.presenter.stt === null) {
     consoleLike.error('Presenter STT is not configured in this config file.');

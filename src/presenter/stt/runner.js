@@ -2,16 +2,44 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import WebSocket from 'ws';
 
+import { errorMessage } from '../../lib/errors.js';
+import { createNoopLogger } from '../../logger.js';
 import { buildWhisperArgs } from './buildWhisperArgs.js';
 import { shouldPublishTranscript } from './dedupeTranscript.js';
 import { createWhisperOutputParser } from './parseWhisperOutput.js';
 import { createSubprocess } from './subprocess.js';
 
-function createNoopLogger() {
+/**
+ * Named failure for a whisper-stream run. Carries the captured process stderr
+ * (and the triggering error as `cause`) as structured fields instead of the
+ * ad-hoc `error.stderr = ...` property mutation this module used before.
+ */
+class WhisperStreamError extends Error {
+  /**
+   * @param {string} message Failure description.
+   * @param {{ cause?: unknown, stderr?: string }} [details] Structured diagnostics.
+   */
+  constructor(message, details = {}) {
+    super(message, { cause: details.cause });
+    this.name = 'WhisperStreamError';
+
+    if (details.stderr !== undefined) {
+      this.stderr = details.stderr;
+    }
+  }
+}
+
+/**
+ * Build the warn-log context for a caught error, exposing stderr only when the
+ * failure carries structured whisper diagnostics.
+ *
+ * @param {unknown} error The caught error.
+ * @returns {{ error: string, stderr: string | undefined }} Log context.
+ */
+function errorDiagnostics(error) {
   return {
-    error() {},
-    info() {},
-    warn() {},
+    error: errorMessage(error),
+    stderr: error instanceof WhisperStreamError ? error.stderr : undefined,
   };
 }
 
@@ -204,7 +232,7 @@ export async function runSttObserver(options) {
               }
 
               if (!isSocketOpen(socket, WebSocketClass)) {
-                stopReason = new Error('Hub socket is not open');
+                stopReason = new WhisperStreamError('Hub socket is not open');
                 closeProcess(child);
                 return;
               }
@@ -250,14 +278,14 @@ export async function runSttObserver(options) {
                 return;
               }
 
-              if (stopReason instanceof Error) {
-                stopReason.cause = error;
-                stopReason.stderr = capturedStderr;
-                throw stopReason;
+              if (stopReason instanceof WhisperStreamError) {
+                throw new WhisperStreamError(stopReason.message, { cause: error, stderr: capturedStderr });
               }
 
-              if (error instanceof Error && capturedStderr !== '') {
-                error.stderr = capturedStderr;
+              // Abort errors must keep their identity: the enclosing catch
+              // relies on the error name to stop the retry loop cleanly.
+              if (capturedStderr !== '' && !isAbortError(error)) {
+                throw new WhisperStreamError(errorMessage(error), { cause: error, stderr: capturedStderr });
               }
 
               throw error;
@@ -272,15 +300,15 @@ export async function runSttObserver(options) {
               return;
             }
 
-            if (stopReason instanceof Error) {
-              stopReason.stderr = exitResult?.stderr ?? capturedStderr;
-              throw stopReason;
+            if (stopReason instanceof WhisperStreamError) {
+              throw new WhisperStreamError(stopReason.message, { stderr: exitResult?.stderr ?? capturedStderr });
             }
 
             if (!signal?.aborted) {
-              const error = new Error(exitResult?.stderr?.trim() || capturedStderr.trim() || 'whisper-stream exited unexpectedly');
-              error.stderr = exitResult?.stderr ?? capturedStderr;
-              throw error;
+              throw new WhisperStreamError(
+                exitResult?.stderr?.trim() || capturedStderr.trim() || 'whisper-stream exited unexpectedly',
+                { stderr: exitResult?.stderr ?? capturedStderr },
+              );
             }
           } catch (error) {
             if (isAbortError(error)) {
@@ -292,17 +320,11 @@ export async function runSttObserver(options) {
             }
 
             if (!isSocketOpen(socket, WebSocketClass)) {
-              logger.warn('STT hub connection dropped; reconnecting', {
-                error: error instanceof Error ? error.message : String(error),
-                stderr: error instanceof Error && 'stderr' in error ? error.stderr : undefined,
-              });
+              logger.warn('STT hub connection dropped; reconnecting', errorDiagnostics(error));
               break;
             }
 
-            logger.warn('STT stream failed; retrying', {
-              error: error instanceof Error ? error.message : String(error),
-              stderr: error instanceof Error && 'stderr' in error ? error.stderr : undefined,
-            });
+            logger.warn('STT stream failed; retrying', errorDiagnostics(error));
             await waitForRetry(delayFn, restartDelayMs, signal);
           } finally {
             if (child !== null) {
@@ -319,10 +341,7 @@ export async function runSttObserver(options) {
           throw error;
         }
 
-        logger.warn('STT hub connection failed; retrying', {
-          error: error instanceof Error ? error.message : String(error),
-          stderr: error instanceof Error && 'stderr' in error ? error.stderr : undefined,
-        });
+        logger.warn('STT hub connection failed; retrying', errorDiagnostics(error));
         await waitForRetry(delayFn, restartDelayMs, signal);
       } finally {
         if (socket !== null) {

@@ -33,6 +33,20 @@ export function createPresenterHttpServer(options) {
     return resolvePathWithinRoot(options.assetsRoot, fallbackPath);
   }
 
+  function sendJsonEndpoint(req, res, value) {
+    res.writeHead(200, {
+      'Cache-Control': 'no-store',
+      'Content-Type': 'application/json; charset=utf-8',
+    });
+
+    if (req.method !== 'HEAD') {
+      res.end(JSON.stringify(value));
+      return;
+    }
+
+    res.end();
+  }
+
   async function handleRequest(req, res) {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.writeHead(405, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -40,35 +54,26 @@ export function createPresenterHttpServer(options) {
       return;
     }
 
-    const requestUrl = new URL(req.url, `http://${options.host}:${address.port}`);
+    let requestUrl;
+
+    try {
+      requestUrl = new URL(req.url, `http://${options.host}:${address.port}`);
+    } catch {
+      // Absolute-form or percent-mangled targets can fail URL parsing; that is
+      // a client fault and must be classified as 400, not surface as a
+      // logged 500.
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Bad request');
+      return;
+    }
 
     if (requestUrl.pathname === '/status.json') {
-      const body = JSON.stringify(options.getStatus());
-      res.writeHead(200, {
-        'Cache-Control': 'no-store',
-        'Content-Type': 'application/json; charset=utf-8',
-      });
-      if (req.method !== 'HEAD') {
-        res.end(body);
-        return;
-      }
-
-      res.end();
+      sendJsonEndpoint(req, res, options.getStatus());
       return;
     }
 
     if (requestUrl.pathname === '/presenter/bootstrap.json') {
-      const body = JSON.stringify(options.presenterBootstrap);
-      res.writeHead(200, {
-        'Cache-Control': 'no-store',
-        'Content-Type': 'application/json; charset=utf-8',
-      });
-      if (req.method !== 'HEAD') {
-        res.end(body);
-        return;
-      }
-
-      res.end();
+      sendJsonEndpoint(req, res, options.presenterBootstrap);
       return;
     }
 

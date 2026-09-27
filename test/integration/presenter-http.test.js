@@ -103,6 +103,50 @@ test('presenter HTTP server serves presenter assets and status without exposing 
   }
 });
 
+test('presenter HTTP server classifies malformed request targets as 400', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-presenter-http-bad-'));
+  const presenterRoot = path.join(tempDir, 'presenter-web');
+  await mkdir(presenterRoot, { recursive: true });
+  await writeFile(path.join(presenterRoot, 'index.html'), '<!doctype html><title>Presenter</title>', 'utf8');
+  const loggerErrors = [];
+
+  const server = createPresenterHttpServer({
+    assetsRoot: presenterRoot,
+    getStatus() {
+      return { service: 'deckhand', current: null, presenter: null };
+    },
+    host: '127.0.0.1',
+    logger: {
+      info() {},
+      warn() {},
+      error(message, context) {
+        loggerErrors.push({ message, context });
+      },
+    },
+    presenterBootstrap: { followEnabledByDefault: true, hubUrl: 'ws://127.0.0.1:8765' },
+    port: 0,
+  });
+
+  try {
+    await server.start();
+    const { port } = server.getAddress();
+
+    // Absolute-form targets with an invalid port, and targets with invalid
+    // percent-encoding, both make `new URL(req.url, base)` throw. They must be
+    // classified as client errors (400) instead of surfacing as logged 500s.
+    for (const badTarget of ['http://x:port/', 'http://%zz']) {
+      const response = await rawGet(port, badTarget);
+      assert.equal(response.status, 400, `expected 400 for target ${badTarget}`);
+      assert.doesNotMatch(response.body, /Internal server error/);
+    }
+
+    assert.deepEqual(loggerErrors, [], 'malformed request targets must not be logged as server faults');
+  } finally {
+    await server.stop();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('presenter HTTP server serves the program preview with etag caching', async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-presenter-http-preview-'));
   const presenterRoot = path.join(tempDir, 'presenter-web');

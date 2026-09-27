@@ -8,6 +8,20 @@ function createInitialState() {
   };
 }
 
+function renderPreviewImage(image, preview) {
+  if (!preview?.available) {
+    // The image endpoint returns 503 while preview is unavailable, so the
+    // element must carry no src at all — otherwise the browser retries the
+    // broken URL on every render.
+    image.removeAttribute('src');
+    image.hidden = true;
+    return;
+  }
+
+  image.hidden = false;
+  image.src = buildProgramPreviewUrl(preview.path, preview.revision);
+}
+
 function render(state) {
   document.getElementById('connection-status').textContent = state.connection;
 
@@ -21,6 +35,7 @@ function render(state) {
     document.getElementById('timer-remaining').textContent = '--:--';
     document.getElementById('stream-warning').textContent = 'No stream data';
     document.getElementById('preview-state').textContent = 'Preview unavailable';
+    renderPreviewImage(document.getElementById('program-preview'), null);
     return;
   }
 
@@ -43,9 +58,7 @@ function render(state) {
   document.getElementById('preview-state').textContent = presenter.obs.preview?.available
     ? `Preview rev ${presenter.obs.preview.revision}`
     : 'Preview unavailable';
-  document.getElementById('program-preview').src = presenter.obs.preview?.available
-    ? buildProgramPreviewUrl(presenter.obs.preview.path, presenter.obs.preview.revision)
-    : presenter.obs.preview?.path ?? '/presenter/program.jpg';
+  renderPreviewImage(document.getElementById('program-preview'), presenter.obs.preview ?? null);
 }
 
 async function main() {

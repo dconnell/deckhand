@@ -101,6 +101,11 @@ body {
   background: #02070c;
 }
 
+/* The class's display:block would otherwise override the UA [hidden] rule. */
+.preview-image[hidden] {
+  display: none;
+}
+
 .teleprompter-shell {
   height: 100vh;
   overflow: hidden;

@@ -288,6 +288,35 @@ test('runSttObserver fails fast in once mode when the persistent subprocess exit
   }
 });
 
+test('runSttObserver surfaces captured stderr as a structured WhisperStreamError in once mode', async () => {
+  const server = await createMessageServer();
+  const subprocess = createMockPersistentSubprocess();
+
+  try {
+    const runPromise = runSttObserver({
+      createSubprocess: () => subprocess,
+      hubUrl: server.url,
+      once: true,
+      stt: createSttConfig(),
+    });
+    const rejection = assert.rejects(runPromise, (error) => {
+      assert.equal(error.name, 'WhisperStreamError');
+      assert.equal(error.message, 'capture failed');
+      assert.match(String(error.stderr), /dropped audio/);
+      assert.match(String(error.cause?.message), /capture failed/);
+      return true;
+    });
+
+    await subprocess.waitUntilReady();
+    subprocess.stderr.emit('data', 'dropped audio\n');
+    subprocess.fail(new Error('capture failed'));
+
+    await rejection;
+  } finally {
+    await server.close();
+  }
+});
+
 test('runSttObserver aborts the persistent subprocess when the observer is cancelled', async () => {
   const server = await createMessageServer();
   const controller = new AbortController();

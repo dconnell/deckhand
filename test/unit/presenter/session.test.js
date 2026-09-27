@@ -54,6 +54,67 @@ test('sticky presentation state bootstraps structured presenter lines', () => {
   ]);
 });
 
+test('presenter state starts with an explicit empty current state', () => {
+  const session = createPresenterSession({ followEnabledByDefault: true });
+
+  const state = session.getState();
+  assert.equal(state.current.script, null);
+  assert.equal(state.current.slideId, null);
+  assert.deepEqual(state.current.lines, []);
+});
+
+test('getState returns a detached snapshot that later mutations cannot leak into', () => {
+  const session = createPresenterSession({ followEnabledByDefault: true });
+
+  session.applyPresentationState(createPresentationState(3), 1_000);
+  const snapshot = session.getState();
+  snapshot.current.lines.push({ spokenText: 'mutated', paragraphIndex: 9 });
+  snapshot.teleprompter.recentTranscript.push({ source: 'whisper', text: 'mutated', capturedAtMs: 1 });
+  snapshot.seq = 999;
+
+  const next = session.getState();
+  assert.equal(next.seq, 1);
+  assert.deepEqual(next.current.lines.map((line) => line.spokenText), [
+    'Walk through the init flow.',
+    '',
+    'Emphasize line 42.',
+    'Then run the demo.',
+  ]);
+  assert.deepEqual(next.teleprompter.recentTranscript, []);
+});
+
+test('preview updates only commit when the merged preview state changes', () => {
+  const session = createPresenterSession({ followEnabledByDefault: true });
+  const initialSeq = session.getState().seq;
+
+  assert.equal(session.updateObsPreview({ stale: false }, 1_000), true);
+  const afterChange = session.getState();
+  assert.equal(afterChange.seq, initialSeq + 1);
+  assert.equal(afterChange.updatedAtMs, 1_000);
+  assert.equal(afterChange.obs.preview.stale, false);
+
+  assert.equal(session.updateObsPreview({ stale: false }, 2_000), false);
+  const afterNoOp = session.getState();
+  assert.equal(afterNoOp.seq, initialSeq + 1);
+  assert.equal(afterNoOp.updatedAtMs, 1_000);
+});
+
+test('stream updates only commit when the merged stream state changes', () => {
+  const session = createPresenterSession({ followEnabledByDefault: true });
+  const initialSeq = session.getState().seq;
+
+  assert.equal(session.updateStream({ active: true, bitrateKbps: 4_000 }, 1_000), true);
+  const afterChange = session.getState();
+  assert.equal(afterChange.seq, initialSeq + 1);
+  assert.equal(afterChange.updatedAtMs, 1_000);
+  assert.equal(afterChange.stream.active, true);
+
+  assert.equal(session.updateStream({ active: true, bitrateKbps: 4_000 }, 2_000), false);
+  const afterNoOp = session.getState();
+  assert.equal(afterNoOp.seq, initialSeq + 1);
+  assert.equal(afterNoOp.updatedAtMs, 1_000);
+});
+
 test('same-slide presentation republish preserves teleprompter follow state', () => {
   const session = createPresenterSession({ followEnabledByDefault: true });
 
