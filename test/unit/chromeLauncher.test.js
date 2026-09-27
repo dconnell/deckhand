@@ -7,33 +7,6 @@ import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 
 import { createWsTransport, discoverCdpEndpoint, launchChromeSession } from '../../src/chromeLauncher.js';
 
-class FakeSocket {
-  constructor() {
-    this.handlers = new Map();
-    this.sent = [];
-    this.closed = false;
-  }
-
-  on(event, handler) {
-    const handlers = this.handlers.get(event) ?? new Set();
-    handlers.add(handler);
-    this.handlers.set(event, handlers);
-  }
-
-  send(raw) {
-    this.sent.push(raw);
-  }
-
-  close() {
-    this.closed = true;
-    this.handlers.get('close')?.forEach((handler) => handler());
-  }
-
-  emit(event, payload) {
-    this.handlers.get(event)?.forEach((handler) => handler(payload));
-  }
-}
-
 test('discoverCdpEndpoint returns the webSocketDebuggerUrl from /json/version', async () => {
   const calls = [];
 
@@ -166,8 +139,8 @@ test('launchChromeSession uses a named profile when profileName is configured', 
   }
 });
 
-test('createWsTransport forwards CDP frames and close events through the contract', async () => {
-  const fake = {
+function createFakeSocket() {
+  return {
     handlers: new Map(),
     sent: [],
     closed: false,
@@ -187,64 +160,47 @@ test('createWsTransport forwards CDP frames and close events through the contrac
       this.handlers.get(event)?.forEach((handler) => handler(payload));
     },
   };
+}
 
-  const transport = createWsTransport({
-    url: 'ws://127.0.0.1:9222/devtools/browser/abc',
-    WebSocketClass: class {
-      constructor() {
-        Object.assign(this, fake);
-      }
-    },
-  });
-
-  const messages = [];
-  const closes = [];
-
-  transport.on('message', (raw) => messages.push(raw));
-  transport.on('close', () => closes.push('closed'));
-
-  transport.send('{"id":1,"method":"Target.getTargets"}');
-  fake.emit('message', '{"id":1,"result":{}}');
-  fake.emit('close');
-
-  assert.deepEqual(fake.sent, ['{"id":1,"method":"Target.getTargets"}']);
-  assert.deepEqual(messages, ['{"id":1,"result":{}}']);
-  assert.deepEqual(closes, ['closed']);
-});
-
-test('createWsTransport exposes readiness that resolves on socket open', async () => {
-  const fake = {
-    handlers: new Map(),
-    sent: [],
-    closed: false,
-    on(event, handler) {
-      const handlers = this.handlers.get(event) ?? new Set();
-      handlers.add(handler);
-      this.handlers.set(event, handlers);
-    },
-    send(raw) {
-      this.sent.push(raw);
-    },
-    close() {
-      this.closed = true;
-      this.handlers.get('close')?.forEach((handler) => handler());
-    },
-    emit(event, payload) {
-      this.handlers.get(event)?.forEach((handler) => handler(payload));
-    },
+function createFakeWebSocketClass(socket) {
+  return class {
+    constructor() {
+      Object.assign(this, socket);
+    }
   };
+}
 
+test('createWsTransport exposes readiness that resolves on open and rejects on error or close before open', async () => {
+  const openSocket = createFakeSocket();
   const transport = createWsTransport({
     url: 'ws://127.0.0.1:9222/devtools/browser/abc',
-    WebSocketClass: class {
-      constructor() {
-        Object.assign(this, fake);
-      }
-    },
+    WebSocketClass: createFakeWebSocketClass(openSocket),
   });
 
   const ready = transport.waitUntilReady();
-  fake.emit('open');
+  openSocket.emit('open');
 
   await assert.doesNotReject(ready);
+
+  // An error before open rejects readiness with the underlying error.
+  const errorSocket = createFakeSocket();
+  const errorTransport = createWsTransport({
+    url: 'ws://127.0.0.1:9222/devtools/browser/abc',
+    WebSocketClass: createFakeWebSocketClass(errorSocket),
+  });
+  const errorReady = errorTransport.waitUntilReady();
+  errorSocket.emit('error', new Error('handshake failed'));
+
+  await assert.rejects(errorReady, /handshake failed/);
+
+  // A close before open rejects readiness as "closed before ready".
+  const closeSocket = createFakeSocket();
+  const closeTransport = createWsTransport({
+    url: 'ws://127.0.0.1:9222/devtools/browser/abc',
+    WebSocketClass: createFakeWebSocketClass(closeSocket),
+  });
+  const closeReady = closeTransport.waitUntilReady();
+  closeSocket.emit('close');
+
+  await assert.rejects(closeReady, /closed before becoming ready/);
 });

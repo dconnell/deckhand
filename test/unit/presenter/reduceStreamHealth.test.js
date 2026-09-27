@@ -65,11 +65,15 @@ test('reduceStreamHealth prefers reconnecting over other warnings', () => {
   });
 });
 
-test('reduceStreamHealth computes interval bitrate from byte counters and warns on sustained dropped frames', () => {
+test('reduceStreamHealth picks the conservative minimum of interval and lifetime bitrates and warns on sustained dropped frames', () => {
+  // Interval bitrate = (4_250_000 - 4_000_000) * 8 / 1_000 = 2000 kbps, while
+  // the lifetime bitrate = 4_250_000 * 8 / 10_000 = 3400 kbps. The conservative
+  // minimum (2000) must win so a mid-stream slowdown is not masked by the
+  // healthier lifetime average.
   const previousStatus = {
     outputActive: true,
-    outputBytes: 2_125_000,
-    outputDuration: 5_000,
+    outputBytes: 4_000_000,
+    outputDuration: 9_000,
     outputSkippedFrames: 3,
     outputTotalFrames: 300,
   };
@@ -86,7 +90,7 @@ test('reduceStreamHealth computes interval bitrate from byte counters and warns 
   }), {
     active: true,
     reconnecting: false,
-    bitrateKbps: 3400,
+    bitrateKbps: 2000,
     droppedFrames: 18,
     congestion: null,
     lastUpdateMs: 1_720_000_000_000,

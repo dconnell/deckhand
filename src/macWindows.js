@@ -733,11 +733,12 @@ export function findUniqueBoundsFallbackCandidate(samePidWindows, targetWindow, 
  * @returns {boolean} True when the target window is no longer present.
  */
 export function closeMacWindow(macWindowId, pid, options = {}) {
-  if (process.platform !== 'darwin') {
+  // Validate before the platform guard so input validation is testable on Linux CI; both guards return false, so order is behavior-neutral.
+  if (typeof macWindowId !== 'number' || typeof pid !== 'number') {
     return false;
   }
 
-  if (typeof macWindowId !== 'number' || typeof pid !== 'number') {
+  if (process.platform !== 'darwin') {
     return false;
   }
 

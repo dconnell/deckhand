@@ -9,6 +9,16 @@ import {
   seedBrowserMacWindowBindings,
 } from '../../src/appRuntime.js';
 
+/**
+ * Assert that `actual` carries at least the properties in `expectedSubset`,
+ * without pinning extra keys the launch options may legitimately omit.
+ */
+function assertContainsProps(actual, expectedSubset) {
+  for (const [key, value] of Object.entries(expectedSubset)) {
+    assert.deepEqual(actual[key], value, `property "${key}" should match`);
+  }
+}
+
 function createLogger() {
   return {
     errors: [],
@@ -57,12 +67,17 @@ test('createOwnedWindowResolutionEntries uses adapter CGWindow owner names and c
   await entries[0].launch();
   await entries[1].launch();
 
-  assert.deepEqual(launches, [
+  assert.deepEqual(launches.slice(0, 3), [
     { type: 'snapshot', ownerName: 'iTerm' },
     { type: 'snapshot', ownerName: 'Code' },
     { type: 'iterm2', options: { command: 'npm run dev', cwd: '/repos/demo' } },
-    { type: 'open', options: { app: 'Visual Studio Code', args: ['--new-window', '/repos/demo'], cwd: undefined, files: undefined } },
   ]);
+  assert.equal(launches.length, 4);
+  assert.equal(launches[3].type, 'open');
+  assertContainsProps(launches[3].options, {
+    app: 'Visual Studio Code',
+    args: ['--new-window', '/repos/demo'],
+  });
   const terminalEntry = entries.find((entry) => entry.sourceId === 'Terminal');
   const editorEntry = entries.find((entry) => entry.sourceId === 'Editor');
 
@@ -148,9 +163,11 @@ test('createOwnedWindowResolutionEntries forwards source files to the generic la
 
   await entries[0].launch();
 
-  assert.deepEqual(launches, [
-    { app: 'Preview', args: undefined, cwd: undefined, files: ['/abs/image.jpg'] },
-  ]);
+  assert.equal(launches.length, 1);
+  assertContainsProps(launches[0], {
+    app: 'Preview',
+    files: ['/abs/image.jpg'],
+  });
 });
 
 test('createOwnedWindowResolutionEntries forwards openArgs verbatim and skips args/files', async () => {
@@ -174,9 +191,11 @@ test('createOwnedWindowResolutionEntries forwards openArgs verbatim and skips ar
 
   await entries[0].launch();
 
-  assert.deepEqual(launches, [
-    { app: 'Safari', cwd: undefined, openArgs: ['-g', 'https://example.com'] },
-  ]);
+  assert.equal(launches.length, 1);
+  assert.equal(launches[0].app, 'Safari');
+  assert.deepEqual(launches[0].openArgs, ['-g', 'https://example.com']);
+  assert.equal(launches[0].args, undefined);
+  assert.equal(launches[0].files, undefined);
 });
 
 test('buildBootstrapBinding uses adapter bootstrap app names while preserving titleIncludes', () => {

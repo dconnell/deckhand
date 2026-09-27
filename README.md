@@ -72,3 +72,30 @@ curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3
 
 Real OBS output, Hammerspoon Accessibility, microphone permission, and
 whisper-stream capture quality still require manual smoke testing.
+
+## Continuous Integration
+
+Two GitHub Actions workflows gate merges to `main`:
+
+- **CI** — a matrix job that installs dependencies with `npm ci` on Node 22
+  (per `.nvmrc`) and runs the unit tests then the integration tests on both
+  `ubuntu-latest` and `macos-latest`. The macOS leg installs Lua via Homebrew
+  so the Hammerspoon Lua contract tests (which self-skip on Linux) actually
+  execute, and it also covers the darwin-only preflight tests. It runs on
+  every pull request and every push to `main`.
+- **CodeQL** — security scanning for JavaScript/TypeScript on ubuntu-latest.
+  It runs on pull requests, pushes to `main`, and on a weekly schedule.
+
+### Required status checks
+
+To require both workflows to pass before a PR can merge:
+
+1. In GitHub, go to the repo → **Settings** → **Branches** → **Add branch
+   protection rule** for `main`.
+2. Check **Require a pull request before merging** and **Require status
+   checks to pass before merging**.
+3. Select the required checks: `test (ubuntu-latest)`,
+   `test (macos-latest)`, and `analyze (javascript-typescript)`.
+
+Note: the checks appear in the picker only after each workflow leg has run at
+least once on a PR or branch.

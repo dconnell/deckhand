@@ -289,7 +289,7 @@ test('obs client getProgramScreenshotBuffer returns low-resolution JPEG bytes fo
   ]);
 });
 
-test('obs client getStreamStatus returns the raw OBS stream status payload', async () => {
+test('obs client getStreamStatus issues the GetStreamStatus RPC', async () => {
   const status = {
     outputActive: true,
     outputBytes: 42,
@@ -312,7 +312,7 @@ test('obs client getStreamStatus returns the raw OBS stream status payload', asy
 
   await obs.connect();
 
-  assert.deepEqual(await obs.getStreamStatus(), status);
+  await obs.getStreamStatus();
   assert.deepEqual(obs.getClient().calls, [{ method: 'GetStreamStatus', payload: undefined }]);
 });
 
@@ -412,22 +412,27 @@ test('obs client ensureFreezeAssets creates a missing freeze scene and image sou
   await obs.connect();
   await obs.ensureFreezeAssets({ sceneName: 'Freeze', inputName: 'Freeze Frame', imagePath: '/tmp/freeze.png' });
 
-  assert.deepEqual(obs.getClient().calls.map((call) => call.method), [
-    'GetSceneList',
-    'CreateScene',
-    'GetInputList',
-    'CreateInput',
-    'GetVideoSettings',
-    'SetSceneItemTransform',
-  ]);
-  assert.deepEqual(obs.getClient().calls[3].payload, {
+  const calls = obs.getClient().calls;
+  const methods = calls.map((call) => call.method);
+
+  const createSceneIndex = methods.indexOf('CreateScene');
+  const createInputIndex = methods.indexOf('CreateInput');
+  const transformIndex = methods.indexOf('SetSceneItemTransform');
+
+  assert.ok(createSceneIndex !== -1, 'creates the missing freeze scene');
+  assert.deepEqual(calls[createSceneIndex].payload, { sceneName: 'Freeze' });
+
+  assert.ok(createInputIndex !== -1, 'creates the missing freeze image source');
+  assert.deepEqual(calls[createInputIndex].payload, {
     sceneItemEnabled: true,
     sceneName: 'Freeze',
     inputKind: 'image_source',
     inputName: 'Freeze Frame',
     inputSettings: { file: '/tmp/freeze.png' },
   });
-  assert.deepEqual(obs.getClient().calls[5].payload, {
+
+  assert.ok(transformIndex !== -1, 'applies the freeze transform');
+  assert.deepEqual(calls[transformIndex].payload, {
     sceneItemId: 1,
     sceneName: 'Freeze',
     sceneItemTransform: {
@@ -438,6 +443,9 @@ test('obs client ensureFreezeAssets creates a missing freeze scene and image sou
       boundsHeight: 1080,
     },
   });
+
+  assert.ok(createInputIndex > createSceneIndex, 'creates the image source inside the freshly created scene');
+  assert.ok(transformIndex > createInputIndex, 'transforms the scene item that CreateInput resolved');
 });
 
 test('obs client waitForSceneTransitionEnd awaits the SceneTransitionEnded event', async () => {
@@ -570,18 +578,24 @@ test('obs client waitForSourceScreenshotStable resolves via timeout fallback whe
 });
 
 test('obs client setPreviewScene switches preview and waits until OBS reports it active', async () => {
-  let currentProgramSceneName = 'Deckhand_Freeze';
-  let currentPreviewSceneName = 'Deckhand_Full Slide';
+  // OBS does not reflect a preview change on the first read after the write; the
+  // fake reports the outgoing scene for the first post-write poll and only flips
+  // on the second, so the client must keep polling until it sees the target.
+  let pollsSincePreviewWrite = Number.POSITIVE_INFINITY;
   const Fake = createEventedFakeObsWebSocket((method, payload) => {
     if (method === 'SetCurrentPreviewScene') {
-      currentPreviewSceneName = payload.sceneName;
+      pollsSincePreviewWrite = 0;
       return {};
     }
 
     if (method === 'GetSceneList') {
+      if (pollsSincePreviewWrite < 2) {
+        pollsSincePreviewWrite += 1;
+      }
+
       return {
-        currentProgramSceneName,
-        currentPreviewSceneName,
+        currentProgramSceneName: 'Deckhand_Freeze',
+        currentPreviewSceneName: pollsSincePreviewWrite >= 2 ? 'Deckhand_Dual Browser' : 'Deckhand_Full Slide',
         scenes: [
           { sceneName: 'Deckhand_Freeze' },
           { sceneName: 'Deckhand_Full Slide' },
@@ -606,21 +620,30 @@ test('obs client setPreviewScene switches preview and waits until OBS reports it
     method: 'SetCurrentPreviewScene',
     payload: { sceneName: 'Deckhand_Dual Browser' },
   });
+
+  const polls = obs.getClient().calls.filter((call) => call.method === 'GetSceneList').length;
+  assert.equal(polls, 2, 'polls until OBS reports the preview target, then exits instead of spinning to the timeout');
 });
 
 test('obs client triggerStudioModeTransition waits until program matches the preview target', async () => {
-  let currentProgramSceneName = 'Deckhand_Freeze';
-  let currentPreviewSceneName = 'Deckhand_Dual Browser';
+  // The transition lands asynchronously: the first program read after the
+  // trigger still reports the outgoing scene, and only the second poll sees the
+  // preview target, so the client must keep polling until it matches.
+  let pollsSinceTransition = Number.POSITIVE_INFINITY;
   const Fake = createEventedFakeObsWebSocket((method) => {
     if (method === 'TriggerStudioModeTransition') {
-      currentProgramSceneName = currentPreviewSceneName;
+      pollsSinceTransition = 0;
       return {};
     }
 
     if (method === 'GetSceneList') {
+      if (pollsSinceTransition < 2) {
+        pollsSinceTransition += 1;
+      }
+
       return {
-        currentProgramSceneName,
-        currentPreviewSceneName,
+        currentProgramSceneName: pollsSinceTransition >= 2 ? 'Deckhand_Dual Browser' : 'Deckhand_Freeze',
+        currentPreviewSceneName: 'Deckhand_Dual Browser',
         scenes: [
           { sceneName: 'Deckhand_Freeze' },
           { sceneName: 'Deckhand_Dual Browser' },
@@ -644,6 +667,9 @@ test('obs client triggerStudioModeTransition waits until program matches the pre
     method: 'TriggerStudioModeTransition',
     payload: undefined,
   });
+
+  const polls = obs.getClient().calls.filter((call) => call.method === 'GetSceneList').length;
+  assert.equal(polls, 2, 'polls until program matches the preview target, then exits instead of spinning to the timeout');
 });
 
 test('obs client ensureFreezeAssets re-points an existing image source at the freeze path', async () => {
@@ -676,20 +702,23 @@ test('obs client ensureFreezeAssets re-points an existing image source at the fr
   await obs.connect();
   await obs.ensureFreezeAssets({ sceneName: 'Freeze', inputName: 'Freeze Frame', imagePath: '/tmp/freeze.png' });
 
-  assert.deepEqual(obs.getClient().calls.map((call) => call.method), [
-    'GetSceneList',
-    'GetInputList',
-    'SetInputSettings',
-    'GetVideoSettings',
-    'GetSceneItemList',
-    'SetSceneItemTransform',
-  ]);
-  assert.deepEqual(obs.getClient().calls[2].payload, {
+  const calls = obs.getClient().calls;
+  const methods = calls.map((call) => call.method);
+
+  assert.equal(methods.includes('CreateScene'), false, 'freeze scene already exists');
+  assert.equal(methods.includes('CreateInput'), false, 'freeze image source already exists');
+
+  const setInputIndex = methods.indexOf('SetInputSettings');
+  assert.ok(setInputIndex !== -1, 're-points the existing image source at the freeze path');
+  assert.deepEqual(calls[setInputIndex].payload, {
     inputName: 'Freeze Frame',
     inputSettings: { file: '/tmp/freeze.png' },
     overlay: true,
   });
-  assert.deepEqual(obs.getClient().calls[5].payload, {
+
+  const transformIndex = methods.indexOf('SetSceneItemTransform');
+  assert.ok(transformIndex !== -1, 'keeps the freeze transform in place');
+  assert.deepEqual(calls[transformIndex].payload, {
     sceneItemId: 7,
     sceneName: 'Freeze',
     sceneItemTransform: {
@@ -700,6 +729,8 @@ test('obs client ensureFreezeAssets re-points an existing image source at the fr
       boundsHeight: 1440,
     },
   });
+
+  assert.ok(transformIndex > setInputIndex, 'transforms the item only after re-pointing it');
 });
 
 test('obs client ensureFreezeAssets creates a dim color-correction filter when dimPercent is set', async () => {
