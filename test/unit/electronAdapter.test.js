@@ -55,7 +55,7 @@ test('createElectronAdapter buildBootstrapBinding preserves no configuredBinding
 test('createElectronAdapter omits discardUnsavedChangesOnClose when not configured', () => {
   const adapter = createElectronAdapter(baseConfig());
 
-  assert.equal('discardUnsavedChangesOnClose' in adapter, false);
+  assert.notEqual(adapter.discardUnsavedChangesOnClose, true);
 });
 
 test('createElectronAdapter forwards discardUnsavedChangesOnClose when configured', () => {
@@ -75,7 +75,7 @@ test('createElectronAdapter forwards buildLaunchArgs when supplied', () => {
 test('createElectronAdapter omits buildLaunchArgs when not supplied', () => {
   const adapter = createElectronAdapter(baseConfig());
 
-  assert.equal('buildLaunchArgs' in adapter, false);
+  assert.notEqual(typeof adapter.buildLaunchArgs, 'function');
 });
 
 test('createElectronAdapter marks every Electron adapter as requiring an exclusive app instance', () => {

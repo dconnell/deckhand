@@ -115,9 +115,8 @@ async function createClient(port) {
   return {
     socket,
     messages,
-    async send(payload) {
+    send(payload) {
       socket.send(JSON.stringify(payload));
-      await new Promise((resolve) => setTimeout(resolve, 10));
     },
     async close() {
       socket.close();
@@ -126,8 +125,38 @@ async function createClient(port) {
   };
 }
 
-async function flushMessages() {
-  await new Promise((resolve) => setTimeout(resolve, 10));
+const WAIT_TIMEOUT_MS = 2000;
+
+/**
+ * Poll until `predicate` holds over `messages`, following the deterministic
+ * `waitForMessages` pattern from test/unit/presenter/stt/runner.test.js.
+ *
+ * @param {Array<unknown>} messages Array to poll (client messages or observed effects).
+ * @param {(messages: Array<unknown>) => boolean} predicate Condition to await.
+ * @param {string} description What was being waited for, used in the timeout error.
+ * @returns {Promise<void>} Resolves once the predicate holds; rejects on timeout.
+ */
+async function waitForMessages(messages, predicate, description) {
+  const deadline = Date.now() + WAIT_TIMEOUT_MS;
+
+  while (!predicate(messages)) {
+    if (Date.now() > deadline) {
+      throw new Error(`Timed out after ${WAIT_TIMEOUT_MS}ms waiting for ${description}; received: ${JSON.stringify(messages)}`);
+    }
+
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+/**
+ * Await the hub's own `registered` ack, the deterministic signal that the hub
+ * finished processing a registration before the test drives the next step.
+ *
+ * @param {{ messages: Array<Record<string, unknown>> }} client Harness client.
+ * @returns {Promise<void>}
+ */
+function waitForRegistered(client) {
+  return waitForMessages(client.messages, (messages) => messages.some((message) => message.type === 'registered'), 'the registered ack');
 }
 
 test('coordinator integration publishes presentation state and dispatches browser commands', async () => {
@@ -170,7 +199,9 @@ test('coordinator integration publishes presentation state and dispatches browse
   try {
     await coordinator.start();
     await driver.send({ type: 'register', role: 'driver', capabilities: ['next', 'prev', 'goTo'] });
+    await waitForRegistered(driver);
     await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+    await waitForRegistered(observer);
 
     await driver.send({
       type: 'positionChanged',
@@ -180,7 +211,12 @@ test('coordinator integration publishes presentation state and dispatches browse
         meta: { indexh: 15, indexv: 0 },
       },
     });
-    await flushMessages();
+
+    await waitForMessages(observer.messages, (messages) => messages.some((message) => message.type === 'presentationState'), 'the published presentation state');
+    // The coordinator publishes state before switching the OBS scene and
+    // dispatching slide commands, so await each downstream effect explicitly.
+    await waitForMessages(obsCalls, (scenes) => scenes.length >= 1, 'the OBS audience scene switch');
+    await waitForMessages(executedCommands, (commands) => commands.length >= 2, 'the slide browser commands to be dispatched');
 
     assert.deepEqual(obsCalls, ['Deckhand_Dual Browser']);
     assert.deepEqual(executedCommands, [

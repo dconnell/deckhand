@@ -27,7 +27,7 @@ test('runSubprocess surfaces non-zero exits with stderr context', async () => {
 test('createSubprocess streams stdout and stderr incrementally and reports clean exit', async () => {
   const stdoutChunks = [];
   const stderrChunks = [];
-  const child = createSubprocess(process.execPath, ['-e', 'process.stdout.write("hel"); setTimeout(() => process.stdout.write("lo"), 10); process.stderr.write("warn"); setTimeout(() => process.exit(0), 20);']);
+  const child = createSubprocess(process.execPath, ['-e', 'process.stdout.write("hel"); process.stderr.write("wa"); setTimeout(() => { process.stdout.write("lo"); process.stderr.write("rn"); }, 10); setTimeout(() => process.exit(0), 20);']);
 
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
@@ -40,8 +40,11 @@ test('createSubprocess streams stdout and stderr incrementally and reports clean
 
   const result = await child.result;
 
-  assert.deepEqual(stdoutChunks, ['hel', 'lo']);
-  assert.deepEqual(stderrChunks, ['warn']);
+  // Incrementality: both streams arrive in multiple chunks rather than one
+  // buffered blob at exit.
+  assert.ok(stdoutChunks.length >= 2, `expected incremental stdout chunks, got ${JSON.stringify(stdoutChunks)}`);
+  assert.ok(stderrChunks.length >= 2, `expected incremental stderr chunks, got ${JSON.stringify(stderrChunks)}`);
+  // Concatenation correctness: chunk framing must not leak into the result.
   assert.equal(result.exitCode, 0);
   assert.equal(result.stdout, 'hello');
   assert.equal(result.stderr, 'warn');

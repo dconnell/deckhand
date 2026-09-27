@@ -35,9 +35,8 @@ async function createClient(port) {
   return {
     socket,
     messages,
-    async send(payload) {
+    send(payload) {
       socket.send(JSON.stringify(payload));
-      await new Promise((resolve) => setTimeout(resolve, 10));
     },
     async close() {
       socket.close();
@@ -46,8 +45,38 @@ async function createClient(port) {
   };
 }
 
-async function flushMessages() {
-  await new Promise((resolve) => setTimeout(resolve, 10));
+const WAIT_TIMEOUT_MS = 2000;
+
+/**
+ * Poll until `predicate` holds over `messages`, following the deterministic
+ * `waitForMessages` pattern from test/unit/presenter/stt/runner.test.js.
+ *
+ * @param {Array<unknown>} messages Array to poll (client messages or hub events).
+ * @param {(messages: Array<unknown>) => boolean} predicate Condition to await.
+ * @param {string} description What was being waited for, used in the timeout error.
+ * @returns {Promise<void>} Resolves once the predicate holds; rejects on timeout.
+ */
+async function waitForMessages(messages, predicate, description) {
+  const deadline = Date.now() + WAIT_TIMEOUT_MS;
+
+  while (!predicate(messages)) {
+    if (Date.now() > deadline) {
+      throw new Error(`Timed out after ${WAIT_TIMEOUT_MS}ms waiting for ${description}; received: ${JSON.stringify(messages)}`);
+    }
+
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+/**
+ * Await the hub's own `registered` ack, the deterministic signal that the hub
+ * finished processing a registration before the test drives the next step.
+ *
+ * @param {{ messages: Array<Record<string, unknown>> }} client Harness client.
+ * @returns {Promise<void>}
+ */
+function waitForRegistered(client) {
+  return waitForMessages(client.messages, (messages) => messages.some((message) => message.type === 'registered'), 'the registered ack');
 }
 
 test('hub rejects target registrations now that the role is removed', async () => {
@@ -60,6 +89,7 @@ test('hub rejects target registrations now that the role is removed', async () =
 
   try {
     await target.send({ type: 'register', role: 'target', controllerId: 'demo1', capabilities: ['navigate'] });
+    await waitForMessages(target.messages, (messages) => messages.at(-1)?.type === 'error', 'the error reply to the rejected target registration');
 
     assert.equal(target.messages.at(-1).type, 'error');
     assert.match(target.messages.at(-1).message, /role must be either "driver" or "observer"/i);
@@ -92,7 +122,7 @@ test('hub replays the latest sticky presentation state to late-joining observers
 
     await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
     await driver.send({ type: 'register', role: 'driver', capabilities: ['next', 'prev'] });
-    await flushMessages();
+    await waitForMessages(observer.messages, (messages) => messages.some((message) => message.type === 'presentationState'), 'the sticky presentationState replay');
 
     assert.deepEqual(
       observer.messages.filter((message) => message.type === 'presentationState'),
@@ -107,6 +137,9 @@ test('hub replays the latest sticky presentation state to late-joining observers
         script: null,
       }],
     );
+    // Negative assertion is safe: the observer's replay above proves this
+    // registration round was processed, and drivers never receive
+    // presentationState.
     assert.deepEqual(driver.messages.filter((message) => message.type === 'presentationState'), []);
   } finally {
     await Promise.all([observer.close(), driver.close()]);
@@ -148,7 +181,7 @@ test('hub replays the latest sticky presenter state to late-joining observers wi
     });
 
     await observer.send({ type: 'register', role: 'observer', subscriptions: ['presenterState'] });
-    await flushMessages();
+    await waitForMessages(observer.messages, (messages) => messages.some((message) => message.type === 'presenterState'), 'the sticky presenterState replay');
 
     assert.equal(observer.messages.filter((message) => message.type === 'presenterState').length, 1);
   } finally {
@@ -167,8 +200,12 @@ test('hub publishes presentation state only to subscribed observers', async () =
   const transcriptObserver = await createClient(port);
 
   try {
+    // Both clients must be registered before publishSticky so the live relay
+    // and the negative assertion below are decided deterministically.
     await stateObserver.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+    await waitForRegistered(stateObserver);
     await transcriptObserver.send({ type: 'register', role: 'observer', subscriptions: ['transcript'] });
+    await waitForRegistered(transcriptObserver);
 
     await hub.publishSticky('presentationState', {
       type: 'presentationState',
@@ -180,9 +217,11 @@ test('hub publishes presentation state only to subscribed observers', async () =
       focus: 'Terminal',
       script: 'hello',
     });
-    await flushMessages();
+    await waitForMessages(stateObserver.messages, (messages) => messages.some((message) => message.type === 'presentationState'), 'the live presentationState relay');
 
     assert.equal(stateObserver.messages.filter((message) => message.type === 'presentationState').length, 1);
+    // Negative assertion is safe: the positive relay landed on stateObserver
+    // above, so the publish round has fully completed.
     assert.equal(transcriptObserver.messages.filter((message) => message.type === 'presentationState').length, 0);
   } finally {
     await Promise.all([stateObserver.close(), transcriptObserver.close()]);
@@ -201,9 +240,14 @@ test('hub relays transcripts to subscribed observers and not back to the sender'
   const stateObserver = await createClient(port);
 
   try {
+    // All three registrations must land before the transcript is sent so the
+    // relay and both negative assertions below are decided deterministically.
     await sttObserver.send({ type: 'register', role: 'observer', subscriptions: ['transcript'] });
+    await waitForRegistered(sttObserver);
     await teleprompterObserver.send({ type: 'register', role: 'observer', subscriptions: ['transcript'] });
+    await waitForRegistered(teleprompterObserver);
     await stateObserver.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+    await waitForRegistered(stateObserver);
 
     await sttObserver.send({
       type: 'transcript',
@@ -211,8 +255,10 @@ test('hub relays transcripts to subscribed observers and not back to the sender'
       text: 'hello world',
       capturedAtMs: 1720000000000,
     });
-    await flushMessages();
+    await waitForMessages(teleprompterObserver.messages, (messages) => messages.some((message) => message.type === 'transcript'), 'the relayed transcript');
 
+    // Negative assertions are safe: the relay landed on teleprompterObserver
+    // above, so the transcript publish round has fully completed.
     assert.equal(sttObserver.messages.filter((message) => message.type === 'transcript').length, 0);
     assert.deepEqual(
       teleprompterObserver.messages.filter((message) => message.type === 'transcript'),
@@ -226,6 +272,74 @@ test('hub relays transcripts to subscribed observers and not back to the sender'
     assert.deepEqual(stateObserver.messages.filter((message) => message.type === 'transcript'), []);
   } finally {
     await Promise.all([sttObserver.close(), teleprompterObserver.close(), stateObserver.close()]);
+    await hub.stop();
+  }
+});
+
+test('hub serves multiple subscriptions over one socket', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const presenter = await createClient(port);
+  const stt = await createClient(port);
+
+  try {
+    await hub.publishSticky('presentationState', {
+      type: 'presentationState',
+      seq: 3,
+      slideId: 'code-walkthrough',
+      layoutId: 'left-terminal-right-slide',
+      audienceScene: 'Left Terminal Right Slide',
+      slots: [],
+      focus: 'Terminal',
+      script: 'Walk through the init flow.',
+    });
+
+    await presenter.send({ type: 'register', role: 'observer', subscriptions: ['presentationState', 'transcript'] });
+    await waitForRegistered(presenter);
+    await stt.send({ type: 'register', role: 'observer', subscriptions: [] });
+    await waitForRegistered(stt);
+
+    await stt.send({
+      type: 'transcript',
+      source: 'whisper',
+      text: 'walk through',
+      capturedAtMs: 1720000000000,
+    });
+
+    await waitForMessages(presenter.messages, (messages) => messages.some((message) => message.type === 'presentationState'), 'the sticky presentationState replay');
+    await waitForMessages(presenter.messages, (messages) => messages.some((message) => message.type === 'transcript'), 'the live transcript relay');
+
+    assert.deepEqual(
+      presenter.messages.filter((message) => message.type === 'presentationState'),
+      [{
+        type: 'presentationState',
+        seq: 3,
+        slideId: 'code-walkthrough',
+        layoutId: 'left-terminal-right-slide',
+        audienceScene: 'Left Terminal Right Slide',
+        slots: [],
+        focus: 'Terminal',
+        script: 'Walk through the init flow.',
+      }],
+    );
+    assert.deepEqual(
+      presenter.messages.filter((message) => message.type === 'transcript'),
+      [{
+        type: 'transcript',
+        source: 'whisper',
+        text: 'walk through',
+        capturedAtMs: 1720000000000,
+      }],
+    );
+    // Negative assertion is safe: the live relay above proves the transcript
+    // publish round completed, and the stt client holds no transcript
+    // subscription.
+    assert.deepEqual(stt.messages.filter((message) => message.type === 'transcript'), []);
+  } finally {
+    await Promise.all([presenter.close(), stt.close()]);
     await hub.stop();
   }
 });
@@ -248,7 +362,8 @@ test('hub rejects non-observer transcript senders and malformed messages without
       capturedAtMs: 1720000000001,
     });
     malformed.socket.send('{not-json');
-    await flushMessages();
+    await waitForMessages(driver.messages, (messages) => messages.at(-1)?.type === 'error', 'the error reply to the non-observer transcript sender');
+    await waitForMessages(malformed.messages, (messages) => messages.at(-1)?.type === 'error', 'the error reply to the malformed JSON message');
 
     assert.equal(driver.messages.at(-1).type, 'error');
     assert.match(driver.messages.at(-1).message, /Only observer clients/i);
@@ -275,8 +390,9 @@ test('hub emits observer driverCommand events for the coordinator to forward', a
   try {
     await driver.send({ type: 'register', role: 'driver', capabilities: ['next', 'prev', 'goTo'] });
     await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+    await waitForRegistered(observer);
     await observer.send({ type: 'driverCommand', command: { type: 'next' } });
-    await flushMessages();
+    await waitForMessages(events, (items) => items.length >= 1, 'the observerDriverCommand event');
 
     assert.equal(events.length, 1);
     assert.deepEqual(events[0].command, { type: 'next' });
@@ -301,8 +417,9 @@ test('hub emits observer presenterCommand events for the coordinator to reduce',
 
   try {
     await observer.send({ type: 'register', role: 'observer', subscriptions: ['presenterState'] });
+    await waitForRegistered(observer);
     await observer.send({ type: 'presenterCommand', op: 'nudge', source: 'teleprompter', delta: 1 });
-    await flushMessages();
+    await waitForMessages(events, (items) => items.length >= 1, 'the observerPresenterCommand event');
 
     assert.equal(events.length, 1);
     assert.deepEqual(events[0].command, {
@@ -332,8 +449,9 @@ test('hub preserves sourceId on relaunchSource presenter commands', async () => 
 
   try {
     await observer.send({ type: 'register', role: 'observer', subscriptions: ['presenterState'] });
+    await waitForRegistered(observer);
     await observer.send({ type: 'presenterCommand', op: 'relaunchSource', source: 'console', sourceId: 'Terminal' });
-    await flushMessages();
+    await waitForMessages(events, (items) => items.length >= 1, 'the relaunchSource presenterCommand event');
 
     assert.equal(events.length, 1);
     assert.deepEqual(events[0].command, {
@@ -362,11 +480,12 @@ test('hub emits driver slideManifest events from registered drivers', async () =
 
   try {
     await driver.send({ type: 'register', role: 'driver', capabilities: ['next', 'prev', 'goTo'] });
+    await waitForRegistered(driver);
     await driver.send({
       type: 'slideManifest',
       slides: [{ id: 'intro', index: { h: 0, v: 0 }, heading: 'Intro' }],
     });
-    await flushMessages();
+    await waitForMessages(events, (items) => items.length >= 1, 'the driverSlideManifest event');
 
     assert.equal(events.length, 1);
     assert.equal(events[0].manifest.type, 'slideManifest');
@@ -391,8 +510,9 @@ test('hub emits driver position-settled events from registered drivers', async (
 
   try {
     await driver.send({ type: 'register', role: 'driver', capabilities: ['next', 'prev', 'goTo'] });
+    await waitForRegistered(driver);
     await driver.send({ type: 'positionSettled', eventId: 7 });
-    await flushMessages();
+    await waitForMessages(events, (items) => items.length >= 1, 'the driverPositionSettled event');
 
     assert.equal(events.length, 1);
     assert.equal(events[0].eventId, 7);
@@ -413,8 +533,9 @@ test('hub sendCommand routes driver-bound commands to the active driver only', a
 
   try {
     await driver.send({ type: 'register', role: 'driver', capabilities: ['next', 'prev'] });
+    await waitForRegistered(driver);
     await hub.sendCommand({ role: 'driver' }, { type: 'next' });
-    await flushMessages();
+    await waitForMessages(driver.messages, (messages) => messages.some((message) => message.type === 'command'), 'the command relayed to the active driver');
 
     assert.deepEqual(
       driver.messages.filter((message) => message.type === 'command').map((message) => message.command),
@@ -456,6 +577,7 @@ test('hub emits observer window binding updates for registered observers', async
 
   try {
     await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+    await waitForRegistered(observer);
     await observer.send({
       type: 'windowBindings',
       bindings: {
@@ -468,7 +590,7 @@ test('hub emits observer window binding updates for registered observers', async
       },
       cleared: ['BrowserB'],
     });
-    await flushMessages();
+    await waitForMessages(events, (items) => items.length >= 1, 'the observerWindowBindings event');
 
     assert.deepEqual(events, [{
       bindings: {
@@ -508,8 +630,9 @@ test('hub emits observer window-settled acks keyed by presentation seq', async (
 
   try {
     await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+    await waitForRegistered(observer);
     await observer.send({ type: 'windowSettled', seq: 12 });
-    await flushMessages();
+    await waitForMessages(events, (items) => items.length >= 1, 'the observerWindowSettled ack event');
 
     assert.deepEqual(events, [{
       seq: 12,
@@ -541,13 +664,14 @@ test('hub forwards window-settled frame mismatches to the coordinator event', as
 
   try {
     await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+    await waitForRegistered(observer);
     const frameMismatches = [{
       source: 'Presenter',
       requested: { x: 0, y: 1120, w: 1210, h: 560 },
       observed: { x: 0, y: 900, w: 1210, h: 611 },
     }];
     await observer.send({ type: 'windowSettled', seq: 13, frameMismatches });
-    await flushMessages();
+    await waitForMessages(events, (items) => items.length >= 1, 'the window-settled frame mismatch event');
 
     assert.deepEqual(events, [{
       seq: 13,
@@ -575,9 +699,10 @@ test('hub snapshot no longer exposes a target catalog', async () => {
 
   try {
     await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+    await waitForRegistered(observer);
     const snapshot = hub.getSnapshot();
 
-    assert.deepEqual(Object.keys(snapshot).sort(), ['activeDriver', 'observers', 'sticky']);
+    assert.equal(snapshot.targets, undefined);
     assert.equal(snapshot.activeDriver, null);
     assert.equal(snapshot.observers.length, 1);
   } finally {

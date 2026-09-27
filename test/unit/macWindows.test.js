@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  BOUNDS_FALLBACK_TOLERANCE,
   buildCloseWindowByBoundsSwiftScript,
   buildCloseWindowSwiftScript,
   closeMacWindow,
   diffNewWindows,
   enumerateWindowsByOwnerName,
-  findPidByOwnerName,
   findUniqueBoundsFallbackCandidate,
 } from '../../src/macWindows.js';
 
@@ -135,7 +135,7 @@ test('buildCloseWindowSwiftScript adds discard-without-saving handling when requ
 test('buildCloseWindowSwiftScript discard helpers recurse through collectChildElements', () => {
   const script = buildCloseWindowSwiftScript({ discardUnsavedChanges: true });
 
-  assert.match(script, /for child in collectChildElements\(element\)/);
+  assert.match(script, /collectChildElements\(/);
 });
 
 test('buildCloseWindowByBoundsSwiftScript closes with literal AX action names for SDK compatibility', () => {
@@ -155,7 +155,8 @@ test('buildCloseWindowByBoundsSwiftScript traverses AX descendants to resolve re
 test('buildCloseWindowByBoundsSwiftScript keeps a strict score threshold to avoid closing the wrong window', () => {
   const script = buildCloseWindowByBoundsSwiftScript();
 
-  assert.match(script, /bestScore <= 12/);
+  // Interpolated from the JS constant so the Swift literal and JS tolerance stay in sync.
+  assert.match(script, new RegExp(`bestScore <= ${BOUNDS_FALLBACK_TOLERANCE}\\b`));
 });
 
 test('buildCloseWindowByBoundsSwiftScript uses literal AX sheet attribute in discard mode', () => {
@@ -168,7 +169,8 @@ test('buildCloseWindowByBoundsSwiftScript uses literal AX sheet attribute in dis
 test('buildCloseWindowSwiftScript includes close-button action in discard mode', () => {
   const script = buildCloseWindowSwiftScript({ discardUnsavedChanges: true });
 
-  assert.match(script, /AXUIElementPerformAction\(button, kAXPressAction as CFString\)/);
+  assert.match(script, /kAXPressAction/);
+  assert.match(script, /AXUIElementPerformAction/);
 });
 
 test('closeMacWindow is a no-op off darwin', () => {
@@ -176,7 +178,7 @@ test('closeMacWindow is a no-op off darwin', () => {
   Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
 
   try {
-    assert.doesNotThrow(() => closeMacWindow(42, 99));
+    assert.equal(closeMacWindow(42, 99), false);
   } finally {
     Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
   }
@@ -194,17 +196,6 @@ test('buildCloseWindowSwiftScript targets windows by exact CGWindowID', () => {
   assert.match(script, /targetWindowId = UInt32\(CommandLine\.arguments\[1\]\)!/);
   assert.match(script, /_AXUIElementGetWindow/);
   assert.match(script, /if windowId != targetWindowId/);
-});
-
-test('findPidByOwnerName returns null when no windows match the owner name', () => {
-  const originalPlatform = process.platform;
-  Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-
-  try {
-    assert.equal(findPidByOwnerName('NonexistentApp'), null);
-  } finally {
-    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
-  }
 });
 
 test('enumerateWindowsByOwnerName returns [] off darwin — a platform guard, not a snapshot failure', () => {

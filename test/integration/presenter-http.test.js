@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { request } from 'node:http';
 
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -15,6 +16,33 @@ function createLogger() {
   };
 }
 
+/**
+ * Send a GET whose request target goes over the wire exactly as written.
+ * `fetch` normalizes `/a/../b` dot segments before they leave the client, so
+ * only a raw `node:http` request can probe the server's path guard with an
+ * unnormalized traversal path.
+ *
+ * @param {number} port Server port.
+ * @param {string} requestPath Literal request target, dot segments included.
+ * @returns {Promise<{ status: number | undefined, body: string }>} Response status and body.
+ */
+function rawGet(port, requestPath) {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: '127.0.0.1', port, path: requestPath, method: 'GET' }, (res) => {
+      res.setEncoding('utf8');
+      let body = '';
+      res.on('data', (chunk) => {
+        body += chunk;
+      });
+      res.on('end', () => {
+        resolve({ status: res.statusCode, body });
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 test('presenter HTTP server serves presenter assets and status without exposing repo files', async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-presenter-http-'));
   const presenterRoot = path.join(tempDir, 'presenter-web');
@@ -22,6 +50,7 @@ test('presenter HTTP server serves presenter assets and status without exposing 
   await writeFile(path.join(presenterRoot, 'index.html'), '<!doctype html><title>Presenter</title>', 'utf8');
   await writeFile(path.join(presenterRoot, 'teleprompter.html'), '<!doctype html><title>Teleprompter</title>', 'utf8');
   await writeFile(path.join(presenterRoot, 'app.js'), 'console.log("presenter")', 'utf8');
+  await writeFile(path.join(tempDir, 'config.json'), '{"secret":true}', 'utf8');
 
   const server = createPresenterHttpServer({
     assetsRoot: presenterRoot,
@@ -80,8 +109,12 @@ test('presenter HTTP server serves presenter assets and status without exposing 
       current: null,
     });
 
-    const traversal = await fetch(`http://127.0.0.1:${port}/presenter/../config.json`);
+    // The literal `..` path reaches the server unnormalized; the path guard
+    // (resolveAssetPath) rejects it with 404 instead of serving the secret
+    // file that exists one level above the assets root.
+    const traversal = await rawGet(port, '/presenter/../config.json');
     assert.equal(traversal.status, 404);
+    assert.doesNotMatch(traversal.body, /secret/);
 
     const missing = await fetch(`http://127.0.0.1:${port}/presenter/missing.js`);
     assert.equal(missing.status, 404);

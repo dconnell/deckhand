@@ -115,32 +115,67 @@ test('start creates one window per browser source in config order and preloads d
 
   await session.start();
 
+  const calls = cdpClient.calls;
+  const indexOfCall = (predicate) => calls.findIndex(predicate);
+
+  // (a) windows are created with the initial tab URL of each source
   assert.deepEqual(
-    cdpClient.calls.map((call) => {
-      const entry = { type: call.type };
-      if (call.url !== undefined) {
-        entry.url = call.url;
-      }
-      if (call.title !== undefined) {
-        entry.title = call.title;
-      }
-      if (call.targetId !== undefined) {
-        entry.targetId = call.targetId;
-      }
-      return entry;
-    }),
+    calls.filter((call) => call.type === 'createWindow'),
     [
-      { type: 'connect' },
       { type: 'createWindow', url: 'http://deck/' },
-      { type: 'setWindowTitle', title: 'Deckhand Example Deck', targetId: 'TARGET_1' },
-      { type: 'activateTab', targetId: 'TARGET_1' },
       { type: 'createWindow', url: 'https://example.com/home' },
-      { type: 'createTab', url: 'https://example.com/checkout' },
-      { type: 'setWindowTitle', title: 'Deckhand BrowserA', targetId: 'TARGET_2' },
-      { type: 'setWindowTitle', title: 'Deckhand BrowserA', targetId: 'TARGET_3' },
-      { type: 'activateTab', targetId: 'TARGET_2' },
     ],
   );
+  assert.deepEqual(
+    calls.filter((call) => call.type === 'createTab'),
+    [{ type: 'createTab', url: 'https://example.com/checkout' }],
+  );
+
+  // (b) every declared tab target gets the source's window title set
+  assert.deepEqual(
+    calls.filter((call) => call.type === 'setWindowTitle'),
+    [
+      { type: 'setWindowTitle', targetId: 'TARGET_1', title: 'Deckhand Example Deck' },
+      { type: 'setWindowTitle', targetId: 'TARGET_2', title: 'Deckhand BrowserA' },
+      { type: 'setWindowTitle', targetId: 'TARGET_3', title: 'Deckhand BrowserA' },
+    ],
+  );
+
+  // (c) the main target of each source is activated
+  for (const mainTargetId of ['TARGET_1', 'TARGET_2']) {
+    assert.deepEqual(
+      calls.filter((call) => call.type === 'activateTab' && call.targetId === mainTargetId),
+      [{ type: 'activateTab', targetId: mainTargetId }],
+    );
+  }
+
+  // (d) each source's window is created before any of its targets are titled
+  // or activated, and source order (Slide before BrowserA) is preserved
+  const slideWindowIndex = indexOfCall((call) => call.type === 'createWindow' && call.url === 'http://deck/');
+  const browserAWindowIndex = indexOfCall((call) => call.type === 'createWindow' && call.url === 'https://example.com/home');
+  for (const { windowIndex, titledTargets, mainTargetId } of [
+    { windowIndex: slideWindowIndex, titledTargets: ['TARGET_1'], mainTargetId: 'TARGET_1' },
+    { windowIndex: browserAWindowIndex, titledTargets: ['TARGET_2', 'TARGET_3'], mainTargetId: 'TARGET_2' },
+  ]) {
+    for (const targetId of titledTargets) {
+      assert.ok(indexOfCall((call) => call.type === 'setWindowTitle' && call.targetId === targetId) > windowIndex);
+    }
+    assert.ok(indexOfCall((call) => call.type === 'activateTab' && call.targetId === mainTargetId) > windowIndex);
+  }
+  assert.ok(browserAWindowIndex > indexOfCall((call) => call.type === 'activateTab' && call.targetId === 'TARGET_1'));
+
+  // (e) nothing extra beyond the expected operation kinds and counts
+  const opCounts = {};
+  for (const { type } of calls) {
+    opCounts[type] = (opCounts[type] ?? 0) + 1;
+  }
+  assert.deepEqual(opCounts, {
+    connect: 1,
+    createWindow: 2,
+    createTab: 1,
+    setWindowTitle: 3,
+    activateTab: 2,
+  });
 });
 
 test('start records the initial tab as the window main target and tracks activeTab per source', async () => {

@@ -120,7 +120,50 @@ test('createPresenterStateMessage wraps a resolved presenter state payload', () 
       warning: 'disconnected',
     },
     updatedAtMs: 1720000000000,
-  }).type, 'presenterState');
+  }), {
+    type: 'presenterState',
+    seq: 9,
+    presentationSeq: 7,
+    current: {
+      slideId: 'intro',
+      layoutId: 'full-slide',
+      focus: null,
+      hidden: false,
+      lines: [],
+    },
+    next: null,
+    teleprompter: {
+      followEnabled: true,
+      activeLineIndex: 0,
+      trackingState: 'idle',
+      recentTranscript: [],
+    },
+    timer: {
+      running: false,
+      elapsedMs: 0,
+      remainingMs: null,
+      targetDurationMs: null,
+    },
+    obs: {
+      preview: {
+        available: false,
+        path: '/presenter/program.jpg',
+        revision: 0,
+        capturedAtMs: null,
+        stale: true,
+      },
+    },
+    stream: {
+      active: false,
+      reconnecting: false,
+      bitrateKbps: null,
+      droppedFrames: 0,
+      congestion: null,
+      lastUpdateMs: null,
+      warning: 'disconnected',
+    },
+    updatedAtMs: 1720000000000,
+  });
 });
 
 test('createErrorMessage includes the protocol error code', () => {

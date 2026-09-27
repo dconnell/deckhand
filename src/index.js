@@ -84,7 +84,7 @@ async function defaultRelaunchAppSource({ config, logger, sourceId }) {
 /**
  * Load config, compose adapters, and start the coordinator process.
  *
- * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, createPresentationServerFn?: typeof createPresentationServer, createBrowserSessionFn?: typeof createBrowserSession, createBrowserCommandExecutorFn?: typeof createBrowserCommandExecutor, createCdpClientFn?: typeof createCdpClient, launchChromeSessionFn?: typeof launchChromeSession, discoverCdpEndpointFn?: typeof discoverCdpEndpoint, preflightEnumerateWindowsFn?: typeof enumerateWindowsByOwnerName, reconcileObsFn?: typeof reconcileObsPresentation, waitForDriverPositionFn?: typeof waitForFirstDriverPosition, waitForPresentationObserverFn?: typeof waitForPresentationObserver, loadResumableSlideFn?: typeof loadResumableSlide, relaunchAppSourceFn?: (input: { config: Record<string, unknown>, logger: Record<string, unknown>, sourceId: string }) => Promise<{ macWindowId?: number, pid?: number } | null>, installSignalHandlers?: boolean, presenterAssetsPath?: string, noResume?: boolean, shutdownCloseTimeoutMs?: number, shutdownStopTimeoutMs?: number, closeMacWindowFn?: typeof closeMacWindow, terminateProcessGroupFn?: typeof terminateProcessGroup }} [options] Startup options.
+ * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, createPresentationServerFn?: typeof createPresentationServer, createBrowserSessionFn?: typeof createBrowserSession, createBrowserCommandExecutorFn?: typeof createBrowserCommandExecutor, createCdpClientFn?: typeof createCdpClient, launchChromeSessionFn?: typeof launchChromeSession, discoverCdpEndpointFn?: typeof discoverCdpEndpoint, preflightEnumerateWindowsFn?: typeof enumerateWindowsByOwnerName, reconcileObsFn?: typeof reconcileObsPresentation, waitForDriverPositionFn?: typeof waitForFirstDriverPosition, waitForPresentationObserverFn?: typeof waitForPresentationObserver, loadResumableSlideFn?: typeof loadResumableSlide, relaunchAppSourceFn?: (input: { config: Record<string, unknown>, logger: Record<string, unknown>, sourceId: string }) => Promise<{ macWindowId?: number, pid?: number } | null>, installSignalHandlers?: boolean, presenterAssetsPath?: string, noResume?: boolean, shutdownCloseTimeoutMs?: number, shutdownStopTimeoutMs?: number, closeMacWindowFn?: typeof closeMacWindow, terminateProcessGroupFn?: typeof terminateProcessGroup, killProcessGroupFn?: (pgid: number) => void, reapChromeProfilesFn?: (command: string) => void }} [options] Startup options.
  * @returns {Promise<number>}
  */
 export async function run(options = {}) {
@@ -97,6 +97,10 @@ export async function run(options = {}) {
   const presenterAssetsPath = options.presenterAssetsPath ?? path.join(cwd, 'presenter-web');
   const closeMacWindowFn = options.closeMacWindowFn ?? closeMacWindow;
   const terminateProcessGroupFn = options.terminateProcessGroupFn ?? terminateProcessGroup;
+  // Injectable kill/reap hooks so tests can stub the SIGKILL and `pkill`
+  // side effects and never fire them against the developer's machine.
+  const killProcessGroupFn = options.killProcessGroupFn ?? ((pgid) => { process.kill(-pgid, 'SIGKILL'); });
+  const reapChromeProfilesFn = options.reapChromeProfilesFn ?? ((command) => { execSync(command, { stdio: 'ignore' }); });
   const shutdownCloseTimeoutMs = options.shutdownCloseTimeoutMs ?? 15000;
   const shutdownStopTimeoutMs = options.shutdownStopTimeoutMs ?? 10000;
   const statePath = presentation.statePath;
@@ -396,20 +400,20 @@ export async function run(options = {}) {
 
       if (typeof chromePid === 'number' && chromePid > 0) {
         try {
-          process.kill(-chromePid, 'SIGKILL');
+          killProcessGroupFn(chromePid);
         } catch {
           // process group may have already exited
         }
       }
 
       try {
-        execSync('pkill -9 -f "deckhand-chrome-profiles"', { stdio: 'ignore' });
+        reapChromeProfilesFn('pkill -9 -f "deckhand-chrome-profiles"');
       } catch {
         // no matching processes
       }
 
       try {
-        execSync('pkill -9 -f "deckhand-profile-"', { stdio: 'ignore' });
+        reapChromeProfilesFn('pkill -9 -f "deckhand-profile-"');
       } catch {
         // no matching processes
       }
@@ -578,7 +582,7 @@ export async function run(options = {}) {
 
           if (typeof stalePid === 'number' && stalePid > 0) {
             try {
-              process.kill(-stalePid, 'SIGKILL');
+              killProcessGroupFn(stalePid);
             } catch {
               // process group may have already exited
             }
