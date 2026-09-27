@@ -1,38 +1,20 @@
+import { withTimeout } from './time.js';
+
 const DRIVER_READY_TIMEOUT_MS = 10000;
 const PRESENTER_OBSERVER_TIMEOUT_MS = 5000;
-
-export function delay(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
 
 export function hasPresentationObserver(hubSnapshot) {
   return hubSnapshot.observers.some((observer) => Array.isArray(observer.subscriptions) && observer.subscriptions.includes('presentationState'));
 }
 
 export function waitForEvent(timeoutMs, timeoutMessage, register) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      reject(new Error(timeoutMessage));
-    }, timeoutMs);
-
-    register((payload) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      clearTimeout(timer);
-      resolve(payload);
-    });
-  });
+  return withTimeout(
+    new Promise((resolve) => {
+      register(resolve);
+    }),
+    timeoutMs,
+    timeoutMessage,
+  );
 }
 
 export async function waitForFirstDriverPosition({ coordinator, hub, timeoutMs = DRIVER_READY_TIMEOUT_MS, presentationName }) {

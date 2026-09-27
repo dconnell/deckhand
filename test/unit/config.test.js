@@ -1478,3 +1478,55 @@ test('normalizeConfig rejects malformed recovery sub-blocks with the right path'
     assertConfigError(() => normalizeConfig(config), path, pattern);
   }
 });
+
+test('normalizeConfig validates config ports as strict integers from 1 to 65535', () => {
+  // Boundaries are accepted verbatim.
+  const lowBoundary = createValidConfig();
+  lowBoundary.hub.port = 1;
+  assert.equal(normalizeConfig(lowBoundary).hub.port, 1);
+
+  const highBoundary = createValidConfig();
+  highBoundary.hub.port = 65535;
+  assert.equal(normalizeConfig(highBoundary).hub.port, 65535);
+
+  // Port 0 asks the OS for a free port; a pinned config port must never do that.
+  // Quoted ports stay invalid: config values are JSON, not environment strings.
+  const invalidCases = [0, -1, 65536, 8765.5, '8765', true, null, undefined];
+
+  for (const port of invalidCases) {
+    const config = createValidConfig();
+    config.hub.port = port;
+
+    assertConfigError(
+      () => normalizeConfig(config),
+      'hub.port',
+      /must be an integer between 1 and 65535/,
+    );
+  }
+});
+
+test('normalizeConfig rejects invalid ports with path-aware ConfigErrors on every port field', () => {
+  const httpConfig = createValidConfig();
+  httpConfig.presenter.http = { port: 0 };
+
+  assertConfigError(
+    () => normalizeConfig(httpConfig),
+    'presenter.http.port',
+    /must be an integer between 1 and 65535/,
+  );
+
+  const chromeConfig = createValidConfig();
+  chromeConfig.chrome = { debugPort: 65536 };
+
+  assertConfigError(
+    () => normalizeConfig(chromeConfig),
+    'chrome.debugPort',
+    /must be an integer between 1 and 65535/,
+  );
+});
+
+test('normalizeConfig applies the presenter.http default port when the block omits it', () => {
+  const config = normalizeConfig(createValidConfig());
+
+  assert.deepEqual(config.presenter.http, { host: '127.0.0.1', port: 3001 });
+});

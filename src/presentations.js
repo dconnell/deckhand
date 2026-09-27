@@ -3,10 +3,8 @@ import { parseArgs } from 'node:util';
 import { access, readFile } from 'node:fs/promises';
 
 import { ConfigError, assertOwnedAppFilesExist, normalizeConfig } from './config.js';
-
-function isPlainObject(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
+import { errorMessage } from './lib/errors.js';
+import { isPlainObject } from './lib/guards.js';
 
 function mergeConfigOverlay(base, overlay) {
   if (!isPlainObject(base) || !isPlainObject(overlay)) {
@@ -33,7 +31,7 @@ async function readJsonFile(filePath) {
   try {
     return JSON.parse(text);
   } catch (error) {
-    throw new ConfigError('config', `must be valid JSON: ${error.message}`);
+    throw new ConfigError('config', `must be valid JSON: ${errorMessage(error)}`);
   }
 }
 

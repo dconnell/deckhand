@@ -33,6 +33,29 @@ test('run exits clearly when config is missing', async () => {
   }
 });
 
+test('run fails startup with a clear error when PORT is not a valid port', async () => {
+  const errors = [];
+  const originalPort = process.env.PORT;
+
+  process.env.PORT = 'not-a-port';
+
+  try {
+    const exitCode = await run({
+      consoleLike: createSilentConsole({ onError: (message) => errors.push(message) }),
+    });
+
+    assert.equal(exitCode, 1);
+    assert.match(errors[0], /PORT environment variable must be an integer between 0 and 65535/);
+    assert.match(errors[0], /received "not-a-port"/);
+  } finally {
+    if (originalPort === undefined) {
+      delete process.env.PORT;
+    } else {
+      process.env.PORT = originalPort;
+    }
+  }
+});
+
 test('run reports adapter construction failures clearly', async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-adapter-failure-'));
   const errors = [];

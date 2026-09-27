@@ -1,3 +1,5 @@
+import { isPlainObject } from '../lib/guards.js';
+
 const WARNING_VALUES = new Set([
   'disconnected',
   'reconnecting',
@@ -19,10 +21,6 @@ const DROPPED_FRAMES_MIN_DELTA = 10;
 const DROPPED_FRAMES_MIN_RATIO = 0.03;
 const BITRATE_COLLAPSE_MAX_RATIO = 0.25;
 const BITRATE_COLLAPSE_MAX_KBPS = 500;
-
-function isPlainObject(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 function readBoolean(value, keys) {
   if (!isPlainObject(value)) {

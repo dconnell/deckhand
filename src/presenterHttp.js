@@ -1,6 +1,9 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { extname, join, normalize } from 'node:path';
+import { extname } from 'node:path';
+
+import { resolvePathWithinRoot } from './http/pathSafety.js';
+import { createNoopLogger } from './logger.js';
 
 const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
@@ -10,18 +13,10 @@ const MIME_TYPES = {
   '.svg': 'image/svg+xml',
 };
 
-function createNoopLogger() {
-  return {
-    error() {},
-    info() {},
-    warn() {},
-  };
-}
-
 /**
  * Create the local presenter HTTP server.
  *
- * @param {{ assetsRoot: string, getProgramPreview?: () => { body: Buffer, etag: string, lastModified?: string } | null, getStatus(): Record<string, unknown>, host: string, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void }, presenterBootstrap: Record<string, unknown>, port: number }} options Server options.
+ * @param {{ assetsRoot: string, getProgramPreview?: () => { body: Buffer, etag: string, lastModified?: string } | null, getStatus(): Record<string, unknown>, host: string, logger?: import('./logger.js').Logger, presenterBootstrap: Record<string, unknown>, port: number }} options Server options.
  * @returns {{ start(): Promise<void>, stop(): Promise<void>, getAddress(): { host: string, port: number } }}
  */
 export function createPresenterHttpServer(options) {
@@ -30,14 +25,12 @@ export function createPresenterHttpServer(options) {
   let address = { host: options.host, port: options.port };
 
   function resolveAssetPath(pathname) {
-    const relative = normalize(pathname.replace(/^\/presenter\//, '')).replace(/^([/\\])+/, '');
-    const filePath = join(options.assetsRoot, relative === '' || relative === '.' ? 'index.html' : relative);
+    const relative = pathname.replace(/^\/presenter\//, '');
+    // The bare `/presenter/` root serves the index page; everything else is
+    // resolved — and contained — by the shared path guard.
+    const fallbackPath = relative === '' || relative === '.' ? 'index.html' : relative;
 
-    if (!filePath.startsWith(options.assetsRoot)) {
-      return null;
-    }
-
-    return filePath;
+    return resolvePathWithinRoot(options.assetsRoot, fallbackPath);
   }
 
   async function handleRequest(req, res) {

@@ -1,6 +1,4 @@
-function isPlainObject(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
+import { isPlainObject } from './lib/guards.js';
 
 function assertNonEmptyString(value, fieldName) {
   if (typeof value !== 'string' || value.trim() === '') {

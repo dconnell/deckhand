@@ -1,6 +1,9 @@
 import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { isPlainObject } from './lib/guards.js';
+import { normalizePort as normalizePortValue } from './net/ports.js';
+
 const BUILTIN_DRIVER_TYPES = ['revealjs'];
 const VALID_SLOT_POSITIONS = new Set(['full', 'left', 'right']);
 const PRESENTER_OVERLAY_SOURCE = 'Presenter';
@@ -12,10 +15,6 @@ const APP_SOURCE_KIND = 'app';
 const VALID_SOURCE_KINDS = new Set([BROWSER_SOURCE_KIND, APP_SOURCE_KIND]);
 const VALID_BROWSER_ACTIONS = new Set(['activateTab', 'navigate']);
 const VALID_STT_MODES = new Set(['step', 'vad']);
-
-function isPlainObject(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 function assertPlainObject(value, pathName, message = 'must be an object') {
   if (!isPlainObject(value)) {
@@ -41,12 +40,30 @@ function assertBoolean(value, pathName) {
   return value;
 }
 
+/**
+ * Validate a config-declared port.
+ *
+ * The shared port helper owns the integer/range rules (`min: 1` rules out
+ * port 0, which only makes sense when asking the OS for a free port, never as
+ * a pinned config value). Config values come from JSON, so non-numbers are
+ * rejected here before delegating: the shared helper also coerces numeric
+ * strings for environment variables, but a quoted `"8765"` in a config file
+ * stays a validation error.
+ *
+ * @param {unknown} value The raw config value.
+ * @param {string} pathName The config path used in errors.
+ * @returns {number}
+ */
 function normalizePort(value, pathName) {
-  if (!Number.isInteger(value) || value < 1 || value > 65535) {
+  if (typeof value !== 'number') {
     throw new ConfigError(pathName, 'must be an integer between 1 and 65535');
   }
 
-  return value;
+  try {
+    return normalizePortValue(value, { min: 1 });
+  } catch {
+    throw new ConfigError(pathName, 'must be an integer between 1 and 65535');
+  }
 }
 
 function normalizeInteger(value, pathName) {
@@ -851,7 +868,7 @@ function normalizePresenterStt(stt) {
 
   const value = assertPlainObject(stt, 'presenter.stt');
 
-   if (value.chunkSeconds !== undefined) {
+  if (value.chunkSeconds !== undefined) {
     throw new ConfigError(
       'presenter.stt.chunkSeconds',
       'was replaced by whisper-stream settings: mode, stepMs, lengthMs, and keepMs',
@@ -1208,13 +1225,7 @@ export async function assertOwnedAppFilesExist(config) {
  * @returns {Promise<ReturnType<typeof normalizeConfig>>}
  */
 export async function loadConfig(options) {
-  let text;
-
-  try {
-    text = await readFile(options.filePath, 'utf8');
-  } catch (error) {
-    throw error;
-  }
+  const text = await readFile(options.filePath, 'utf8');
 
   let parsed;
 

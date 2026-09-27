@@ -1,7 +1,9 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { extname, join, normalize } from 'node:path';
+import { extname, join } from 'node:path';
 
+import { resolvePathWithinRoot } from './http/pathSafety.js';
+import { createNoopLogger } from './logger.js';
 import { resolvePresentationPaths } from './presentations.js';
 
 const MIME_TYPES = {
@@ -16,29 +18,10 @@ const MIME_TYPES = {
   '.svg': 'image/svg+xml',
 };
 
-function createNoopLogger() {
-  return {
-    error() {},
-    info() {},
-    warn() {},
-  };
-}
-
-function resolveSafePath(root, requestPath) {
-  const relative = normalize(requestPath).replace(/^([/\\])+/, '');
-  const filePath = join(root, relative);
-
-  if (!filePath.startsWith(root)) {
-    return null;
-  }
-
-  return filePath;
-}
-
 /**
  * Create the local static server for one presentation deck plus shared reveal assets.
  *
- * @param {{ cwd: string, host: string, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void }, port: number, presentationName: string }} options Server options.
+ * @param {{ cwd: string, host: string, logger?: import('./logger.js').Logger, port: number, presentationName: string }} options Server options.
  * @returns {{ start(): Promise<void>, stop(): Promise<void>, getAddress(): { host: string, port: number } }}
  */
 export function createPresentationServer(options) {
@@ -65,12 +48,12 @@ export function createPresentationServer(options) {
     let filePath = null;
 
     if (requestUrl.pathname.startsWith(`/presentation/${presentation.name}/deck/`)) {
-      filePath = resolveSafePath(
+      filePath = resolvePathWithinRoot(
         presentation.deckRoot,
         requestUrl.pathname.replace(`/presentation/${presentation.name}/deck/`, ''),
       );
     } else if (requestUrl.pathname.startsWith('/reveal/')) {
-      filePath = resolveSafePath(revealRoot, requestUrl.pathname.replace('/reveal/', ''));
+      filePath = resolvePathWithinRoot(revealRoot, requestUrl.pathname.replace('/reveal/', ''));
     }
 
     if (filePath === null) {

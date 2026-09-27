@@ -13,9 +13,11 @@ test('presenter HTTP server serves presenter assets and status without exposing 
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-presenter-http-'));
   const presenterRoot = path.join(tempDir, 'presenter-web');
   await mkdir(path.join(presenterRoot, 'nested'), { recursive: true });
+  await mkdir(path.join(tempDir, 'presenter-web-secret'), { recursive: true });
   await writeFile(path.join(presenterRoot, 'index.html'), '<!doctype html><title>Presenter</title>', 'utf8');
   await writeFile(path.join(presenterRoot, 'teleprompter.html'), '<!doctype html><title>Teleprompter</title>', 'utf8');
   await writeFile(path.join(presenterRoot, 'app.js'), 'console.log("presenter")', 'utf8');
+  await writeFile(path.join(tempDir, 'presenter-web-secret', 'config.json'), '{"secret":true}', 'utf8');
   await writeFile(path.join(tempDir, 'config.json'), '{"secret":true}', 'utf8');
 
   const server = createPresenterHttpServer({
@@ -76,11 +78,22 @@ test('presenter HTTP server serves presenter assets and status without exposing 
     });
 
     // The literal `..` path reaches the server unnormalized; the path guard
-    // (resolveAssetPath) rejects it with 404 instead of serving the secret
+    // (resolvePathWithinRoot) rejects it with 404 instead of serving the secret
     // file that exists one level above the assets root.
     const traversal = await rawGet(port, '/presenter/../config.json');
     assert.equal(traversal.status, 404);
     assert.doesNotMatch(traversal.body, /secret/);
+
+    // Sibling-prefix traversal: `presenter-web-secret` is a sibling of the
+    // assets root whose name shares the root's prefix, so a
+    // `startsWith(assetsRoot)` guard would serve it. Dot segments are resolved
+    // during URL parsing, so this request never matches the `/presenter/`
+    // prefix and is rejected with 404; the containment helper itself rejects
+    // the sibling escape at the guard layer (see
+    // test/unit/http/pathSafety.test.js).
+    const siblingTraversal = await rawGet(port, '/presenter/../presenter-web-secret/config.json');
+    assert.equal(siblingTraversal.status, 404);
+    assert.doesNotMatch(siblingTraversal.body, /secret/);
 
     const missing = await fetch(`http://127.0.0.1:${port}/presenter/missing.js`);
     assert.equal(missing.status, 404);

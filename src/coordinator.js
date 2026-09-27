@@ -1,19 +1,13 @@
 import os from 'node:os';
 import path from 'node:path';
 
+import { createNoopLogger } from './logger.js';
 import { createPresenterSession } from './presenter/session.js';
 import { reduceStreamHealth } from './presenter/reduceStreamHealth.js';
 import { buildPresentationState, shouldSkipAudienceTransition } from './scenes.js';
 import { buildMacWindowCaptureSettings } from './setupObs.js';
 import { deckhandInputName, deckhandSceneName } from './obsNames.js';
-
-function createNoopLogger() {
-  return {
-    error() {},
-    info() {},
-    warn() {},
-  };
-}
+import { delay } from './lifecycle/time.js';
 
 const DEFAULT_FREEZE_FILENAME = 'deckhand-freeze-frame.png';
 const DEFAULT_TRANSITION_DURATION_MS = 300;
@@ -25,12 +19,6 @@ const DRIVER_SETTLE_TIMEOUT_MS = 2000;
 const DRIVER_COMMAND_POSITION_TIMEOUT_MS = 1500;
 const PRESENTER_FOLLOW_TICK_MS = 250;
 const PRESENTER_STATUS_POLL_MS = 5000;
-
-function delay(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
 
 /**
  * Extract a comparable `{ h, v }` index from a driver position payload.
@@ -159,8 +147,8 @@ function resolvePresenterPredictionLeadMs(stt) {
  * directly; the executor seam keeps slide-event orchestration decoupled from the
  * Deckhand browser session runtime.
  *
- * @param {{ config: { driver: { type: string }, obs: { url: string, password: string, transitions: null | { forward: string | null, backward: string | null, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number, windowSettleMs: number, freezeDimPercent: number } }, layouts: Record<string, unknown>, slides: Record<string, { layoutId: string, commands: Array<{ type: string, source: string, tab?: string, url?: string, [key: string]: unknown }> }> }, obs: { connect(): Promise<unknown>, disconnect(): Promise<unknown>, setScene(sceneName: string): Promise<unknown>, isConnected?(): boolean, isReconnecting?(): boolean, on?(event: 'reconnecting' | 'reconnected', handler: (event: string) => void): void, applyInputSettings?(inputName: string, inputSettings: Record<string, unknown>): Promise<void>, getCurrentTransitionName?(): Promise<string>, captureProgramScreenshot?(filePath: string): Promise<void>, switchProgramScene?(sceneName: string, options?: { waitForEvent?: boolean, timeoutMs?: number }): Promise<void>, waitForSceneTransitionEnd?(options?: { timeoutMs?: number }): Promise<void>, setCurrentTransition?(name: string, durationMs?: number): Promise<void>, ensureFreezeAssets?(options: { sceneName: string, inputName: string, imagePath: string, dimPercent?: number }): Promise<void> }, hub: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown>, sendCommand(target: { role?: 'driver' }, command: Record<string, unknown>): Promise<unknown>, publishSticky(channel: string, payload: Record<string, unknown>): Promise<unknown>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown> } }, executor?: { start(): Promise<void>, stop(): Promise<void>, execute(command: Record<string, unknown>): Promise<void> } | null, browserSession?: { on?(event: 'recovered', handler: () => void): void } | null, persistSlideId?: (payload: { slideId: string, index: unknown }) => Promise<void> | void, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Coordinator dependencies.
- * @returns {{ start(): Promise<void>, stop(): Promise<void>, handleDriverPositionChanged(position: { id: string, index?: Record<string, unknown>, meta?: Record<string, unknown> }): Promise<void>, getCurrentPresentationState(): Record<string, unknown> | null, refreshCurrentPresentationState(reason?: string): Promise<void>, reapplyCurrentSlide(reason: string, options?: { rearmFreeze?: boolean }): Promise<void>, awaitSlideOperations(): Promise<void> }}
+ * @param {import('./contracts/coordinator.js').CoordinatorOptions} options Coordinator dependencies.
+ * @returns {import('./contracts/coordinator.js').Coordinator}
  */
 export function createCoordinator(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -732,7 +720,7 @@ export function createCoordinator(options) {
    * navigation) happens inside `mutate`, which only runs once the Freeze scene
    * is confirmed on screen. The reveal direction comes from `direction`.
    *
-   * @param {{ forward: string | null, backward: string | null, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, windowSettleMs: number, freezeDimPercent: number }} transitions Normalized transition config.
+   * @param {import('./contracts/coordinator.js').CoordinatorTransitions} transitions Normalized transition config.
    * @param {{ audienceScene: string }} presentationState The resolved target state.
    * @param {'forward' | 'backward' | 'none'} direction Perceived slide direction.
    * @param {string} slideId The active slide id, for logging.

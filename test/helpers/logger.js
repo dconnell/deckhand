@@ -25,16 +25,6 @@ export function createCaptureLogger() {
   };
 }
 
-/**
- * Logger that discards all output, for tests that must satisfy a logger
- * dependency without asserting on it.
- *
- * @returns {{ info: () => void, warn: () => void, error: () => void }} No-op logger.
- */
-export function createNoopLogger() {
-  return {
-    info() {},
-    warn() {},
-    error() {},
-  };
-}
+// Re-export the production no-op logger so tests and factories share one
+// implementation and shape.
+export { createNoopLogger } from '../../src/logger.js';

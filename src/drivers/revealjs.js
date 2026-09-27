@@ -1,6 +1,4 @@
-function isPlainObject(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
+import { isPlainObject } from '../lib/guards.js';
 
 function readDeckhandId(slide) {
   const value = slide?.dataset?.deckhandId;

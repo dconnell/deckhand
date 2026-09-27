@@ -1,13 +1,6 @@
 import { diffNewWindows } from './macWindows.js';
-import { delay } from './lifecycle/waitFor.js';
-
-function createNoopLogger() {
-  return {
-    error() {},
-    info() {},
-    warn() {},
-  };
-}
+import { delay } from './lifecycle/time.js';
+import { createNoopLogger } from './logger.js';
 
 function listBrowserSources(sources) {
   return Object.values(sources).filter((source) => source?.kind === 'browser');

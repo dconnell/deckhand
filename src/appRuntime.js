@@ -6,7 +6,7 @@ import { launchChromeWindowWithUrl } from './launchers/chrome.js';
 import { closeGhosttyOwnedWindow, launchGhosttyWindow } from './launchers/ghostty.js';
 import { closeIterm2OwnedWindow, launchIterm2Window } from './launchers/iterm2.js';
 import { closeKittyOwnedWindow, launchKittyWindow } from './launchers/kitty.js';
-import { delay } from './lifecycle/waitFor.js';
+import { delay } from './lifecycle/time.js';
 import { diffNewWindows, enumerateWindowsByOwnerName, enumerateWindowsByPid } from './macWindows.js';
 import { resolveOwnedWindowBindings } from './ownedWindows.js';
 

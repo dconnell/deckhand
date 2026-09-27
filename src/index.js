@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { loadConfig, ConfigError } from './config.js';
 import { createCoordinator } from './coordinator.js';
 import { createHub } from './hub.js';
+import { errorMessage } from './lib/errors.js';
 import { createLogger } from './logger.js';
 import { createObsClient } from './obsClient.js';
 import { createPresentationServer } from './presentationServer.js';
@@ -16,6 +17,7 @@ import { parsePresentationCliArgs } from './presentations.js';
 import { resolvePresentationPaths } from './presentations.js';
 import { buildRuntimeStatus } from './runtimeStatus.js';
 import { findBelowMinimumOverlayRects } from './scenes.js';
+import { normalizePort } from './net/ports.js';
 import { loadResumableSlide, persistSlideId } from './recovery/slideResume.js';
 import {
   buildBootstrapBinding,
@@ -45,7 +47,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 
 const PRESENTATION_SERVER_HOST = '127.0.0.1';
-const PRESENTATION_SERVER_PORT = Number(process.env.PORT ?? 3000);
+const PRESENTATION_SERVER_PORT_DEFAULT = 3000;
 const PRESENTER_SOURCE_ID = 'Presenter';
 const CONSOLE_SOURCE_ID = 'Console';
 
@@ -84,7 +86,7 @@ async function defaultRelaunchAppSource({ config, logger, sourceId }) {
 /**
  * Load config, compose adapters, and start the coordinator process.
  *
- * @param {{ cwd?: string, presentationName?: string, configPath?: string, consoleLike?: Console, createHubFn?: typeof createHub, createObsClientFn?: typeof createObsClient, createCoordinatorFn?: typeof createCoordinator, createPresenterHttpFn?: typeof createPresenterHttpServer, createPresentationServerFn?: typeof createPresentationServer, createBrowserSessionFn?: typeof createBrowserSession, createBrowserCommandExecutorFn?: typeof createBrowserCommandExecutor, createCdpClientFn?: typeof createCdpClient, launchChromeSessionFn?: typeof launchChromeSession, discoverCdpEndpointFn?: typeof discoverCdpEndpoint, preflightEnumerateWindowsFn?: typeof enumerateWindowsByOwnerName, reconcileObsFn?: typeof reconcileObsPresentation, waitForDriverPositionFn?: typeof waitForFirstDriverPosition, waitForPresentationObserverFn?: typeof waitForPresentationObserver, loadResumableSlideFn?: typeof loadResumableSlide, relaunchAppSourceFn?: (input: { config: Record<string, unknown>, logger: Record<string, unknown>, sourceId: string }) => Promise<{ macWindowId?: number, pid?: number } | null>, installSignalHandlers?: boolean, presenterAssetsPath?: string, noResume?: boolean, shutdownCloseTimeoutMs?: number, shutdownStopTimeoutMs?: number, closeMacWindowFn?: typeof closeMacWindow, terminateProcessGroupFn?: typeof terminateProcessGroup, killProcessGroupFn?: (pgid: number) => void, reapChromeProfilesFn?: (command: string) => void }} [options] Startup options.
+ * @param {import('./contracts/runtime.js').RunOptions} [options] Startup options.
  * @returns {Promise<number>}
  */
 export async function run(options = {}) {
@@ -104,6 +106,20 @@ export async function run(options = {}) {
   const shutdownCloseTimeoutMs = options.shutdownCloseTimeoutMs ?? 15000;
   const shutdownStopTimeoutMs = options.shutdownStopTimeoutMs ?? 10000;
   const statePath = presentation.statePath;
+
+  // Read per-run (not at import) so a malformed `PORT` fails this run with a
+  // plain message instead of an opaque listen error later.
+  let presentationServerPort;
+
+  try {
+    presentationServerPort = normalizePort(process.env.PORT, {
+      fallback: PRESENTATION_SERVER_PORT_DEFAULT,
+      label: 'PORT environment variable',
+    });
+  } catch (error) {
+    consoleLike.error(errorMessage(error));
+    return 1;
+  }
 
   try {
     await access(configPath);
@@ -522,7 +538,7 @@ export async function run(options = {}) {
       cwd,
       host: PRESENTATION_SERVER_HOST,
       logger,
-      port: PRESENTATION_SERVER_PORT,
+      port: presentationServerPort,
       presentationName,
     });
 
