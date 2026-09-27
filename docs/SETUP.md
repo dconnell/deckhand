@@ -20,6 +20,9 @@ Advancing the local deck coordinates four things:
 - Node 22+
 - OBS Studio 28+
 - Hammerspoon
+- Lua, to run the Hammerspoon contract unit tests (`brew install lua` on
+  macOS). Without it those tests self-skip, so the suite still passes — easy
+  to miss because CI installs Lua on its macOS leg for you
 - optional: whisper.cpp built with the `whisper-stream` example plus a local
   model file
 - this repo cloned locally

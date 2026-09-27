@@ -6,23 +6,7 @@ import {
   filterRealWindows,
   resolveWorkspaceHint,
 } from '../../src/preflightOwnedApps.js';
-
-function createNoopLogger() {
-  return { info() {}, warn() {}, error() {} };
-}
-
-function createCapturingLogger() {
-  const warnings = [];
-
-  return {
-    warnings,
-    info() {},
-    warn(message, context) {
-      warnings.push({ message, context });
-    },
-    error() {},
-  };
-}
+import { createCaptureLogger, createNoopLogger } from '../helpers/logger.js';
 
 /**
  * Minimal adapter stub shaped like the real registry adapters: the collector
@@ -164,7 +148,7 @@ test('collectOwnedAppInstanceConflicts skips terminal-family apps even when they
 });
 
 test('collectOwnedAppInstanceConflicts skips the check and logs a warning when enumeration throws', () => {
-  const logger = createCapturingLogger();
+  const logger = createCaptureLogger();
 
   const conflicts = collectOwnedAppInstanceConflicts({
     config: { sources: { Editor: { id: 'Editor', kind: 'app', app: 'Visual Studio Code' } } },
@@ -176,10 +160,10 @@ test('collectOwnedAppInstanceConflicts skips the check and logs a warning when e
   });
 
   assert.deepEqual(conflicts, []);
-  assert.equal(logger.warnings.length, 1);
-  assert.match(logger.warnings[0].message, /Failed to enumerate windows for owned app during preflight/);
-  assert.equal(logger.warnings[0].context.source.app, 'Visual Studio Code');
-  assert.match(logger.warnings[0].context.error, /CGWindowList exploded/);
+  assert.equal(logger.warns.length, 1);
+  assert.match(logger.warns[0].message, /Failed to enumerate windows for owned app during preflight/);
+  assert.equal(logger.warns[0].context.source.app, 'Visual Studio Code');
+  assert.match(logger.warns[0].context.error, /CGWindowList exploded/);
 });
 
 test('collectOwnedAppInstanceConflicts flags only the gated source in a mixed config', () => {
@@ -475,7 +459,7 @@ test('collectOwnedAppInstanceConflicts warns when hint mode sees real windows bu
   // Without Screen Recording permission every title comes back empty. In hint
   // mode that means the workspace check silently verified nothing — fail open,
   // but say so in the log.
-  const logger = createCapturingLogger();
+  const logger = createCaptureLogger();
 
   const conflicts = collectConflicts({
     ...createCase({
@@ -501,12 +485,12 @@ test('collectOwnedAppInstanceConflicts warns when hint mode sees real windows bu
   });
 
   assert.deepEqual(conflicts, []);
-  assert.equal(logger.warnings.length, 1);
+  assert.equal(logger.warns.length, 1);
   assert.equal(
-    logger.warnings[0].message,
+    logger.warns[0].message,
     'Could not read window titles; unable to verify whether the workspace is already open',
   );
-  assert.deepEqual(logger.warnings[0].context, { source: 'Editor', app: 'Visual Studio Code' });
+  assert.deepEqual(logger.warns[0].context, { source: 'Editor', app: 'Visual Studio Code' });
 });
 
 test('collectOwnedAppInstanceConflicts does not warn when hint mode can actually verify', () => {
@@ -531,7 +515,7 @@ test('collectOwnedAppInstanceConflicts does not warn when hint mode can actually
   ];
 
   for (const { name, windows } of cases) {
-    const logger = createCapturingLogger();
+    const logger = createCaptureLogger();
 
     const conflicts = collectConflicts({
       ...createCase({
@@ -551,7 +535,7 @@ test('collectOwnedAppInstanceConflicts does not warn when hint mode can actually
       logger,
     });
 
-    assert.deepEqual(logger.warnings, [], name);
+    assert.deepEqual(logger.warns, [], name);
     if (name === 'titled window matching the hint') {
       assert.equal(conflicts.length, 1, name);
     } else {

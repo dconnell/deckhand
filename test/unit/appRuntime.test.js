@@ -8,6 +8,7 @@ import {
   createOwnedWindowResolutionEntries,
   seedBrowserMacWindowBindings,
 } from '../../src/appRuntime.js';
+import { createCaptureLogger as createLogger } from '../helpers/logger.js';
 
 /**
  * Assert that `actual` carries at least the properties in `expectedSubset`,
@@ -17,23 +18,6 @@ function assertContainsProps(actual, expectedSubset) {
   for (const [key, value] of Object.entries(expectedSubset)) {
     assert.deepEqual(actual[key], value, `property "${key}" should match`);
   }
-}
-
-function createLogger() {
-  return {
-    errors: [],
-    infos: [],
-    warns: [],
-    error(message, context) {
-      this.errors.push({ message, context });
-    },
-    info(message, context) {
-      this.infos.push({ message, context });
-    },
-    warn(message, context) {
-      this.warns.push({ message, context });
-    },
-  };
 }
 
 test('createOwnedWindowResolutionEntries uses adapter CGWindow owner names and custom launch hooks', async () => {

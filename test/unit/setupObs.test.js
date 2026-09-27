@@ -5,23 +5,7 @@ import test from 'node:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 
 import { reconcileObsPresentation, setupObs } from '../../src/setupObs.js';
-
-function createLogger() {
-  return {
-    errors: [],
-    infos: [],
-    warns: [],
-    error(message, context) {
-      this.errors.push({ message, context });
-    },
-    info(message, context) {
-      this.infos.push({ message, context });
-    },
-    warn(message, context) {
-      this.warns.push({ message, context });
-    },
-  };
-}
+import { createCaptureLogger as createLogger } from '../helpers/logger.js';
 
 function createConfig() {
   return {

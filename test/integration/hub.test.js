@@ -5,23 +5,8 @@ import { once } from 'node:events';
 import WebSocket from 'ws';
 
 import { createHub } from '../../src/hub.js';
-
-function createLogger() {
-  return {
-    errors: [],
-    infos: [],
-    warns: [],
-    error(message, context) {
-      this.errors.push({ message, context });
-    },
-    info(message, context) {
-      this.infos.push({ message, context });
-    },
-    warn(message, context) {
-      this.warns.push({ message, context });
-    },
-  };
-}
+import { createCaptureLogger as createLogger } from '../helpers/logger.js';
+import { waitForMessages } from '../helpers/waitFor.js';
 
 async function createClient(port) {
   const socket = new WebSocket(`ws://127.0.0.1:${port}`);
@@ -45,28 +30,15 @@ async function createClient(port) {
   };
 }
 
-const WAIT_TIMEOUT_MS = 2000;
-
 /**
- * Poll until `predicate` holds over `messages`, following the deterministic
- * `waitForMessages` pattern from test/unit/presenter/stt/runner.test.js.
+ * Poll until `predicate` holds over `messages`, using the shared helper that
+ * follows the deterministic `waitForMessages` pattern from test/unit/presenter/stt/runner.test.js.
  *
  * @param {Array<unknown>} messages Array to poll (client messages or hub events).
  * @param {(messages: Array<unknown>) => boolean} predicate Condition to await.
  * @param {string} description What was being waited for, used in the timeout error.
  * @returns {Promise<void>} Resolves once the predicate holds; rejects on timeout.
  */
-async function waitForMessages(messages, predicate, description) {
-  const deadline = Date.now() + WAIT_TIMEOUT_MS;
-
-  while (!predicate(messages)) {
-    if (Date.now() > deadline) {
-      throw new Error(`Timed out after ${WAIT_TIMEOUT_MS}ms waiting for ${description}; received: ${JSON.stringify(messages)}`);
-    }
-
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-}
 
 /**
  * Await the hub's own `registered` ack, the deterministic signal that the hub

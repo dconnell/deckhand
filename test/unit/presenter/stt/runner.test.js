@@ -5,23 +5,7 @@ import { EventEmitter, once } from 'node:events';
 import { WebSocketServer } from 'ws';
 
 import { runSttObserver } from '../../../../src/presenter/stt/runner.js';
-
-function createLogger() {
-  return {
-    errors: [],
-    infos: [],
-    warns: [],
-    error(message, context) {
-      this.errors.push({ message, context });
-    },
-    info(message, context) {
-      this.infos.push({ message, context });
-    },
-    warn(message, context) {
-      this.warns.push({ message, context });
-    },
-  };
-}
+import { createCaptureLogger as createLogger } from '../../../helpers/logger.js';
 
 async function createMessageServer() {
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });

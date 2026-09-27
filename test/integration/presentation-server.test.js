@@ -1,47 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { request } from 'node:http';
 
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import { createPresentationServer } from '../../src/presentationServer.js';
-
-function createLogger() {
-  return {
-    error() {},
-    info() {},
-    warn() {},
-  };
-}
-
-/**
- * Send a GET whose request target goes over the wire exactly as written.
- * `fetch` normalizes `/a/../b` dot segments before they leave the client, so
- * only a raw `node:http` request can probe the server's path guard with an
- * unnormalized traversal path.
- *
- * @param {number} port Server port.
- * @param {string} requestPath Literal request target, dot segments included.
- * @returns {Promise<{ status: number | undefined, body: string }>} Response status and body.
- */
-function rawGet(port, requestPath) {
-  return new Promise((resolve, reject) => {
-    const req = request({ host: '127.0.0.1', port, path: requestPath, method: 'GET' }, (res) => {
-      res.setEncoding('utf8');
-      let body = '';
-      res.on('data', (chunk) => {
-        body += chunk;
-      });
-      res.on('end', () => {
-        resolve({ status: res.statusCode, body });
-      });
-    });
-    req.on('error', reject);
-    req.end();
-  });
-}
+import { rawGet } from '../helpers/http.js';
+import { createNoopLogger as createLogger } from '../helpers/logger.js';
 
 test('presentation server serves one presentation deck and shared reveal assets without exposing repo files', async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-presentation-server-'));

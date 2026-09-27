@@ -2,10 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { resolveOwnedWindowBindings } from '../../src/ownedWindows.js';
-
-function createNoopLogger() {
-  return { info() {}, warn() {}, error() {} };
-}
+import { createNoopLogger } from '../helpers/logger.js';
 
 test('resolveOwnedWindowBindings binds the macWindowId of a newly-launched window', async () => {
   let launched = false;

@@ -11,7 +11,7 @@
     "presenter:doctor": "node ./src/presenterDoctor.js",
     "test": "node --test",
     "test:integration": "node --test test/integration/*.test.js",
-    "test:unit": "node --test test/unit/*.test.js test/unit/recovery/*.test.js test/unit/presenter/*.test.js test/unit/presenter/stt/*.test.js"
+    "test:unit": "node --test \"test/unit/**/*.test.js\""
   },
   "engines": {
     "node": ">=22.0.0"
