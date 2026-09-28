@@ -609,6 +609,105 @@ test('transport close rejects pending requests instead of leaving them unresolve
   await assert.rejects(pending, /closed/i);
 });
 
+test('send rejects a pending request once the per-request timeout elapses and drops the pending entry', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+
+  const transport = createFakeTransport();
+  const client = createCdpClient({
+    discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://browser', chromePid: 1 }),
+    createTransport() {
+      return transport;
+    },
+  });
+
+  await client.connect();
+
+  const pending = client.activateTab({ targetId: 'TARGET_TAB_SLOW' });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const rejection = assert.rejects(pending, /CDP request timed out after 30000ms: Target.activateTarget/);
+  t.mock.timers.tick(30000);
+  await rejection;
+
+  // The pending entry is gone: a late response for the same id is dropped
+  // instead of surfacing a stray resolution or rejection.
+  respondTo(transport, 1, {});
+  await Promise.resolve();
+  await Promise.resolve();
+});
+
+test('send honors a smaller configured requestTimeoutMs', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+
+  const transport = createFakeTransport();
+  const client = createCdpClient({
+    requestTimeoutMs: 250,
+    discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://browser', chromePid: 1 }),
+    createTransport() {
+      return transport;
+    },
+  });
+
+  await client.connect();
+
+  const pending = client.activateTab({ targetId: 'TARGET_TAB_SLOW' });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const rejection = assert.rejects(pending, /CDP request timed out after 250ms: Target.activateTarget/);
+  t.mock.timers.tick(250);
+  await rejection;
+});
+
+test('send clears the per-request timer when the response arrives in time', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+
+  const transport = createFakeTransport();
+  const client = createCdpClient({
+    discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://browser', chromePid: 1 }),
+    createTransport() {
+      return transport;
+    },
+  });
+
+  await client.connect();
+
+  const pending = client.activateTab({ targetId: 'TARGET_TAB_CHECKOUT' });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  respondTo(transport, 1, {});
+  await pending;
+
+  // If the timer had leaked past the response, this tick would raise an
+  // unhandled rejection.
+  t.mock.timers.tick(30000);
+});
+
+test('transport close clears pending request timers so no timeout rejection surfaces later', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+
+  const transport = createFakeTransport();
+  const client = createCdpClient({
+    discover: createFakeDiscovery({ webSocketDebuggerUrl: 'ws://browser', chromePid: 1 }),
+    createTransport() {
+      return transport;
+    },
+  });
+
+  await client.connect();
+
+  const pending = client.activateTab({ targetId: 'TARGET_TAB_CHECKOUT' });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  transport.emitClose();
+  await assert.rejects(pending, /closed/i);
+
+  // Ticking past the request timeout must not raise a second rejection now
+  // that the pending entry and its timer are gone.
+  t.mock.timers.tick(30000);
+  await Promise.resolve();
+  await Promise.resolve();
+});
+
 test('connect rejects when discovery fails', async () => {
   const transport = createFakeTransport();
   const client = createCdpClient({

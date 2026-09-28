@@ -667,13 +667,19 @@ export function createObsClient(options) {
             return;
           }
 
+          // Only an exact scene-name match counts as success. OBS wraps the
+          // payload differently across versions ({ sceneName } vs
+          // { eventData: { sceneName } }), but a malformed event that carries
+          // no name must never be reported as a completed scene change.
           const reported = data?.sceneName ?? data?.eventData?.sceneName ?? null;
 
-          if (reported === null || reported === sceneName) {
-            settled = true;
-            cleanup();
-            resolve();
+          if (reported !== sceneName) {
+            return;
           }
+
+          settled = true;
+          cleanup();
+          resolve();
         };
 
         if (typeof client.on === 'function') {
@@ -741,7 +747,10 @@ export function createObsClient(options) {
 
     async waitForSourceScreenshotStable(sourceName, {
       differentFromData = null,
-      pollIntervalMs = 10,
+      // 50ms keeps screenshot polling from hammering OBS (a 10ms cadence
+      // serialized every RPC behind the websocket) while still settling a
+      // transition in a handful of samples.
+      pollIntervalMs = 50,
       stableSamples = 2,
       timeoutMs = 2000,
     } = {}) {

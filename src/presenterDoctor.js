@@ -1,13 +1,8 @@
 import { access } from 'node:fs/promises';
 
-import { ConfigError } from './config.js';
 import { getExpectedPresenterCanvas } from './obsSetupPlan.js';
+import { isMainModule, loadPresenterCliContext } from './presenter/cliBootstrap.js';
 import { runSubprocess } from './presenter/stt/subprocess.js';
-import { loadPresentationConfig, parsePresentationCliArgs } from './presentations.js';
-
-function isMainModule(metaUrl) {
-  return process.argv[1] !== undefined && metaUrl === new URL(`file://${process.argv[1]}`).href;
-}
 
 async function pathExists(accessFn, filePath) {
   try {
@@ -30,34 +25,18 @@ export async function runPresenterDoctor(options = {}) {
   const consoleLike = options.consoleLike ?? console;
   const cwd = options.cwd ?? process.cwd();
   const runCommand = options.runCommand ?? runSubprocess;
-  let parsed;
 
-  try {
-    parsed = parsePresentationCliArgs({
-      args,
-      options: {
-        // no flags yet; keep this structured so we can extend later
-      },
-    });
-  } catch (error) {
-    consoleLike.error(error instanceof Error ? error.message : String(error));
+  const bootstrap = await loadPresenterCliContext({
+    args,
+    consoleLike,
+    cwd,
+  });
+
+  if (!bootstrap.ok) {
     return 1;
   }
 
-  let config;
-
-  try {
-    config = (await loadPresentationConfig({ cwd, presentationName: parsed.presentationName })).config;
-  } catch (error) {
-    if (error instanceof ConfigError) {
-      consoleLike.error(`Invalid configuration at ${error.path}: ${error.message}`);
-      return 1;
-    }
-
-    consoleLike.error(`Failed to load configuration: ${error instanceof Error ? error.message : String(error)}`);
-    return 1;
-  }
-
+  const config = bootstrap.config;
   const problems = [];
 
   if (config.presenter === null) {

@@ -113,8 +113,8 @@ test('parseVsCodeStatusWorkspaces covers a bare window via its Folder row', () =
   assert.deepEqual(names, ['dc-enclave']);
 });
 
-test('listOpenVsCodeWorkspaces returns the parsed folder names on success', () => {
-  const names = listOpenVsCodeWorkspaces({
+test('listOpenVsCodeWorkspaces returns the parsed folder names on success', async () => {
+  const names = await listOpenVsCodeWorkspaces({
     execFn: () => SAMPLE_STATUS_OUTPUT,
   });
 
@@ -124,13 +124,31 @@ test('listOpenVsCodeWorkspaces returns the parsed folder names on success', () =
   );
 });
 
-test('listOpenVsCodeWorkspaces returns null when the probe fails', () => {
+test('listOpenVsCodeWorkspaces accepts an executor that returns a promise of the output', async () => {
+  // The default executor runs `code --status` via execFile, so the real
+  // contract is promise-based; the probe must resolve it, not treat the
+  // promise itself as unparsable output.
+  const names = await listOpenVsCodeWorkspaces({
+    execFn: () => Promise.resolve(SAMPLE_STATUS_OUTPUT),
+  });
+
+  assert.deepEqual(
+    [...names].sort(),
+    ['deckhand', 'dc-enclave'].sort(),
+  );
+});
+
+test('listOpenVsCodeWorkspaces returns null when the probe fails', async () => {
   const cases = [
     {
       name: 'exec throws (CLI absent, non-zero exit, or timeout)',
       execFn: () => {
         throw new Error('command not found: code');
       },
+    },
+    {
+      name: 'exec rejects (the async execFile contract)',
+      execFn: () => Promise.reject(new Error('command not found: code')),
     },
     {
       name: 'empty output',
@@ -143,7 +161,7 @@ test('listOpenVsCodeWorkspaces returns null when the probe fails', () => {
   ];
 
   for (const { name, execFn } of cases) {
-    assert.equal(listOpenVsCodeWorkspaces({ execFn }), null, name);
+    assert.equal(await listOpenVsCodeWorkspaces({ execFn }), null, name);
   }
 });
 
@@ -151,5 +169,8 @@ test('vscodeAdapter exposes listOpenWorkspaceNames for the preflight probe', () 
   // Why the preflight prefers the probe over window titles: `code --status`
   // needs no Screen Recording permission (titles come back empty without it)
   // and also reports folders inside multi-root windows, which titles never show.
+  // The probe is async (it shells out via execFile), so the preflight collector
+  // awaits it; the function is not invoked here because there is no injected
+  // executor on the adapter and the real CLI may not exist on this machine.
   assert.equal(typeof vscodeAdapter.listOpenWorkspaceNames, 'function');
 });

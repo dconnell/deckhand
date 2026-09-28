@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  assignLineTiers,
-  computeTeleprompterOffset,
+  clampToSpokenLine,
+  findFirstSpokenLine,
   findParagraphJumpTarget,
+  moveBySpokenLines,
 } from '../../../src/presenter/navigation.js';
 
 const lines = [
@@ -16,24 +17,32 @@ const lines = [
   { spokenText: 'Five', paragraphIndex: 3 },
 ];
 
-test('assignLineTiers marks past, current, near-future, and distant-future lines', () => {
-  assert.deepEqual(assignLineTiers(lines, 2), [
-    'past',
-    'past',
-    'current',
-    'near',
-    'future',
-    'future',
-  ]);
+test('findFirstSpokenLine lands on the first line with spoken text', () => {
+  assert.equal(findFirstSpokenLine(lines), 0);
+  assert.equal(
+    findFirstSpokenLine([{ spokenText: '' }, { spokenText: '  ' }, { spokenText: 'Later' }]),
+    2,
+  );
+  assert.equal(findFirstSpokenLine([]), 0);
 });
 
-test('computeTeleprompterOffset anchors the active line 30 percent from the top', () => {
-  assert.equal(computeTeleprompterOffset({
-    activeLineTop: 360,
-    activeLineHeight: 58,
-    viewportHeight: 900,
-    anchorRatio: 0.3,
-  }), -119);
+test('clampToSpokenLine snaps non-spoken lines back to the nearest spoken line', () => {
+  assert.equal(clampToSpokenLine(lines, 3), 3);
+  // Non-spoken line falls back to the previous spoken line.
+  assert.equal(clampToSpokenLine(lines, 4), 3);
+  // Nothing spoken before the index, so search forward.
+  assert.equal(clampToSpokenLine([{ spokenText: '' }, { spokenText: 'Next' }], 0), 1);
+  // Empty scripts clamp to the first line.
+  assert.equal(clampToSpokenLine([], 2), 0);
+});
+
+test('moveBySpokenLines skips non-spoken lines and clamps at both ends', () => {
+  assert.equal(moveBySpokenLines(lines, 0, 1), 1);
+  // Steps over the non-spoken line at index 4.
+  assert.equal(moveBySpokenLines(lines, 3, 1), 5);
+  assert.equal(moveBySpokenLines(lines, 5, -1), 3);
+  assert.equal(moveBySpokenLines(lines, 5, 1), 5);
+  assert.equal(moveBySpokenLines([{ spokenText: '' }], 0, 1), 0);
 });
 
 test('findParagraphJumpTarget skips non-spoken lines and moves by paragraph groups', () => {

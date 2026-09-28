@@ -1,55 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { request } from 'node:http';
 
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import { createPresenterHttpServer } from '../../src/presenterHttp.js';
-
-function createLogger() {
-  return {
-    error() {},
-    info() {},
-    warn() {},
-  };
-}
-
-/**
- * Send a GET whose request target goes over the wire exactly as written.
- * `fetch` normalizes `/a/../b` dot segments before they leave the client, so
- * only a raw `node:http` request can probe the server's path guard with an
- * unnormalized traversal path.
- *
- * @param {number} port Server port.
- * @param {string} requestPath Literal request target, dot segments included.
- * @returns {Promise<{ status: number | undefined, body: string }>} Response status and body.
- */
-function rawGet(port, requestPath) {
-  return new Promise((resolve, reject) => {
-    const req = request({ host: '127.0.0.1', port, path: requestPath, method: 'GET' }, (res) => {
-      res.setEncoding('utf8');
-      let body = '';
-      res.on('data', (chunk) => {
-        body += chunk;
-      });
-      res.on('end', () => {
-        resolve({ status: res.statusCode, body });
-      });
-    });
-    req.on('error', reject);
-    req.end();
-  });
-}
+import { rawGet } from '../helpers/http.js';
+import { createNoopLogger as createLogger } from '../helpers/logger.js';
 
 test('presenter HTTP server serves presenter assets and status without exposing repo files', async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-presenter-http-'));
   const presenterRoot = path.join(tempDir, 'presenter-web');
   await mkdir(path.join(presenterRoot, 'nested'), { recursive: true });
+  await mkdir(path.join(tempDir, 'presenter-web-secret'), { recursive: true });
   await writeFile(path.join(presenterRoot, 'index.html'), '<!doctype html><title>Presenter</title>', 'utf8');
   await writeFile(path.join(presenterRoot, 'teleprompter.html'), '<!doctype html><title>Teleprompter</title>', 'utf8');
   await writeFile(path.join(presenterRoot, 'app.js'), 'console.log("presenter")', 'utf8');
+  await writeFile(path.join(tempDir, 'presenter-web-secret', 'config.json'), '{"secret":true}', 'utf8');
   await writeFile(path.join(tempDir, 'config.json'), '{"secret":true}', 'utf8');
 
   const server = createPresenterHttpServer({
@@ -110,14 +78,69 @@ test('presenter HTTP server serves presenter assets and status without exposing 
     });
 
     // The literal `..` path reaches the server unnormalized; the path guard
-    // (resolveAssetPath) rejects it with 404 instead of serving the secret
+    // (resolvePathWithinRoot) rejects it with 404 instead of serving the secret
     // file that exists one level above the assets root.
     const traversal = await rawGet(port, '/presenter/../config.json');
     assert.equal(traversal.status, 404);
     assert.doesNotMatch(traversal.body, /secret/);
 
+    // Sibling-prefix traversal: `presenter-web-secret` is a sibling of the
+    // assets root whose name shares the root's prefix, so a
+    // `startsWith(assetsRoot)` guard would serve it. Dot segments are resolved
+    // during URL parsing, so this request never matches the `/presenter/`
+    // prefix and is rejected with 404; the containment helper itself rejects
+    // the sibling escape at the guard layer (see
+    // test/unit/http/pathSafety.test.js).
+    const siblingTraversal = await rawGet(port, '/presenter/../presenter-web-secret/config.json');
+    assert.equal(siblingTraversal.status, 404);
+    assert.doesNotMatch(siblingTraversal.body, /secret/);
+
     const missing = await fetch(`http://127.0.0.1:${port}/presenter/missing.js`);
     assert.equal(missing.status, 404);
+  } finally {
+    await server.stop();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('presenter HTTP server classifies malformed request targets as 400', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-presenter-http-bad-'));
+  const presenterRoot = path.join(tempDir, 'presenter-web');
+  await mkdir(presenterRoot, { recursive: true });
+  await writeFile(path.join(presenterRoot, 'index.html'), '<!doctype html><title>Presenter</title>', 'utf8');
+  const loggerErrors = [];
+
+  const server = createPresenterHttpServer({
+    assetsRoot: presenterRoot,
+    getStatus() {
+      return { service: 'deckhand', current: null, presenter: null };
+    },
+    host: '127.0.0.1',
+    logger: {
+      info() {},
+      warn() {},
+      error(message, context) {
+        loggerErrors.push({ message, context });
+      },
+    },
+    presenterBootstrap: { followEnabledByDefault: true, hubUrl: 'ws://127.0.0.1:8765' },
+    port: 0,
+  });
+
+  try {
+    await server.start();
+    const { port } = server.getAddress();
+
+    // Absolute-form targets with an invalid port, and targets with invalid
+    // percent-encoding, both make `new URL(req.url, base)` throw. They must be
+    // classified as client errors (400) instead of surfacing as logged 500s.
+    for (const badTarget of ['http://x:port/', 'http://%zz']) {
+      const response = await rawGet(port, badTarget);
+      assert.equal(response.status, 400, `expected 400 for target ${badTarget}`);
+      assert.doesNotMatch(response.body, /Internal server error/);
+    }
+
+    assert.deepEqual(loggerErrors, [], 'malformed request targets must not be logged as server faults');
   } finally {
     await server.stop();
     await rm(tempDir, { recursive: true, force: true });

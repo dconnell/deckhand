@@ -18,7 +18,7 @@ function createNoopLogger() {
  * unit-testable without real windows; `src/index.js` wires the concrete
  * strategies per source kind.
  *
- * @param {{ entries: Array<{ sourceId: string, snapshot: () => Array<{ windowId: number, title?: string }> | null, launch: () => Promise<{ pid?: number }>, confirm?: { titleIncludes?: string, rejectEmptyTitle?: boolean, stableSamples?: number } }>, delay: (ms: number) => Promise<void>, maxAttempts?: number, retryDelayMs?: number, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Resolver options. A `snapshot` returning `null` reports a FAILED enumeration (see {@link enumerateWindowsByOwnerName}); that source is skipped with a warning instead of being bound.
+ * @param {{ entries: Array<{ sourceId: string, snapshot: () => Array<{ windowId: number, title?: string }> | null | Promise<Array<{ windowId: number, title?: string }> | null>, launch: () => Promise<{ pid?: number }>, confirm?: { titleIncludes?: string, rejectEmptyTitle?: boolean, stableSamples?: number } }>, delay: (ms: number) => Promise<void>, maxAttempts?: number, retryDelayMs?: number, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Resolver options. A `snapshot` returning (or resolving to) `null` reports a FAILED enumeration (see {@link enumerateWindowsByOwnerName}); that source is skipped with a warning instead of being bound. Snapshots are awaited because the real enumerator runs the CGWindowList subprocess asynchronously.
  * @returns {Promise<Record<string, { macWindowId: number, pid?: number }>>}
  */
 export async function resolveOwnedWindowBindings(options) {
@@ -30,7 +30,10 @@ export async function resolveOwnedWindowBindings(options) {
 
   for (const entry of options.entries) {
     try {
-      const before = entry.snapshot();
+      // Snapshots are awaited: the production enumerator shells out to
+      // `swift` asynchronously. A rejected snapshot lands in the catch below
+      // like any other launch failure.
+      const before = await entry.snapshot();
 
       // A `null` before-snapshot is a failed enumeration, NOT an empty
       // desktop: reading it as empty made the diff treat every pre-existing
@@ -52,7 +55,7 @@ export async function resolveOwnedWindowBindings(options) {
       const stableCounts = new Map();
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-        const after = entry.snapshot();
+        const after = await entry.snapshot();
 
         if (after === null) {
           // Mid-poll snapshot failure: same fail-safe as a failed

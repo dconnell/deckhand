@@ -27,6 +27,12 @@ function createAsyncEmitter() {
       const handlers = listeners.get(eventName) ?? new Set();
       handlers.add(handler);
       listeners.set(eventName, handlers);
+
+      // Returned unsubscribe lets short-lived waits (e.g. waitForEvent) remove
+      // their handler instead of leaking it after the wait settles.
+      return () => {
+        handlers.delete(handler);
+      };
     },
 
     async emit(eventName, payload) {
@@ -99,7 +105,7 @@ function sendMessage(socket, payload) {
  * Create the local WebSocket hub used by drivers and presenter observers.
  *
  * @param {{ host: string, port: number, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Hub options.
- * @returns {{ on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<void>, stop(): Promise<void>, sendCommand(target: { role: 'driver' }, command: Record<string, unknown>): Promise<Array<Record<string, unknown>>>, publishSticky(channel: 'presentationState', payload: Record<string, unknown>): Promise<Array<Record<string, unknown>>>, publish(channel: 'presentationState' | 'transcript', payload: Record<string, unknown>, options?: { excludeSessionId?: string }): Promise<Array<Record<string, unknown>>>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown> }, getAddress(): { host: string, port: number } }}
+ * @returns {{ on(eventName: string, handler: (payload: unknown) => Promise<void> | void): () => void, start(): Promise<void>, stop(): Promise<void>, sendCommand(target: { role: 'driver' }, command: Record<string, unknown>): Promise<Array<Record<string, unknown>>>, publishSticky(channel: 'presentationState', payload: Record<string, unknown>): Promise<Array<Record<string, unknown>>>, publish(channel: 'presentationState' | 'transcript', payload: Record<string, unknown>, options?: { excludeSessionId?: string }): Promise<Array<Record<string, unknown>>>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown> }, getAddress(): { host: string, port: number } }}
  */
 export function createHub(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -404,7 +410,7 @@ export function createHub(options) {
 
   return {
     on(eventName, handler) {
-      events.on(eventName, handler);
+      return events.on(eventName, handler);
     },
 
     async start() {

@@ -5,23 +5,9 @@ import { once } from 'node:events';
 import WebSocket from 'ws';
 
 import { createHub } from '../../src/hub.js';
-
-function createLogger() {
-  return {
-    errors: [],
-    infos: [],
-    warns: [],
-    error(message, context) {
-      this.errors.push({ message, context });
-    },
-    info(message, context) {
-      this.infos.push({ message, context });
-    },
-    warn(message, context) {
-      this.warns.push({ message, context });
-    },
-  };
-}
+import { delay } from '../../src/lifecycle/time.js';
+import { createCaptureLogger as createLogger } from '../helpers/logger.js';
+import { waitForMessages } from '../helpers/waitFor.js';
 
 async function createClient(port) {
   const socket = new WebSocket(`ws://127.0.0.1:${port}`);
@@ -45,28 +31,15 @@ async function createClient(port) {
   };
 }
 
-const WAIT_TIMEOUT_MS = 2000;
-
 /**
- * Poll until `predicate` holds over `messages`, following the deterministic
- * `waitForMessages` pattern from test/unit/presenter/stt/runner.test.js.
+ * Poll until `predicate` holds over `messages`, using the shared helper that
+ * follows the deterministic `waitForMessages` pattern from test/unit/presenter/stt/runner.test.js.
  *
  * @param {Array<unknown>} messages Array to poll (client messages or hub events).
  * @param {(messages: Array<unknown>) => boolean} predicate Condition to await.
  * @param {string} description What was being waited for, used in the timeout error.
  * @returns {Promise<void>} Resolves once the predicate holds; rejects on timeout.
  */
-async function waitForMessages(messages, predicate, description) {
-  const deadline = Date.now() + WAIT_TIMEOUT_MS;
-
-  while (!predicate(messages)) {
-    if (Date.now() > deadline) {
-      throw new Error(`Timed out after ${WAIT_TIMEOUT_MS}ms waiting for ${description}; received: ${JSON.stringify(messages)}`);
-    }
-
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-}
 
 /**
  * Await the hub's own `registered` ack, the deterministic signal that the hub
@@ -705,6 +678,44 @@ test('hub snapshot no longer exposes a target catalog', async () => {
     assert.equal(snapshot.targets, undefined);
     assert.equal(snapshot.activeDriver, null);
     assert.equal(snapshot.observers.length, 1);
+  } finally {
+    await observer.close();
+    await hub.stop();
+  }
+});
+
+test('hub.on returns an unsubscribe function that stops future deliveries', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const observer = await createClient(port);
+  const events = [];
+
+  try {
+    const unsubscribe = hub.on('observerRegistered', (payload) => events.push(payload));
+
+    await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+    await waitForRegistered(observer);
+    await waitForMessages(events, (items) => items.length >= 1, 'the first observerRegistered event');
+    assert.equal(events.length, 1);
+
+    unsubscribe();
+
+    const second = await createClient(port);
+
+    try {
+      await second.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+      await waitForRegistered(second);
+      // Give the hub a moment to run (or, after unsubscribing, skip) the
+      // observerRegistered handler for the second registration.
+      await delay(50);
+
+      assert.equal(events.length, 1, 'the unsubscribed handler must not receive later events');
+    } finally {
+      await second.close();
+    }
   } finally {
     await observer.close();
     await hub.stop();

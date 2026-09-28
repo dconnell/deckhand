@@ -26,10 +26,6 @@ const DEFAULT_TRACKING = {
   offScriptMs: 3000,
 };
 
-function deepClone(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
 function createInitialPreviewState() {
   return {
     available: false,
@@ -77,7 +73,22 @@ function createInitialCurrentState() {
     focus: null,
     hidden: false,
     lines: [],
+    script: null,
   };
+}
+
+// The preview/stream slices are flat scalar records by construction. If a
+// nested value is ever introduced, `Object.is` reports it as changed and the
+// update commits — failing open toward publishing, never silently dropping one.
+function isSameFlatState(a, b) {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+
+  if (aKeys.length !== bKeys.length) {
+    return false;
+  }
+
+  return aKeys.every((key) => Object.is(a[key], b[key]));
 }
 
 function hasHiddenPresenterOverlay(presentationState) {
@@ -439,19 +450,31 @@ export function createPresenterSession(options) {
     },
 
     updateObsPreview(preview, nowMs = Date.now()) {
-      state.obs.preview = {
+      const nextPreview = {
         ...state.obs.preview,
         ...preview,
       };
+
+      if (isSameFlatState(state.obs.preview, nextPreview)) {
+        return false;
+      }
+
+      state.obs.preview = nextPreview;
       commit(nowMs);
       return true;
     },
 
     updateStream(stream, nowMs = Date.now()) {
-      state.stream = {
+      const nextStream = {
         ...state.stream,
         ...stream,
       };
+
+      if (isSameFlatState(state.stream, nextStream)) {
+        return false;
+      }
+
+      state.stream = nextStream;
       commit(nowMs);
       return true;
     },
@@ -478,7 +501,7 @@ export function createPresenterSession(options) {
     },
 
     getState() {
-      return deepClone(state);
+      return structuredClone(state);
     },
   };
 }

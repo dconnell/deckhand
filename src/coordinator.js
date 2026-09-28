@@ -1,154 +1,21 @@
-import os from 'node:os';
-import path from 'node:path';
-
-import { createPresenterSession } from './presenter/session.js';
-import { reduceStreamHealth } from './presenter/reduceStreamHealth.js';
+import { createNoopLogger } from './logger.js';
 import { buildPresentationState, shouldSkipAudienceTransition } from './scenes.js';
-import { buildMacWindowCaptureSettings } from './setupObs.js';
 import { deckhandInputName, deckhandSceneName } from './obsNames.js';
+import { buildMacWindowCaptureSettings } from './setupObs.js';
+import { createPresenterPublisher } from './coordinator/presenterPublisher.js';
+import { createSettleTracker, DRIVER_SETTLE_TIMEOUT_MS } from './coordinator/settleTracker.js';
+import { createSlideTransitionRunner } from './coordinator/slideTransitionRunner.js';
+import { createWindowBindingRegistry } from './coordinator/windowBindingRegistry.js';
+import { computeSlideDirection, extractSlideIndex } from './coordinator/slideMath.js';
 
-function createNoopLogger() {
-  return {
-    error() {},
-    info() {},
-    warn() {},
-  };
-}
+// Public slide math lives in ./coordinator/slideMath.js; re-exported so the
+// facade's public imports stay stable.
+export { computeSlideDirection, extractSlideIndex };
 
-const DEFAULT_FREEZE_FILENAME = 'deckhand-freeze-frame.png';
-const DEFAULT_TRANSITION_DURATION_MS = 300;
-const FREEZE_CUT_TRANSITION = 'Cut';
-// Buffer added to the configured transition duration when waiting for the OBS
-// slide animation to finish before re-arming the freeze frame.
-const TRANSITION_END_BUFFER_MS = 300;
-const DRIVER_SETTLE_TIMEOUT_MS = 2000;
 const DRIVER_COMMAND_POSITION_TIMEOUT_MS = 1500;
-const PRESENTER_FOLLOW_TICK_MS = 250;
-const PRESENTER_STATUS_POLL_MS = 5000;
-
-function delay(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-/**
- * Extract a comparable `{ h, v }` index from a driver position payload.
- *
- * Returns `null` when no usable horizontal index is present (e.g. the first
- * reported position, or a payload that omits index data), which the direction
- * logic treats as "no previous frame to compare against".
- *
- * @param {{ index?: { h?: unknown, v?: unknown } } | null} position The driver position payload.
- * @returns {{ h: number, v: number } | null}
- */
-export function extractSlideIndex(position) {
-  const index = position?.index;
-
-  if (index === null || typeof index !== 'object') {
-    return null;
-  }
-
-  const h = Number.isInteger(index.h) ? index.h : null;
-
-  if (h === null) {
-    return null;
-  }
-
-  return { h, v: Number.isInteger(index.v) ? index.v : 0 };
-}
-
-/**
- * Compute the perceived slide direction from the previous vs. current index.
- *
- * `next` advances, `prev` retreats. Same-index jumps (or the first reported
- * position) yield `'none'`, which the reveal step treats as a neutral
- * transition. The comparison is horizontal-first, then vertical within the same
- * horizontal index, matching reveal.js deck ordering.
- *
- * @param {{ h: number, v: number } | null} previous The prior slide index.
- * @param {{ h: number, v: number } | null} current The new slide index.
- * @returns {'forward' | 'backward' | 'none'}
- */
-export function computeSlideDirection(previous, current) {
-  if (previous === null || current === null) {
-    return 'none';
-  }
-
-  if (current.h > previous.h) {
-    return 'forward';
-  }
-
-  if (current.h < previous.h) {
-    return 'backward';
-  }
-
-  if (current.v > previous.v) {
-    return 'forward';
-  }
-
-  if (current.v < previous.v) {
-    return 'backward';
-  }
-
-  return 'none';
-}
 
 function isBrowserSource(config, sourceId) {
   return config.sources[sourceId]?.kind === 'browser';
-}
-
-/**
- * Strip a `data:image/...;base64,` prefix so callers can inspect the raw
- * payload. Mirrors the decoding regex in obsClient's `decodeImageDataUri` so
- * emptiness checks here agree with what the client would decode.
- *
- * @param {string} data Screenshot data, typically a data URI.
- * @returns {string} The base64 payload without the data-URI prefix.
- */
-function appScreenshotPayload(data) {
-  return data.replace(/^data:image\/\w+;base64,/, '');
-}
-
-function resolvePresenterStepMs(stt) {
-  if (Number.isFinite(stt?.stepMs) && stt.stepMs > 0) {
-    return Math.round(stt.stepMs);
-  }
-
-  const stream = stt?.streamSettings ?? stt?.stream ?? null;
-
-  if (stream !== null && typeof stream === 'object') {
-    if (Number.isFinite(stream.stepMs) && stream.stepMs > 0) {
-      return Math.round(stream.stepMs);
-    }
-
-    if (Number.isFinite(stream.chunkMs) && stream.chunkMs > 0) {
-      const overlapMs = Number.isFinite(stream.overlapMs) ? stream.overlapMs : 0;
-      const stepMs = stream.chunkMs - overlapMs;
-
-      if (stepMs > 0) {
-        return Math.round(stepMs);
-      }
-    }
-  }
-
-  return Number.isFinite(stt?.chunkSeconds) && stt.chunkSeconds > 0
-    ? Math.round(stt.chunkSeconds * 1000)
-    : 0;
-}
-
-// The predictor needs enough lookahead to bridge the gap between transcript
-// updates (which arrive every `stepMs`). Returning `stepMs` directly left the
-// teleprompter lagging live speech; `max(stepMs * 3, 3000)` gives follow mode a
-// long enough cap to project smoothly between updates.
-function resolvePresenterPredictionLeadMs(stt) {
-  const stepMs = resolvePresenterStepMs(stt);
-
-  if (stepMs <= 0) {
-    return 0;
-  }
-
-  return Math.max(stepMs * 3, 3000);
 }
 
 /**
@@ -157,10 +24,14 @@ function resolvePresenterPredictionLeadMs(stt) {
  * The coordinator resolves slide config into typed browser commands and
  * dispatches them through an injected executor. It does not own browser logic
  * directly; the executor seam keeps slide-event orchestration decoupled from the
- * Deckhand browser session runtime.
+ * Deckhand browser session runtime. Mutable state clusters live behind named
+ * owners: `slideTransitionRunner` (freeze -> mutate -> reveal), `settleTracker`
+ * (window/driver settle waiters and staged positions), `presenterPublisher`
+ * (presenter session publishes, preview, and status timers), and
+ * `windowBindings` (runtime window bindings and the applied-OBS-settings cache).
  *
- * @param {{ config: { driver: { type: string }, obs: { url: string, password: string, transitions: null | { forward: string | null, backward: string | null, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, navigationWaitMs: number, windowSettleMs: number, freezeDimPercent: number } }, layouts: Record<string, unknown>, slides: Record<string, { layoutId: string, commands: Array<{ type: string, source: string, tab?: string, url?: string, [key: string]: unknown }> }> }, obs: { connect(): Promise<unknown>, disconnect(): Promise<unknown>, setScene(sceneName: string): Promise<unknown>, isConnected?(): boolean, isReconnecting?(): boolean, on?(event: 'reconnecting' | 'reconnected', handler: (event: string) => void): void, applyInputSettings?(inputName: string, inputSettings: Record<string, unknown>): Promise<void>, getCurrentTransitionName?(): Promise<string>, captureProgramScreenshot?(filePath: string): Promise<void>, switchProgramScene?(sceneName: string, options?: { waitForEvent?: boolean, timeoutMs?: number }): Promise<void>, waitForSceneTransitionEnd?(options?: { timeoutMs?: number }): Promise<void>, setCurrentTransition?(name: string, durationMs?: number): Promise<void>, ensureFreezeAssets?(options: { sceneName: string, inputName: string, imagePath: string, dimPercent?: number }): Promise<void> }, hub: { on(eventName: string, handler: (payload: unknown) => Promise<void> | void): void, start(): Promise<unknown>, stop(): Promise<unknown>, sendCommand(target: { role?: 'driver' }, command: Record<string, unknown>): Promise<unknown>, publishSticky(channel: string, payload: Record<string, unknown>): Promise<unknown>, getSnapshot(): { activeDriver: Record<string, unknown> | null, observers: Array<Record<string, unknown>>, sticky: Record<string, unknown> } }, executor?: { start(): Promise<void>, stop(): Promise<void>, execute(command: Record<string, unknown>): Promise<void> } | null, browserSession?: { on?(event: 'recovered', handler: () => void): void } | null, persistSlideId?: (payload: { slideId: string, index: unknown }) => Promise<void> | void, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Coordinator dependencies.
- * @returns {{ start(): Promise<void>, stop(): Promise<void>, handleDriverPositionChanged(position: { id: string, index?: Record<string, unknown>, meta?: Record<string, unknown> }): Promise<void>, getCurrentPresentationState(): Record<string, unknown> | null, refreshCurrentPresentationState(reason?: string): Promise<void>, reapplyCurrentSlide(reason: string, options?: { rearmFreeze?: boolean }): Promise<void>, awaitSlideOperations(): Promise<void> }}
+ * @param {import('./contracts/coordinator.js').CoordinatorOptions} options Coordinator dependencies.
+ * @returns {import('./contracts/coordinator.js').Coordinator}
  */
 export function createCoordinator(options) {
   const logger = options.logger ?? createNoopLogger();
@@ -171,46 +42,30 @@ export function createCoordinator(options) {
   let executorStarted = false;
   let presentationSeq = 0;
   let currentPresentationState = null;
-  const presenterSession = options.config.presenter === null
+  const presenterPublisher = options.config.presenter === null
     ? null
-    : createPresenterSession({
-        followEnabledByDefault: options.config.presenter.teleprompter.followEnabledByDefault,
-        predictionLeadMs: resolvePresenterPredictionLeadMs(options.config.presenter.stt),
-        tracking: options.config.presenter.teleprompter.tracking,
+    : createPresenterPublisher({
+        presenterConfig: options.config.presenter,
+        hub: options.hub,
+        obs: options.obs,
+        logger,
       });
-  let previousSlideIndex = null;
-  let freezeArmed = false;
-  let nextFreezeFramePathIndex = 0;
-  let slideOperation = Promise.resolve();
   let pendingFrozenDriverCommand = null;
-  let restoreStudioModeOnStop = false;
-  let originalStudioModeEnabled = false;
-  let defaultTransitionName = FREEZE_CUT_TRANSITION;
-  const runtimeWindowBindings = {};
-  // The last window-capture settings actually pushed to OBS, per source, so an
-  // unchanged binding between slides does not trigger a macOS capture
-  // re-acquisition that would delay the resized frame.
-  const lastAppliedObsBindings = new Map();
-  // Seq-keyed deferreds awaiting the presenter's `windowSettled` ack, so a slide
-  // change reveals only after the physical windows have actually moved/resized
-  // instead of after a guessed fixed delay.
-  const windowSettleWaiters = new Map();
-  // Signatures of frame mismatches already warned about, so the same mismatch
-  // (same source, requested, observed) warns only once per process: slide
-  // changes re-apply identical rects and would otherwise repeat the warning
-  // on every advance.
-  const warnedFrameMismatches = new Set();
-  // Whether the placement-skip warning already fired: the skip state persists
-  // across slides (the arrangement only changes when displays change), so a
-  // single warning per process is enough and per-slide repeats would be spam.
-  let warnedPlacementSkip = false;
-  const driverSettleWaiters = new Map();
-  const completedDriverSettleEvents = new Set();
-  const pendingDriverPositions = new Map();
-  let presenterFollowTimer = null;
-  let presenterStatusTimer = null;
-  let presenterPreview = null;
-  let previousStreamStatus = null;
+  let previousSlideIndex = null;
+  let slideOperation = Promise.resolve();
+  const windowBindings = createWindowBindingRegistry({ config: options.config });
+  const settleTracker = createSettleTracker({
+    logger,
+    presenterEnabled: options.config.presenter !== null,
+    processPosition: (position) => enqueueSlideOperation(() => processDriverPositionChanged(position)),
+  });
+  const transitionRunner = createSlideTransitionRunner({
+    config: options.config,
+    obs: options.obs,
+    executor,
+    logger,
+    getCurrentPresentationState: () => currentPresentationState,
+  });
 
   function buildResolvedPresentationState(slideId, seq) {
     const bootstrapWindowBindings = options.getManagedWindowBindings?.() ?? {};
@@ -218,7 +73,7 @@ export function createCoordinator(options) {
     return buildPresentationState(slideId, options.config, seq, {
       windowBindings: {
         ...bootstrapWindowBindings,
-        ...runtimeWindowBindings,
+        ...windowBindings.snapshot(),
       },
     });
   }
@@ -229,16 +84,6 @@ export function createCoordinator(options) {
     return run;
   }
 
-  function createDeferred() {
-    let resolve;
-    let reject;
-    const promise = new Promise((nextResolve, nextReject) => {
-      resolve = nextResolve;
-      reject = nextReject;
-    });
-    return { promise, resolve, reject };
-  }
-
   function preparePresentationState(slideId) {
     presentationSeq += 1;
     const state = buildResolvedPresentationState(slideId, presentationSeq);
@@ -246,113 +91,12 @@ export function createCoordinator(options) {
     return state;
   }
 
-  async function publishPresenterState(nowMs = Date.now()) {
-    if (presenterSession === null) {
-      return null;
-    }
-
-    presenterSession.tick(nowMs);
-    const presenterState = presenterSession.getState();
-    await options.hub.publishSticky('presenterState', presenterState);
-    return presenterState;
-  }
-
-  function createProgramPreviewSnapshot() {
-    if (presenterPreview === null) {
-      return null;
-    }
-
-    return {
-      body: presenterPreview.body,
-      etag: `"presenter-preview-${presenterPreview.revision}"`,
-      lastModified: new Date(presenterPreview.capturedAtMs).toUTCString(),
-    };
-  }
-
-  async function refreshProgramPreview(nowMs = Date.now()) {
-    if (presenterSession === null || typeof options.obs.getProgramScreenshotBuffer !== 'function') {
-      return;
-    }
-
-    try {
-      const body = await options.obs.getProgramScreenshotBuffer();
-      const revision = (presenterPreview?.revision ?? 0) + 1;
-      presenterPreview = { body, revision, capturedAtMs: nowMs };
-      presenterSession.updateObsPreview({
-        available: true,
-        revision,
-        capturedAtMs: nowMs,
-        stale: false,
-      }, nowMs);
-    } catch (error) {
-      presenterSession.updateObsPreview({
-        available: false,
-        capturedAtMs: nowMs,
-        stale: true,
-      }, nowMs);
-      logger.warn('Failed to refresh presenter program preview', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  async function refreshStreamHealth(nowMs = Date.now()) {
-    if (presenterSession === null || typeof options.obs.getStreamStatus !== 'function') {
-      return;
-    }
-
-    try {
-      const status = await options.obs.getStreamStatus();
-      const stream = reduceStreamHealth(status, {
-        previousStatus: previousStreamStatus,
-        previousSummary: presenterSession.getState().stream,
-        nowMs,
-      });
-      previousStreamStatus = status;
-      presenterSession.updateStream(stream, nowMs);
-    } catch (error) {
-      logger.warn('Failed to refresh presenter stream health', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  async function pollPresenterStatus(nowMs = Date.now()) {
-    if (presenterSession === null) {
-      return null;
-    }
-
-    await Promise.all([
-      refreshProgramPreview(nowMs),
-      refreshStreamHealth(nowMs),
-      presenterSession.tick(nowMs),
-    ]);
-
-    return publishPresenterState(nowMs);
-  }
-
-  async function maybePublishPresenterTick(nowMs = Date.now()) {
-    if (presenterSession === null) {
-      return null;
-    }
-
-    if (!presenterSession.tick(nowMs)) {
-      return presenterSession.getState();
-    }
-
-    const presenterState = presenterSession.getState();
-    await options.hub.publishSticky('presenterState', presenterState);
-    return presenterState;
-  }
-
   async function syncPresenterStateFromPresentation(presentationState, nowMs = Date.now()) {
-    if (presenterSession === null) {
+    if (presenterPublisher === null) {
       return null;
     }
 
-    presenterSession.applyPresentationState(presentationState, nowMs);
-    await options.hub.publishSticky('presenterState', presenterSession.getState());
-    return presenterSession.getState();
+    return presenterPublisher.syncFromPresentation(presentationState, nowMs);
   }
 
   async function publishPresentationState(slideId) {
@@ -410,17 +154,17 @@ export function createCoordinator(options) {
 
     logger.info('Reapplying current slide after recovery', { reason, slideId });
 
-    lastAppliedObsBindings.clear();
+    windowBindings.clearAppliedSettings();
 
     await republishCurrentPresentationState(reason);
     await applyObsWindowBindings(currentPresentationState);
 
     if (slideConfig !== null) {
-      await dispatchBrowserCommands(slideConfig, slideId);
+      await transitionRunner.dispatchBrowserCommands(slideConfig, slideId);
     }
 
     if (rearmFreeze) {
-      await ensureFreezeAssetsIfConfigured();
+      await transitionRunner.ensureFreezeAssetsIfConfigured();
     }
   }
 
@@ -469,35 +213,24 @@ export function createCoordinator(options) {
     }
   }
 
-  async function handleDriverSlideManifest(payload) {
-    if (presenterSession === null || !payload?.manifest) {
-      return;
+  function handleDriverSlideManifest(payload) {
+    if (presenterPublisher === null) {
+      return Promise.resolve();
     }
 
-    try {
-      presenterSession.applySlideManifest(payload.manifest, Date.now());
-      await options.hub.publishSticky('presenterState', presenterSession.getState());
-      logger.info('Updated presenter state from driver slide manifest', {
-        slideCount: payload.manifest.slides.length,
-      });
-    } catch (error) {
-      logger.error('Failed to reduce driver slide manifest into presenter state', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    return presenterPublisher.applySlideManifest(payload);
   }
 
-  async function handleObserverTranscript(payload) {
-    if (presenterSession === null || payload?.transcript === undefined) {
-      return;
+  function handleObserverTranscript(payload) {
+    if (presenterPublisher === null) {
+      return Promise.resolve();
     }
 
-    presenterSession.applyTranscript(payload.transcript, Date.now());
-    await options.hub.publishSticky('presenterState', presenterSession.getState());
+    return presenterPublisher.applyTranscript(payload);
   }
 
   async function processObserverPresenterCommand(payload) {
-    if (presenterSession === null || payload?.command === undefined) {
+    if (presenterPublisher === null || payload?.command === undefined) {
       return;
     }
 
@@ -541,73 +274,11 @@ export function createCoordinator(options) {
       return;
     }
 
-    presenterSession.applyCommand(command, Date.now());
-    await options.hub.publishSticky('presenterState', presenterSession.getState());
+    await presenterPublisher.applyCommand(command, Date.now());
   }
 
   function handleObserverPresenterCommand(payload) {
     return enqueueSlideOperation(() => processObserverPresenterCommand(payload));
-  }
-
-  function observerCanResolveSource(source) {
-    return options.config.sources[source]?.kind === 'browser';
-  }
-
-  function mergeRuntimeWindowBindings(payload) {
-    let changed = false;
-
-    for (const source of payload.cleared ?? []) {
-      if (!observerCanResolveSource(source)) {
-        continue;
-      }
-
-      if (Object.prototype.hasOwnProperty.call(runtimeWindowBindings, source)) {
-        delete runtimeWindowBindings[source];
-        changed = true;
-      }
-    }
-
-    for (const [source, binding] of Object.entries(payload.bindings ?? {})) {
-      if (!observerCanResolveSource(source)) {
-        continue;
-      }
-
-      const current = runtimeWindowBindings[source];
-      const next = { ...binding };
-
-      if (current === undefined || JSON.stringify(current) !== JSON.stringify(next)) {
-        runtimeWindowBindings[source] = next;
-        changed = true;
-      }
-    }
-
-    return changed;
-  }
-
-  async function dispatchBrowserCommands(slideConfig, slideId) {
-    if (executor === null) {
-      return;
-    }
-
-    for (const command of slideConfig.commands) {
-      try {
-        await executor.execute(command);
-        logger.info('Dispatched browser command', {
-          commandType: command.type,
-          slideId,
-          source: command.source,
-          tab: command.tab,
-        });
-      } catch (error) {
-        logger.error('Browser command failed', {
-          commandType: command.type,
-          error: error instanceof Error ? error.message : String(error),
-          slideId,
-          source: command.source,
-          tab: command.tab,
-        });
-      }
-    }
   }
 
   async function applyObsWindowBindings(presentationState) {
@@ -638,12 +309,12 @@ export function createCoordinator(options) {
       // even when nothing changed; the re-acquisition delays the next resized
       // frame, which then surfaces on the reveal as a window visibly resizing
       // to fit. Only push settings when they actually differ.
-      if (lastAppliedObsBindings.get(slot.source) === settingsKey) {
+      if (windowBindings.getAppliedSettingsKey(slot.source) === settingsKey) {
         continue;
       }
 
       await options.obs.applyInputSettings(deckhandInputName(slot.source), settings);
-      lastAppliedObsBindings.set(slot.source, settingsKey);
+      windowBindings.setAppliedSettingsKey(slot.source, settingsKey);
     }
   }
 
@@ -690,184 +361,6 @@ export function createCoordinator(options) {
     }
   }
 
-  async function showFreezeScene(transitions) {
-    logger.info('Showing freeze scene before mutation', {
-      freezeArmed,
-      freezeScene: transitions.freezeScene,
-    });
-
-    if (!freezeArmed) {
-      await armFreezeFrame(transitions);
-    }
-
-    await options.obs.setCurrentTransition(FREEZE_CUT_TRANSITION);
-    await options.obs.switchProgramScene(transitions.freezeScene, { waitForEvent: true });
-    await delay(transitions.settleMs);
-    logger.info('Freeze scene is live', { freezeScene: transitions.freezeScene });
-  }
-
-  async function restoreAudienceScene(audienceScene) {
-    const sceneName = deckhandSceneName(audienceScene);
-
-    try {
-      await options.obs.switchProgramScene(sceneName);
-    } finally {
-      try {
-        await options.obs.setCurrentTransition(defaultTransitionName);
-      } catch (restoreError) {
-        logger.warn('Failed to restore OBS transition after driver-command recovery', {
-          error: restoreError instanceof Error ? restoreError.message : String(restoreError),
-          transitionName: defaultTransitionName,
-        });
-      }
-    }
-  }
-
-  /**
-   * Run the freeze -> mutate -> wait -> reveal sequence that masks window
-   * resize, content reflow, and browser navigation behind a still frame while
-   * the whole audience frame slides directionally into place.
-   *
-   * Every OBS-touching step that can glitch (window capture rebind, page
-   * navigation) happens inside `mutate`, which only runs once the Freeze scene
-   * is confirmed on screen. The reveal direction comes from `direction`.
-   *
-   * @param {{ forward: string | null, backward: string | null, freezeScene: string, freezeImage: string, freezeImagePath: string | null, durationMs: number, settleMs: number, windowSettleMs: number, freezeDimPercent: number }} transitions Normalized transition config.
-   * @param {{ audienceScene: string }} presentationState The resolved target state.
-   * @param {'forward' | 'backward' | 'none'} direction Perceived slide direction.
-   * @param {string} slideId The active slide id, for logging.
-   * @param {() => Promise<void>} mutate The dirty work to hide behind the freeze.
-   */
-  function sourceRectSizeKey(state, sourceId) {
-    const slot = state?.slots?.find((entry) => entry.source === sourceId) ?? null;
-    return slot?.rect === undefined ? null : `${slot.rect.w}x${slot.rect.h}`;
-  }
-
-  function sourceNeedsDifferentFrame(previousState, nextState, slideConfig, sourceId) {
-    if (previousState === null) {
-      return false;
-    }
-
-    if (sourceId === 'Slide' && previousState.slideId !== nextState.slideId) {
-      return true;
-    }
-
-    if (slideConfig.commands.some((command) => command.source === sourceId)) {
-      return true;
-    }
-
-    return sourceRectSizeKey(previousState, sourceId) !== sourceRectSizeKey(nextState, sourceId);
-  }
-
-  async function waitForAudienceSourcesToStabilize(previousState, nextState, slideConfig, baselineSourceData) {
-    if (typeof options.obs.waitForSourceScreenshotStable !== 'function') {
-      return;
-    }
-
-    for (const slot of nextState.slots) {
-      const sourceName = deckhandInputName(slot.source);
-      const differentFromData = sourceNeedsDifferentFrame(previousState, nextState, slideConfig, slot.source)
-        ? (baselineSourceData?.[slot.source] ?? null)
-        : null;
-
-      logger.info('Waiting for OBS visible source screenshot to stabilize', {
-        differentFromData: differentFromData !== null,
-        slideId: nextState.slideId,
-        source: slot.source,
-        sourceName,
-      });
-      await options.obs.waitForSourceScreenshotStable(sourceName, { differentFromData });
-    }
-  }
-
-  async function runSlideTransition(transitions, presentationState, direction, slideId, slideConfig, mutate, {
-    baselineSourceData = null,
-    freezeAlreadyVisible = false,
-    previousPresentationState = null,
-  } = {}) {
-    const targetScene = deckhandSceneName(presentationState.audienceScene);
-
-    try {
-      // The freeze frame is pre-armed from the last fully settled reveal (or at
-      // startup), so it still shows the outgoing audience frame even though the
-      // reveal.js driver deck may already have advanced locally by the time the
-      // coordinator hears about the slide change.
-      if (!freezeAlreadyVisible) {
-        await showFreezeScene(transitions);
-      }
-
-      await mutate();
-
-      const directionalTransition = direction === 'forward'
-        ? transitions.forward
-        : direction === 'backward'
-          ? transitions.backward
-          : null;
-
-      if (directionalTransition !== null) {
-        await options.obs.setCurrentTransition(directionalTransition, transitions.durationMs ?? DEFAULT_TRANSITION_DURATION_MS);
-      }
-
-      const canUseStudioPreviewWarmup = typeof options.obs.getStudioModeEnabled === 'function'
-        && typeof options.obs.setStudioModeEnabled === 'function'
-        && typeof options.obs.setPreviewScene === 'function'
-        && typeof options.obs.triggerStudioModeTransition === 'function';
-
-      if (canUseStudioPreviewWarmup) {
-        logger.info('Setting OBS preview scene for stabilized reveal', {
-          slideId,
-          targetScene,
-        });
-        await options.obs.setPreviewScene(targetScene);
-        await waitForAudienceSourcesToStabilize(previousPresentationState, presentationState, slideConfig, baselineSourceData);
-        await options.obs.triggerStudioModeTransition({ targetSceneName: targetScene });
-      } else {
-        await waitForAudienceSourcesToStabilize(previousPresentationState, presentationState, slideConfig, baselineSourceData);
-        await options.obs.switchProgramScene(targetScene, { waitForEvent: true });
-      }
-
-      // Let the slide animation finish before re-arming the freeze and before
-      // the `finally` restores the operator's default transition.
-      await waitForSceneTransitionToSettle(transitions);
-
-      await armFreezeFrame(transitions);
-
-      logger.info('Revealed audience scene with directional transition', {
-        scene: targetScene,
-        direction,
-        slideId,
-      });
-    } catch (error) {
-      logger.error('Slide transition failed; falling back to direct scene switch', {
-        error: error instanceof Error ? error.message : String(error),
-        scene: targetScene,
-        slideId,
-      });
-
-      try {
-        await options.obs.switchProgramScene(targetScene);
-      } catch (fallbackError) {
-        logger.error('Fallback scene switch failed', {
-          error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
-          scene: targetScene,
-          slideId,
-        });
-      }
-    } finally {
-      // Always restore the operator's true default transition (captured at
-      // startup), not whatever the previous transition left active, so manual
-      // OBS use between Deckhand slide changes is unaffected.
-      try {
-        await options.obs.setCurrentTransition(defaultTransitionName);
-      } catch (restoreError) {
-        logger.warn('Failed to restore OBS transition', {
-          error: restoreError instanceof Error ? restoreError.message : String(restoreError),
-          transitionName: defaultTransitionName,
-        });
-      }
-    }
-  }
-
   async function processDriverPositionChanged(position) {
     const slideConfig = options.config.slides[position.id];
 
@@ -904,7 +397,7 @@ export function createCoordinator(options) {
     if (transitions === null) {
       await publishAndApplyBindings(presentationState, position.id);
       await applyLegacyAudienceScene(presentationState, position.id);
-      await dispatchBrowserCommands(slideConfig, position.id);
+      await transitionRunner.dispatchBrowserCommands(slideConfig, position.id);
       await recordResumePoint(position.id, currentIndex);
       return;
     }
@@ -931,7 +424,7 @@ export function createCoordinator(options) {
         slideId: position.id,
       });
       try {
-        await restoreAudienceScene(frozenDriverCommand.previousAudienceScene);
+        await transitionRunner.restoreAudienceScene(frozenDriverCommand.previousAudienceScene);
       } catch (error) {
         // An OBS hiccup must not strand the presenter on the freeze scene:
         // log it and still publish the presenter state below.
@@ -946,11 +439,11 @@ export function createCoordinator(options) {
       return;
     }
 
-    await runSlideTransition(transitions, presentationState, direction, position.id, slideConfig, async () => {
+    await transitionRunner.runSlideTransition(transitions, presentationState, direction, position.id, slideConfig, async () => {
       // Register the settle waiter before publishing so a fast presenter ack
       // can never beat the listener.
-      const windowSettled = expectWindowSettle(presentationState.seq, transitions.windowSettleMs);
-      const driverSettled = expectDriverPositionSettle(driverEventId, DRIVER_SETTLE_TIMEOUT_MS);
+      const windowSettled = settleTracker.expectWindowSettle(presentationState.seq, transitions.windowSettleMs);
+      const driverSettled = settleTracker.expectDriverPositionSettle(driverEventId, DRIVER_SETTLE_TIMEOUT_MS);
       await publishAndApplyBindings(presentationState, position.id);
       // Every mutable surface must be truly settled before the reveal: driver
       // deck paint, presenter window geometry, and any browser commands.
@@ -960,7 +453,7 @@ export function createCoordinator(options) {
         slideId: position.id,
       });
       await Promise.all([
-        dispatchBrowserCommands(slideConfig, position.id),
+        transitionRunner.dispatchBrowserCommands(slideConfig, position.id),
         windowSettled,
         driverSettled,
       ]);
@@ -980,49 +473,14 @@ export function createCoordinator(options) {
       return enqueueSlideOperation(() => processDriverPositionChanged(position));
     }
 
-    logger.info('Staged driver position change awaiting settle ack', {
-      driverEventId: eventId,
-      slideId: position.id,
+    return settleTracker.stageDriverPosition(eventId, position, {
+      onStage: () => {
+        if (pendingFrozenDriverCommand !== null) {
+          clearTimeout(pendingFrozenDriverCommand.restoreTimer);
+          pendingFrozenDriverCommand.restoreTimer = null;
+        }
+      },
     });
-
-    for (const [pendingEventId, pending] of pendingDriverPositions.entries()) {
-      if (pendingEventId >= eventId) {
-        continue;
-      }
-
-      clearTimeout(pending.timer);
-      pending.resolve();
-      pendingDriverPositions.delete(pendingEventId);
-    }
-
-    if (pendingFrozenDriverCommand !== null) {
-      clearTimeout(pendingFrozenDriverCommand.restoreTimer);
-      pendingFrozenDriverCommand.restoreTimer = null;
-    }
-
-    const deferred = createDeferred();
-    const timer = setTimeout(() => {
-      const pending = pendingDriverPositions.get(eventId);
-      if (pending === undefined) {
-        return;
-      }
-
-      pendingDriverPositions.delete(eventId);
-      completedDriverSettleEvents.add(eventId);
-      logger.warn('Timed out waiting for driver position-settle ack; processing latest staged driver position anyway', {
-        driverEventId: eventId,
-        slideId: position.id,
-      });
-      enqueueSlideOperation(() => processDriverPositionChanged(pending.position)).then(pending.resolve, pending.reject);
-    }, DRIVER_SETTLE_TIMEOUT_MS);
-
-    pendingDriverPositions.set(eventId, {
-      position,
-      resolve: deferred.resolve,
-      reject: deferred.reject,
-      timer,
-    });
-    return deferred.promise;
   }
 
   async function processObserverDriverCommand(payload) {
@@ -1077,7 +535,7 @@ export function createCoordinator(options) {
         hasBaselineSourceData: baselineSourceData !== null,
         previousAudienceScene,
       });
-      await showFreezeScene(transitions);
+      await transitionRunner.showFreezeScene(transitions);
     } catch (error) {
       logger.error('Failed to pre-freeze before forwarding driver command', {
         commandType: command.type,
@@ -1096,7 +554,7 @@ export function createCoordinator(options) {
       logger.warn('Timed out waiting for driver position change after command; restoring previous audience scene', {
         commandType: command.type,
       });
-      restoreAudienceScene(previousAudienceScene).catch((restoreError) => {
+      transitionRunner.restoreAudienceScene(previousAudienceScene).catch((restoreError) => {
         logger.error('Failed to restore audience scene after driver-command timeout', {
           commandType: command.type,
           error: restoreError instanceof Error ? restoreError.message : String(restoreError),
@@ -1121,12 +579,12 @@ export function createCoordinator(options) {
       if (delivered.length === 0) {
         clearTimeout(restoreTimer);
         pendingFrozenDriverCommand = null;
-        await restoreAudienceScene(previousAudienceScene);
+        await transitionRunner.restoreAudienceScene(previousAudienceScene);
       }
     } catch (error) {
       clearTimeout(restoreTimer);
       pendingFrozenDriverCommand = null;
-      await restoreAudienceScene(previousAudienceScene).catch(() => {});
+      await transitionRunner.restoreAudienceScene(previousAudienceScene).catch(() => {});
       logger.error('Failed to forward observer driver command', {
         commandType: command.type,
         error: error instanceof Error ? error.message : String(error),
@@ -1139,7 +597,7 @@ export function createCoordinator(options) {
   }
 
   async function handleObserverWindowBindings(payload) {
-    if (!mergeRuntimeWindowBindings(payload)) {
+    if (!windowBindings.mergeObserverBindings(payload)) {
       return;
     }
 
@@ -1160,318 +618,12 @@ export function createCoordinator(options) {
     logger.info(message, options.hub.getSnapshot());
   }
 
-  function resolveFreezeImagePath(transitions) {
-    const basePath = transitions.freezeImagePath ?? path.join(os.tmpdir(), DEFAULT_FREEZE_FILENAME);
-    const parsed = path.parse(basePath);
-    const extension = parsed.ext === '' ? '.png' : parsed.ext;
-    return path.join(parsed.dir, `${parsed.name}-${nextFreezeFramePathIndex}${extension}`);
-  }
-
-  /**
-   * Register a deferred that resolves when the presenter acks that it has
-   * applied the window geometry for `seq` (the `windowSettled` hub message), or
-   * after `timeoutMs` as a safety fallback. Resolves immediately when no
-   * presenter is configured, since there are no physical windows to settle.
-   *
-   * The waiter is registered before the matching presentation state is
-   * published, so a fast ack can never arrive before the listener exists.
-   */
-  function expectWindowSettle(seq, timeoutMs) {
-    if (options.config.presenter === null) {
-      return Promise.resolve();
-    }
-
-    return new Promise((resolve) => {
-      const previous = windowSettleWaiters.get(seq);
-
-      if (previous !== undefined) {
-        clearTimeout(previous.timer);
-        previous.resolve();
-      }
-
-      const timer = setTimeout(() => {
-        windowSettleWaiters.delete(seq);
-        logger.warn('Timed out waiting for presenter window-settle ack', { seq });
-        resolve();
-      }, timeoutMs);
-
-      windowSettleWaiters.set(seq, {
-        resolve: () => {
-          clearTimeout(timer);
-          windowSettleWaiters.delete(seq);
-          resolve();
-        },
-        timer,
-      });
-    });
-  }
-
   function handleObserverWindowSettled(payload) {
-    const seq = payload?.seq;
-
-    if (typeof seq !== 'number') {
-      return;
-    }
-
-    logger.info('Received presenter window-settle ack', { seq });
-
-    // Warn-only: a placement skip means the presenter left every window where
-    // macOS launched it because the configured rects don't fit the current
-    // displays. Never suppresses the ack or the waiter resolution.
-    if (payload?.placementSkipped !== undefined && !warnedPlacementSkip) {
-      warnedPlacementSkip = true;
-      logger.warn('Window placement skipped: configured stage/overlay rects do not fit the current display arrangement; windows left as launched and presenter overlays kept back');
-    }
-
-    // Warn-only: frame mismatches (e.g. OBS clamping a configured rect) are
-    // informational and never suppress the ack or the waiter resolution.
-    for (const mismatch of payload?.frameMismatches ?? []) {
-      const signature = `${mismatch.source}|${mismatch.requested.x},${mismatch.requested.y},${mismatch.requested.w}x${mismatch.requested.h}|${mismatch.observed.x},${mismatch.observed.y},${mismatch.observed.w}x${mismatch.observed.h}`;
-
-      if (warnedFrameMismatches.has(signature)) {
-        continue;
-      }
-
-      warnedFrameMismatches.add(signature);
-      logger.warn('Window did not settle to configured rect', {
-        source: mismatch.source,
-        requested: mismatch.requested,
-        observed: mismatch.observed,
-      });
-    }
-
-    windowSettleWaiters.get(seq)?.resolve();
-  }
-
-  function expectDriverPositionSettle(eventId, timeoutMs) {
-    if (!Number.isInteger(eventId) || eventId <= 0) {
-      return Promise.resolve();
-    }
-
-    if (completedDriverSettleEvents.has(eventId)) {
-      completedDriverSettleEvents.delete(eventId);
-      return Promise.resolve();
-    }
-
-    return new Promise((resolve) => {
-      const previous = driverSettleWaiters.get(eventId);
-
-      if (previous !== undefined) {
-        clearTimeout(previous.timer);
-        previous.resolve();
-      }
-
-      const timer = setTimeout(() => {
-        driverSettleWaiters.delete(eventId);
-        logger.warn('Timed out waiting for driver position-settle ack', { eventId });
-        resolve();
-      }, timeoutMs);
-
-      driverSettleWaiters.set(eventId, {
-        resolve: () => {
-          clearTimeout(timer);
-          driverSettleWaiters.delete(eventId);
-          resolve();
-        },
-        timer,
-      });
-    });
+    settleTracker.handleWindowSettled(payload);
   }
 
   function handleDriverPositionSettled(payload) {
-    const eventId = payload?.eventId;
-
-    if (!Number.isInteger(eventId) || eventId <= 0) {
-      return;
-    }
-
-    logger.info('Received driver position-settle ack', { eventId });
-    const waiter = driverSettleWaiters.get(eventId);
-    if (waiter !== undefined) {
-      waiter.resolve();
-      return;
-    }
-
-    const pending = pendingDriverPositions.get(eventId);
-    if (pending !== undefined) {
-      clearTimeout(pending.timer);
-      pendingDriverPositions.delete(eventId);
-      completedDriverSettleEvents.add(eventId);
-      enqueueSlideOperation(() => processDriverPositionChanged(pending.position)).then(pending.resolve, pending.reject);
-      return;
-    }
-
-    completedDriverSettleEvents.add(eventId);
-  }
-
-  /**
-   * Wait for the OBS slide transition to finish. Prefers the
-   * `CurrentSceneTransitionEnded` event (via the obs client); falls back to a
-   * duration-based wait when the client cannot observe the event. This ensures
-   * the freeze frame is re-captured from a fully settled frame rather than a
-   * mid-transition composite.
-   */
-  async function waitForSceneTransitionToSettle(transitions) {
-    const timeoutMs = (transitions.durationMs ?? DEFAULT_TRANSITION_DURATION_MS) + TRANSITION_END_BUFFER_MS;
-
-    if (typeof options.obs.waitForSceneTransitionEnd !== 'function') {
-      await delay(timeoutMs);
-      return;
-    }
-
-    await options.obs.waitForSceneTransitionEnd({ timeoutMs });
-  }
-
-  /**
-   * Probe the outgoing app-window slots directly before trusting a freshly
-   * captured freeze frame. App-window captures can fail or render black in OBS
-   * offscreen screenshot requests while the scene-level capture still reports
-   * success, so the app slots are probed one by one; any probe failure means
-   * the new capture is suspect.
-   *
-   * @returns {Promise<boolean>} True when the capture can be trusted (or cannot be probed).
-   */
-  async function appSlotCaptureIsReliable() {
-    if (typeof options.obs.getSourceScreenshotData !== 'function' || currentPresentationState === null) {
-      return true;
-    }
-
-    for (const slot of currentPresentationState.slots) {
-      if (options.config.sources[slot.source]?.kind !== 'app') {
-        continue;
-      }
-
-      let data = null;
-
-      try {
-        data = await options.obs.getSourceScreenshotData(deckhandInputName(slot.source));
-      } catch (error) {
-        logger.warn('Freeze frame may render black; keeping the last good freeze frame', {
-          source: slot.source,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return false;
-      }
-
-      if (typeof data !== 'string' || appScreenshotPayload(data).length === 0) {
-        logger.warn('Freeze frame may render black; keeping the last good freeze frame', {
-          source: slot.source,
-          error: 'source screenshot returned no image data',
-        });
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  async function armFreezeFrame(transitions) {
-    if (typeof options.obs.captureProgramScreenshot !== 'function' || typeof options.obs.applyInputSettings !== 'function') {
-      return;
-    }
-
-    const freezeImagePath = resolveFreezeImagePath(transitions);
-
-    try {
-      await options.obs.captureProgramScreenshot(freezeImagePath);
-
-      // A capture that renders black must not replace the last good freeze
-      // frame: skipping the settings apply (and the path rotation) keeps the
-      // freeze input pointing at the prior still instead of a black screen.
-      if (!await appSlotCaptureIsReliable()) {
-        return;
-      }
-
-      await options.obs.applyInputSettings(transitions.freezeImage, { file: freezeImagePath });
-      freezeArmed = true;
-      nextFreezeFramePathIndex = nextFreezeFramePathIndex === 0 ? 1 : 0;
-    } catch (error) {
-      logger.warn('Failed to arm freeze frame', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  async function ensureFreezeAssetsIfConfigured() {
-    const transitions = options.config.obs.transitions ?? null;
-
-    if (transitions === null || typeof options.obs.ensureFreezeAssets !== 'function') {
-      return;
-    }
-
-    try {
-      // Capture the operator's true default transition before Deckhand touches
-      // it, so each slide change restores to this (not a leftover from a prior
-      // transition) and manual OBS use between changes is unaffected.
-      if (typeof options.obs.getCurrentTransitionName === 'function') {
-        defaultTransitionName = await options.obs.getCurrentTransitionName();
-      }
-
-      await options.obs.ensureFreezeAssets({
-        sceneName: transitions.freezeScene,
-        inputName: transitions.freezeImage,
-        imagePath: resolveFreezeImagePath(transitions),
-        dimPercent: transitions.freezeDimPercent,
-      });
-      logger.info('Ensured OBS freeze assets', {
-        scene: transitions.freezeScene,
-        input: transitions.freezeImage,
-        defaultTransition: defaultTransitionName,
-      });
-      await armFreezeFrame(transitions);
-    } catch (error) {
-      logger.error('Failed to ensure OBS freeze assets', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  async function ensureStudioModeForSessionIfSupported() {
-    const transitions = options.config.obs.transitions ?? null;
-
-    if (transitions === null
-      || typeof options.obs.getStudioModeEnabled !== 'function'
-      || typeof options.obs.setStudioModeEnabled !== 'function'
-      || typeof options.obs.setPreviewScene !== 'function'
-      || typeof options.obs.triggerStudioModeTransition !== 'function') {
-      return;
-    }
-
-    try {
-      originalStudioModeEnabled = await options.obs.getStudioModeEnabled();
-
-      if (!originalStudioModeEnabled) {
-        await options.obs.setStudioModeEnabled(true);
-        logger.info('Enabled OBS Studio Mode for Deckhand session');
-      } else {
-        logger.info('OBS Studio Mode already enabled before Deckhand session');
-      }
-
-      restoreStudioModeOnStop = true;
-    } catch (error) {
-      logger.warn('Failed to ensure OBS Studio Mode', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  async function restoreStudioModeIfManaged() {
-    if (!restoreStudioModeOnStop || typeof options.obs.setStudioModeEnabled !== 'function') {
-      return;
-    }
-
-    restoreStudioModeOnStop = false;
-
-    try {
-      await options.obs.setStudioModeEnabled(originalStudioModeEnabled);
-      logger.info('Restored OBS Studio Mode after Deckhand session', {
-        studioModeEnabled: originalStudioModeEnabled,
-      });
-    } catch (error) {
-      logger.warn('Failed to restore OBS Studio Mode after Deckhand session', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    settleTracker.handleDriverPositionSettled(payload);
   }
 
   options.hub.on('driverPositionChanged', handleDriverPositionChanged);
@@ -1500,8 +652,8 @@ export function createCoordinator(options) {
         await options.obs.connect();
         obsStarted = true;
 
-        await ensureFreezeAssetsIfConfigured();
-        await ensureStudioModeForSessionIfSupported();
+        await transitionRunner.ensureFreezeAssetsIfConfigured();
+        await transitionRunner.ensureStudioModeForSessionIfSupported();
 
         if (executor !== null) {
           await executor.start();
@@ -1511,36 +663,13 @@ export function createCoordinator(options) {
         await options.hub.start();
         hubStarted = true;
 
-        if (presenterSession !== null) {
-          await pollPresenterStatus().catch((error) => {
+        if (presenterPublisher !== null) {
+          await presenterPublisher.pollStatus().catch((error) => {
             logger.warn('Initial presenter status poll failed', {
               error: error instanceof Error ? error.message : String(error),
             });
           });
-          presenterFollowTimer = setInterval(() => {
-            if (!started) {
-              return;
-            }
-
-            void (async () => {
-              try {
-                await maybePublishPresenterTick(Date.now());
-              } catch (error) {
-                logger.warn('Presenter follow publish failed', {
-                  error: error instanceof Error ? error.message : String(error),
-                });
-              }
-            })();
-          }, PRESENTER_FOLLOW_TICK_MS);
-          presenterFollowTimer.unref?.();
-          presenterStatusTimer = setInterval(() => {
-            pollPresenterStatus().catch((error) => {
-              logger.warn('Presenter status poll failed', {
-                error: error instanceof Error ? error.message : String(error),
-              });
-            });
-          }, PRESENTER_STATUS_POLL_MS);
-          presenterStatusTimer.unref?.();
+          presenterPublisher.startTimers({ isRunning: () => started });
         }
 
         started = true;
@@ -1551,7 +680,7 @@ export function createCoordinator(options) {
           hubStarted = false;
         }
 
-        await restoreStudioModeIfManaged();
+        await transitionRunner.restoreStudioModeIfManaged();
 
         if (executorStarted) {
           if (executor !== null && typeof executor.stop === 'function') {
@@ -1592,17 +721,9 @@ export function createCoordinator(options) {
             hubStarted = false;
           }
         } finally {
-          if (presenterFollowTimer !== null) {
-            clearInterval(presenterFollowTimer);
-            presenterFollowTimer = null;
-          }
+          presenterPublisher?.stopTimers();
 
-          if (presenterStatusTimer !== null) {
-            clearInterval(presenterStatusTimer);
-            presenterStatusTimer = null;
-          }
-
-          await restoreStudioModeIfManaged();
+          await transitionRunner.restoreStudioModeIfManaged();
 
           if (obsStarted) {
             await options.obs.disconnect();
@@ -1620,11 +741,11 @@ export function createCoordinator(options) {
     },
 
     getCurrentPresenterState() {
-      return presenterSession === null ? null : presenterSession.getState();
+      return presenterPublisher === null ? null : presenterPublisher.getState();
     },
 
     getRuntimeWindowBindings() {
-      return { ...runtimeWindowBindings };
+      return windowBindings.snapshot();
     },
 
     async refreshCurrentPresentationState(reason = 'refresh') {
@@ -1640,11 +761,15 @@ export function createCoordinator(options) {
     },
 
     async tickPresenterState(nowMs = Date.now()) {
-      return maybePublishPresenterTick(nowMs);
+      if (presenterPublisher === null) {
+        return null;
+      }
+
+      return presenterPublisher.publishOnTick(nowMs);
     },
 
     getProgramPreviewSnapshot() {
-      return createProgramPreviewSnapshot();
+      return presenterPublisher === null ? null : presenterPublisher.createProgramPreviewSnapshot();
     },
 
     handleDriverPositionChanged,

@@ -1,4 +1,7 @@
-import { execSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Single-quote a value for safe interpolation into a shell command.
@@ -53,6 +56,26 @@ function applescriptEscape(value) {
 }
 
 /**
+ * Default osascript executor: async and event-loop non-blocking.
+ *
+ * The script travels as a single `-e` argv element to `execFile` (no shell),
+ * so composed AppleScript text — including operator-supplied cwd/command
+ * fragments — can never re-enter shell parsing. Timeouts kill the child and
+ * reject, mirroring the previous sync `timeout` semantics.
+ *
+ * @param {string} script AppleScript source to run.
+ * @param {{ timeoutMs: number, discardOutput?: boolean }} options Run options; `discardOutput` drops stdout/stderr for fire-and-forget calls.
+ * @returns {Promise<string>} Resolves with osascript stdout.
+ */
+function defaultExecOsascript(script, { timeoutMs, discardOutput = false }) {
+  return execFileAsync('osascript', ['-e', script], {
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    ...(discardOutput ? { stdio: ['pipe', 'ignore', 'ignore'] } : {}),
+  }).then(({ stdout }) => stdout);
+}
+
+/**
  * Build the AppleScript that creates a new iTerm2 window and, when a command or
  * cwd is configured, runs the composed shell text inside its first session.
  *
@@ -91,19 +114,18 @@ export function buildIterm2AppleScript({ command, cwd } = {}) {
  * launched from is captured in the before-set and therefore never bound
  * (`plans/app-sources.md` decision 2).
  *
- * @returns {number | null}
+ * @param {{ execOsascriptFn?: typeof defaultExecOsascript }} [options] Injectable executor for tests.
+ * @returns {Promise<number | null>} Resolves `null` on any probe failure instead of rejecting.
  */
-export function findIterm2Pid() {
+export async function findIterm2Pid({ execOsascriptFn = defaultExecOsascript } = {}) {
   if (process.platform !== 'darwin') {
     return null;
   }
 
+  const script = 'tell application "System Events" to get unix id of first process whose name starts with "iTerm"';
+
   try {
-    const script = 'tell application "System Events" to get unix id of first process whose name starts with "iTerm"';
-    const output = execSync(`osascript -e '${script}'`, {
-      encoding: 'utf8',
-      timeout: 5000,
-    }).trim();
+    const output = (await execOsascriptFn(script, { timeoutMs: 5000 })).trim();
 
     const pid = Number.parseInt(output, 10);
     return Number.isFinite(pid) ? pid : null;
@@ -118,23 +140,22 @@ export function findIterm2Pid() {
  * Returns the iTerm2 PID and the new session's stable UUID so the caller can
  * later close that exact window on shutdown.
  *
- * @param {{ command?: string, cwd?: string }} [options] Launch options.
+ * Rejects when the launch AppleScript fails so the runtime can log and skip
+ * the source (same failure contract as the previous sync implementation).
+ *
+ * @param {{ command?: string, cwd?: string, execOsascriptFn?: typeof defaultExecOsascript }} [options] Launch options.
  * @returns {Promise<{ pid?: number, sessionId?: string }>}
  */
-export async function launchIterm2Window({ command, cwd } = {}) {
+export async function launchIterm2Window({ command, cwd, execOsascriptFn = defaultExecOsascript } = {}) {
   if (process.platform !== 'darwin') {
     return {};
   }
 
   const script = buildIterm2AppleScript({ command, cwd });
 
-  const output = execSync('osascript', {
-    encoding: 'utf8',
-    timeout: 10000,
-    input: script,
-  }).trim();
+  const output = (await execOsascriptFn(script, { timeoutMs: 10000 })).trim();
 
-  const pid = findIterm2Pid();
+  const pid = await findIterm2Pid({ execOsascriptFn });
 
   return {
     ...(pid !== null ? { pid } : {}),
@@ -153,9 +174,10 @@ export async function launchIterm2Window({ command, cwd } = {}) {
  * Best-effort: any AppleScript error is swallowed so shutdown cannot hang.
  *
  * @param {string} sessionId The iTerm2 session UUID returned by {@link launchIterm2Window}.
- * @returns {void}
+ * @param {{ execOsascriptFn?: typeof defaultExecOsascript }} [options] Injectable executor for tests.
+ * @returns {Promise<void>}
  */
-export function closeIterm2OwnedWindow(sessionId) {
+export async function closeIterm2OwnedWindow(sessionId, { execOsascriptFn = defaultExecOsascript } = {}) {
   if (process.platform !== 'darwin' || typeof sessionId !== 'string' || sessionId === '') {
     return;
   }
@@ -178,12 +200,7 @@ export function closeIterm2OwnedWindow(sessionId) {
 end tell`;
 
   try {
-    execSync('osascript', {
-      encoding: 'utf8',
-      timeout: 5000,
-      input: script,
-      stdio: ['pipe', 'ignore', 'ignore'],
-    });
+    await execOsascriptFn(script, { timeoutMs: 5000, discardOutput: true });
   } catch {
     // best-effort — the window may have already been closed by the user
   }

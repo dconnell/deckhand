@@ -1,4 +1,26 @@
-import { execSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Default osascript executor: async and event-loop non-blocking.
+ *
+ * The script travels as a single `-e` argv element to `execFile` (no shell),
+ * so the composed AppleScript text — including the target URL — can never
+ * re-enter shell parsing. Timeouts kill the child and reject, mirroring the
+ * previous sync `timeout` semantics.
+ *
+ * @param {string} script AppleScript source to run.
+ * @param {{ timeoutMs: number }} options Run options.
+ * @returns {Promise<string>} Resolves with osascript stdout.
+ */
+function defaultExecOsascript(script, { timeoutMs }) {
+  return execFileAsync('osascript', ['-e', script], {
+    encoding: 'utf8',
+    timeout: timeoutMs,
+  }).then(({ stdout }) => stdout);
+}
 
 /**
  * Escape a value for safe embedding inside an AppleScript double-quoted string.
@@ -43,19 +65,18 @@ end tell`;
  * Used so the diff resolver can target the right PID when enumerating
  * candidate windows.
  *
- * @returns {number | null}
+ * @param {{ execOsascriptFn?: typeof defaultExecOsascript }} [options] Injectable executor for tests.
+ * @returns {Promise<number | null>} Resolves `null` on any probe failure instead of rejecting.
  */
-export function findChromePid() {
+export async function findChromePid({ execOsascriptFn = defaultExecOsascript } = {}) {
   if (process.platform !== 'darwin') {
     return null;
   }
 
+  const script = 'tell application "System Events" to get unix id of first process whose name is "Google Chrome"';
+
   try {
-    const script = 'tell application "System Events" to get unix id of first process whose name is "Google Chrome"';
-    const output = execSync(`osascript -e '${script}'`, {
-      encoding: 'utf8',
-      timeout: 5000,
-    }).trim();
+    const output = (await execOsascriptFn(script, { timeoutMs: 5000 })).trim();
 
     const pid = Number.parseInt(output, 10);
     return Number.isFinite(pid) ? pid : null;
@@ -78,9 +99,10 @@ export function findChromePid() {
  * polling attempts than usual.
  *
  * @param {string} url The URL to load in the new window.
+ * @param {{ execOsascriptFn?: typeof defaultExecOsascript }} [options] Injectable executor for tests.
  * @returns {Promise<{ pid?: number }>}
  */
-export async function launchChromeWindowWithUrl(url) {
+export async function launchChromeWindowWithUrl(url, { execOsascriptFn = defaultExecOsascript } = {}) {
   if (process.platform !== 'darwin') {
     return {};
   }
@@ -91,13 +113,11 @@ export async function launchChromeWindowWithUrl(url) {
 
   const script = buildChromeWindowAppleScript(url);
 
-  execSync('osascript', {
-    encoding: 'utf8',
-    timeout: 10000,
-    input: script,
-  });
+  // Launch failures propagate (no best-effort swallow here): the caller logs
+  // and skips the source instead of binding a phantom window.
+  await execOsascriptFn(script, { timeoutMs: 10000 });
 
-  const pid = findChromePid();
+  const pid = await findChromePid({ execOsascriptFn });
 
   return {
     ...(pid !== null ? { pid } : {}),

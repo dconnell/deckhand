@@ -45,7 +45,7 @@ export const alacrittyAdapter = {
       app: 'Alacritty',
     };
   },
-  launch(source, { launchAlacrittyWindow: launchWindowFn = launchAlacrittyWindow } = {}) {
+  async launch(source, { launchAlacrittyWindow: launchWindowFn = launchAlacrittyWindow } = {}) {
     return launchWindowFn({ command: source.command, cwd: source.cwd });
   },
   discardUnsavedChangesOnClose: false,

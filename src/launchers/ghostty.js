@@ -1,4 +1,26 @@
-import { execSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Default osascript executor: async and event-loop non-blocking.
+ *
+ * The script travels as a single `-e` argv element to `execFile` (no shell),
+ * so composed AppleScript text can never re-enter shell parsing. Timeouts kill
+ * the child and reject, mirroring the previous sync `timeout` semantics.
+ *
+ * @param {string} script AppleScript source to run.
+ * @param {{ timeoutMs: number, discardOutput?: boolean }} options Run options; `discardOutput` drops stdout/stderr for fire-and-forget calls.
+ * @returns {Promise<string>} Resolves with osascript stdout.
+ */
+function defaultExecOsascript(script, { timeoutMs, discardOutput = false }) {
+  return execFileAsync('osascript', ['-e', script], {
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    ...(discardOutput ? { stdio: ['pipe', 'ignore', 'ignore'] } : {}),
+  }).then(({ stdout }) => stdout);
+}
 
 /**
  * Escape a value for safe embedding inside an AppleScript double-quoted string.
@@ -77,19 +99,18 @@ export function buildGhosttyAppleScript({ command, cwd } = {}) {
  * Used to snapshot Ghostty windows before launch so any pre-existing operator
  * window is captured in the before-set and therefore never bound.
  *
- * @returns {number | null}
+ * @param {{ execOsascriptFn?: typeof defaultExecOsascript }} [options] Injectable executor for tests.
+ * @returns {Promise<number | null>} Resolves `null` on any probe failure instead of rejecting.
  */
-export function findGhosttyPid() {
+export async function findGhosttyPid({ execOsascriptFn = defaultExecOsascript } = {}) {
   if (process.platform !== 'darwin') {
     return null;
   }
 
+  const script = 'tell application "System Events" to get unix id of first process whose name is "Ghostty"';
+
   try {
-    const script = 'tell application "System Events" to get unix id of first process whose name is "Ghostty"';
-    const output = execSync(`osascript -e '${script}'`, {
-      encoding: 'utf8',
-      timeout: 5000,
-    }).trim();
+    const output = (await execOsascriptFn(script, { timeoutMs: 5000 })).trim();
 
     const pid = Number.parseInt(output, 10);
     return Number.isFinite(pid) ? pid : null;
@@ -101,23 +122,19 @@ export function findGhosttyPid() {
 /**
  * Launch a new Ghostty window running an optional command at an optional cwd.
  *
- * @param {{ command?: string, cwd?: string }} [options] Launch options.
+ * @param {{ command?: string, cwd?: string, execOsascriptFn?: typeof defaultExecOsascript }} [options] Launch options.
  * @returns {Promise<{ pid?: number, ghosttyWindowId?: string }>}
  */
-export async function launchGhosttyWindow({ command, cwd } = {}) {
+export async function launchGhosttyWindow({ command, cwd, execOsascriptFn = defaultExecOsascript } = {}) {
   if (process.platform !== 'darwin') {
     return {};
   }
 
   const script = buildGhosttyAppleScript({ command, cwd });
 
-  const output = execSync('osascript', {
-    encoding: 'utf8',
-    timeout: 10000,
-    input: script,
-  }).trim();
+  const output = (await execOsascriptFn(script, { timeoutMs: 10000 })).trim();
 
-  const pid = findGhosttyPid();
+  const pid = await findGhosttyPid({ execOsascriptFn });
 
   return {
     ...(pid !== null ? { pid } : {}),
@@ -135,9 +152,10 @@ export async function launchGhosttyWindow({ command, cwd } = {}) {
  * Best-effort: any AppleScript error is swallowed so shutdown cannot hang.
  *
  * @param {string} ghosttyWindowId The Ghostty window id returned by {@link launchGhosttyWindow}.
- * @returns {void}
+ * @param {{ execOsascriptFn?: typeof defaultExecOsascript }} [options] Injectable executor for tests.
+ * @returns {Promise<void>}
  */
-export function closeGhosttyOwnedWindow(ghosttyWindowId) {
+export async function closeGhosttyOwnedWindow(ghosttyWindowId, { execOsascriptFn = defaultExecOsascript } = {}) {
   if (process.platform !== 'darwin') {
     return;
   }
@@ -149,12 +167,7 @@ export function closeGhosttyOwnedWindow(ghosttyWindowId) {
   const script = `tell application "Ghostty"\n  close window (first window whose id is "${applescriptEscape(ghosttyWindowId)}")\nend tell`;
 
   try {
-    execSync('osascript', {
-      encoding: 'utf8',
-      timeout: 5000,
-      input: script,
-      stdio: ['pipe', 'ignore', 'ignore'],
-    });
+    await execOsascriptFn(script, { timeoutMs: 5000, discardOutput: true });
   } catch {
     // best-effort — the window may have already been closed by the user
   }

@@ -5,23 +5,7 @@ import { EventEmitter, once } from 'node:events';
 import { WebSocketServer } from 'ws';
 
 import { runSttObserver } from '../../../../src/presenter/stt/runner.js';
-
-function createLogger() {
-  return {
-    errors: [],
-    infos: [],
-    warns: [],
-    error(message, context) {
-      this.errors.push({ message, context });
-    },
-    info(message, context) {
-      this.infos.push({ message, context });
-    },
-    warn(message, context) {
-      this.warns.push({ message, context });
-    },
-  };
-}
+import { createCaptureLogger as createLogger } from '../../../helpers/logger.js';
 
 async function createMessageServer() {
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
@@ -296,6 +280,35 @@ test('runSttObserver fails fast in once mode when the persistent subprocess exit
     const rejection = assert.rejects(runPromise, /capture failed/i);
 
     await subprocess.waitUntilReady();
+    subprocess.fail(new Error('capture failed'));
+
+    await rejection;
+  } finally {
+    await server.close();
+  }
+});
+
+test('runSttObserver surfaces captured stderr as a structured WhisperStreamError in once mode', async () => {
+  const server = await createMessageServer();
+  const subprocess = createMockPersistentSubprocess();
+
+  try {
+    const runPromise = runSttObserver({
+      createSubprocess: () => subprocess,
+      hubUrl: server.url,
+      once: true,
+      stt: createSttConfig(),
+    });
+    const rejection = assert.rejects(runPromise, (error) => {
+      assert.equal(error.name, 'WhisperStreamError');
+      assert.equal(error.message, 'capture failed');
+      assert.match(String(error.stderr), /dropped audio/);
+      assert.match(String(error.cause?.message), /capture failed/);
+      return true;
+    });
+
+    await subprocess.waitUntilReady();
+    subprocess.stderr.emit('data', 'dropped audio\n');
     subprocess.fail(new Error('capture failed'));
 
     await rejection;

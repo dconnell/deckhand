@@ -1,6 +1,9 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { extname, join, normalize } from 'node:path';
+import { extname } from 'node:path';
+
+import { resolvePathWithinRoot } from './http/pathSafety.js';
+import { createNoopLogger } from './logger.js';
 
 const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
@@ -10,18 +13,10 @@ const MIME_TYPES = {
   '.svg': 'image/svg+xml',
 };
 
-function createNoopLogger() {
-  return {
-    error() {},
-    info() {},
-    warn() {},
-  };
-}
-
 /**
  * Create the local presenter HTTP server.
  *
- * @param {{ assetsRoot: string, getProgramPreview?: () => { body: Buffer, etag: string, lastModified?: string } | null, getStatus(): Record<string, unknown>, host: string, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void }, presenterBootstrap: Record<string, unknown>, port: number }} options Server options.
+ * @param {{ assetsRoot: string, getProgramPreview?: () => { body: Buffer, etag: string, lastModified?: string } | null, getStatus(): Record<string, unknown>, host: string, logger?: import('./logger.js').Logger, presenterBootstrap: Record<string, unknown>, port: number }} options Server options.
  * @returns {{ start(): Promise<void>, stop(): Promise<void>, getAddress(): { host: string, port: number } }}
  */
 export function createPresenterHttpServer(options) {
@@ -30,14 +25,26 @@ export function createPresenterHttpServer(options) {
   let address = { host: options.host, port: options.port };
 
   function resolveAssetPath(pathname) {
-    const relative = normalize(pathname.replace(/^\/presenter\//, '')).replace(/^([/\\])+/, '');
-    const filePath = join(options.assetsRoot, relative === '' || relative === '.' ? 'index.html' : relative);
+    const relative = pathname.replace(/^\/presenter\//, '');
+    // The bare `/presenter/` root serves the index page; everything else is
+    // resolved — and contained — by the shared path guard.
+    const fallbackPath = relative === '' || relative === '.' ? 'index.html' : relative;
 
-    if (!filePath.startsWith(options.assetsRoot)) {
-      return null;
+    return resolvePathWithinRoot(options.assetsRoot, fallbackPath);
+  }
+
+  function sendJsonEndpoint(req, res, value) {
+    res.writeHead(200, {
+      'Cache-Control': 'no-store',
+      'Content-Type': 'application/json; charset=utf-8',
+    });
+
+    if (req.method !== 'HEAD') {
+      res.end(JSON.stringify(value));
+      return;
     }
 
-    return filePath;
+    res.end();
   }
 
   async function handleRequest(req, res) {
@@ -47,35 +54,26 @@ export function createPresenterHttpServer(options) {
       return;
     }
 
-    const requestUrl = new URL(req.url, `http://${options.host}:${address.port}`);
+    let requestUrl;
+
+    try {
+      requestUrl = new URL(req.url, `http://${options.host}:${address.port}`);
+    } catch {
+      // Absolute-form or percent-mangled targets can fail URL parsing; that is
+      // a client fault and must be classified as 400, not surface as a
+      // logged 500.
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Bad request');
+      return;
+    }
 
     if (requestUrl.pathname === '/status.json') {
-      const body = JSON.stringify(options.getStatus());
-      res.writeHead(200, {
-        'Cache-Control': 'no-store',
-        'Content-Type': 'application/json; charset=utf-8',
-      });
-      if (req.method !== 'HEAD') {
-        res.end(body);
-        return;
-      }
-
-      res.end();
+      sendJsonEndpoint(req, res, options.getStatus());
       return;
     }
 
     if (requestUrl.pathname === '/presenter/bootstrap.json') {
-      const body = JSON.stringify(options.presenterBootstrap);
-      res.writeHead(200, {
-        'Cache-Control': 'no-store',
-        'Content-Type': 'application/json; charset=utf-8',
-      });
-      if (req.method !== 'HEAD') {
-        res.end(body);
-        return;
-      }
-
-      res.end();
+      sendJsonEndpoint(req, res, options.presenterBootstrap);
       return;
     }
 

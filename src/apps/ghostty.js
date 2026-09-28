@@ -26,11 +26,13 @@ export const ghosttyAdapter = {
       app: 'Ghostty',
     };
   },
-  launch(source, { launchGhosttyWindow: launchWindowFn = launchGhosttyWindow } = {}) {
+  async launch(source, { launchGhosttyWindow: launchWindowFn = launchGhosttyWindow } = {}) {
     return launchWindowFn({ command: source.command, cwd: source.cwd });
   },
-  close({ binding }, { closeGhosttyOwnedWindow: closeWindowFn = closeGhosttyOwnedWindow } = {}) {
-    closeWindowFn(binding.ghosttyWindowId);
+  async close({ binding }, { closeGhosttyOwnedWindow: closeWindowFn = closeGhosttyOwnedWindow } = {}) {
+    // Awaited so shutdown does not proceed before the best-effort close lands.
+    await closeWindowFn(binding.ghosttyWindowId);
+
     return true;
   },
   discardUnsavedChangesOnClose: false,

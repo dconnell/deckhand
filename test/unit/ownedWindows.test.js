@@ -2,10 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { resolveOwnedWindowBindings } from '../../src/ownedWindows.js';
-
-function createNoopLogger() {
-  return { info() {}, warn() {}, error() {} };
-}
+import { createNoopLogger } from '../helpers/logger.js';
 
 test('resolveOwnedWindowBindings binds the macWindowId of a newly-launched window', async () => {
   let launched = false;
@@ -430,4 +427,39 @@ test('resolveOwnedWindowBindings prefers the newest window when competing window
   assert.deepEqual(result, {
     Editor: { macWindowId: 12, pid: 7777 },
   });
+});
+
+test('resolveOwnedWindowBindings awaits async snapshot functions (the async CGWindowList default)', async () => {
+  // The production snapshot (`enumerateWindowsByOwnerName`) is async after the
+  // Phase B subprocess conversion; promise-returning snapshots must keep the
+  // same diff/poll semantics, including the null-snapshot fail-safe.
+  let launched = false;
+  const warnings = [];
+  const entry = {
+    sourceId: 'Terminal',
+    snapshot: () => Promise.resolve(launched
+      ? [{ windowId: 42, title: 'demo — fish', pid: 4321 }]
+      : [{ windowId: 7, title: 'launch terminal', pid: 4321 }]),
+    async launch() {
+      launched = true;
+      return {};
+    },
+  };
+  const failingEntry = {
+    sourceId: 'Broken',
+    snapshot: () => Promise.resolve(null),
+    async launch() {
+      throw new Error('must not launch when the before-snapshot fails');
+    },
+  };
+
+  const result = await resolveOwnedWindowBindings({
+    entries: [entry, failingEntry],
+    delay: async () => {},
+    logger: { ...createNoopLogger(), warn: (m, c) => warnings.push({ m, c }) },
+  });
+
+  assert.deepEqual(result, { Terminal: { macWindowId: 42, pid: 4321 } });
+  assert.equal(warnings.length, 1);
+  assert.match(JSON.stringify(warnings[0]), /Broken/);
 });

@@ -8,8 +8,20 @@ import {
   closeMacWindow,
   diffNewWindows,
   enumerateWindowsByOwnerName,
+  enumerateWindowsByPid,
+  findPidByOwnerName,
   findUniqueBoundsFallbackCandidate,
+  getWindowIdsViaCGList,
 } from '../../src/macWindows.js';
+
+function withPlatform(platform, run) {
+  const originalPlatform = process.platform;
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+
+  return Promise.resolve().then(run).finally(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+  });
+}
 
 test('diffNewWindows returns windows present in after but absent from before', () => {
   const before = [
@@ -173,21 +185,16 @@ test('buildCloseWindowSwiftScript includes close-button action in discard mode',
   assert.match(script, /AXUIElementPerformAction/);
 });
 
-test('closeMacWindow is a no-op off darwin', () => {
-  const originalPlatform = process.platform;
-  Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-
-  try {
-    assert.equal(closeMacWindow(42, 99), false);
-  } finally {
-    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
-  }
+test('closeMacWindow is a no-op off darwin', async () => {
+  await withPlatform('linux', async () => {
+    assert.equal(await closeMacWindow(42, 99), false);
+  });
 });
 
-test('closeMacWindow ignores non-numeric arguments', () => {
-  assert.equal(closeMacWindow('abc', 99), false);
-  assert.equal(closeMacWindow(42, 'xyz'), false);
-  assert.equal(closeMacWindow(undefined, 99), false);
+test('closeMacWindow ignores non-numeric arguments', async () => {
+  assert.equal(await closeMacWindow('abc', 99), false);
+  assert.equal(await closeMacWindow(42, 'xyz'), false);
+  assert.equal(await closeMacWindow(undefined, 99), false);
 });
 
 test('buildCloseWindowSwiftScript targets windows by exact CGWindowID', () => {
@@ -198,15 +205,28 @@ test('buildCloseWindowSwiftScript targets windows by exact CGWindowID', () => {
   assert.match(script, /if windowId != targetWindowId/);
 });
 
-test('enumerateWindowsByOwnerName returns [] off darwin — a platform guard, not a snapshot failure', () => {
-  const originalPlatform = process.platform;
-  Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+test('enumerateWindowsByOwnerName returns [] off darwin — a platform guard, not a snapshot failure', async () => {
+  await withPlatform('linux', async () => {
+    assert.deepEqual(await enumerateWindowsByOwnerName('Visual Studio Code'), []);
+  });
+});
 
-  try {
-    assert.deepEqual(enumerateWindowsByOwnerName('Visual Studio Code'), []);
-  } finally {
-    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
-  }
+test('getWindowIdsViaCGList returns [] off darwin', async () => {
+  await withPlatform('linux', async () => {
+    assert.deepEqual(await getWindowIdsViaCGList(47213), []);
+  });
+});
+
+test('enumerateWindowsByPid returns [] off darwin', async () => {
+  await withPlatform('linux', async () => {
+    assert.deepEqual(await enumerateWindowsByPid(47213), []);
+  });
+});
+
+test('findPidByOwnerName resolves to null off darwin', async () => {
+  await withPlatform('linux', async () => {
+    assert.equal(await findPidByOwnerName('Visual Studio Code'), null);
+  });
 });
 
 test('findUniqueBoundsFallbackCandidate returns the single same-pid window within the bounds tolerance', () => {

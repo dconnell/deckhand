@@ -132,7 +132,8 @@ export function resolveWorkspaceHint(source) {
  * it needs no Screen Recording permission and sees multi-root folders, so its
  * answer is authoritative — a match conflicts with `windowCount: null`, a
  * miss proceeds, and enumeration never runs. Only a failed probe falls back
- * to the enumeration path. The adapter method is called directly rather than
+ * to the enumeration path. The adapter method is awaited (the real probe runs
+ * `code --status` as an async subprocess) and called directly rather than
  * through an extra injected executor option: the collector already takes
  * `resolveAppAdapterFn`, so tests stub fake adapters with their own
  * `listOpenWorkspaceNames`.
@@ -141,10 +142,10 @@ export function resolveWorkspaceHint(source) {
  * resolution, no process exits, no console output. The caller renders the
  * returned conflicts.
  *
- * @param {{ config: Record<string, unknown>, enumerateWindowsByOwnerNameFn?: (ownerName: string) => Array<unknown>, resolveAppAdapterFn?: typeof resolveAppAdapter, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Collector options. `enumerateWindowsByOwnerNameFn` defaults to the real CGWindowList enumerator, `resolveAppAdapterFn` to the real adapter registry.
- * @returns {Array<{ sourceId: string, app: string, ownerName: string, windowCount: number | null, match: string | null }>} One conflict per gated source with conflicting windows (`match` holds the workspace folder name when the conflict was scoped by title or probe, `null` for any-window conflicts; `windowCount` is `null` for probe-scoped conflicts, which know workspaces rather than windows); empty when startup may proceed.
+ * @param {{ config: Record<string, unknown>, enumerateWindowsByOwnerNameFn?: (ownerName: string) => Array<unknown> | Promise<Array<unknown>>, resolveAppAdapterFn?: typeof resolveAppAdapter, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Collector options. `enumerateWindowsByOwnerNameFn` defaults to the real (async) CGWindowList enumerator, `resolveAppAdapterFn` to the real adapter registry.
+ * @returns {Promise<Array<{ sourceId: string, app: string, ownerName: string, windowCount: number | null, match: string | null }>>} One conflict per gated source with conflicting windows (`match` holds the workspace folder name when the conflict was scoped by title or probe, `null` for any-window conflicts; `windowCount` is `null` for probe-scoped conflicts, which know workspaces rather than windows); empty when startup may proceed.
  */
-export function collectOwnedAppInstanceConflicts({
+export async function collectOwnedAppInstanceConflicts({
   config,
   enumerateWindowsByOwnerNameFn = enumerateWindowsByOwnerName,
   resolveAppAdapterFn = resolveAppAdapter,
@@ -169,12 +170,15 @@ export function collectOwnedAppInstanceConflicts({
     // Screen Recording permission (titles come back empty without it) and
     // sees multi-root folders that titles never show. Only a failed probe
     // (null/throw/non-array contract violation) falls back to enumeration,
-    // which then keeps the fail-open title semantics below.
+    // which then keeps the fail-open title semantics below. The probe is
+    // awaited because it shells out to `code --status` asynchronously; an
+    // unawaited promise would read as a contract violation and silently
+    // drop the authoritative answer.
     if (workspaceHint !== null && typeof adapter.listOpenWorkspaceNames === 'function') {
       let probeResult = null;
 
       try {
-        probeResult = adapter.listOpenWorkspaceNames();
+        probeResult = await adapter.listOpenWorkspaceNames();
       } catch {
         probeResult = null;
       }
@@ -199,7 +203,10 @@ export function collectOwnedAppInstanceConflicts({
 
     let windows;
     try {
-      windows = enumerateWindowsByOwnerNameFn(ownerName);
+      // Awaited so the real async CGWindowList enumerator works alongside the
+      // sync fakes used in tests; a rejection lands in the catch below just
+      // like a synchronous throw.
+      windows = await enumerateWindowsByOwnerNameFn(ownerName);
     } catch (error) {
       // A broken preflight check must never block the show: log and let the
       // source proceed to the normal launch path.

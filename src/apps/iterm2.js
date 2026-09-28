@@ -27,11 +27,11 @@ export const iterm2Adapter = {
       app: 'iTerm2',
     };
   },
-  launch(source, { launchIterm2Window: launchWindowFn = launchIterm2Window } = {}) {
+  async launch(source, { launchIterm2Window: launchWindowFn = launchIterm2Window } = {}) {
     return launchWindowFn({ command: source.command, cwd: source.cwd });
   },
-  close({ binding }, { closeIterm2OwnedWindow: closeWindowFn = closeIterm2OwnedWindow } = {}) {
-    closeWindowFn(binding.sessionId);
+  async close({ binding }, { closeIterm2OwnedWindow: closeWindowFn = closeIterm2OwnedWindow } = {}) {
+    await closeWindowFn(binding.sessionId);
     return true;
   },
   discardUnsavedChangesOnClose: false,

@@ -1,6 +1,9 @@
-import { execSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import { createElectronAdapter } from './electron.js';
+
+const execFileAsync = promisify(execFile);
 
 const VSCODE_APP_ALIASES = [
   'code',
@@ -86,8 +89,17 @@ export function parseVsCodeStatusWorkspaces(output) {
   return names;
 }
 
+/**
+ * Default probe executor: run `code --status` asynchronously.
+ *
+ * `execFile` (no shell) keeps the CLI argv out of shell parsing while
+ * preserving the previous 5s timeout; resolves with just stdout.
+ *
+ * @returns {Promise<string>} Resolves with the raw `code --status` stdout; rejects on spawn failure, non-zero exit, or timeout.
+ */
 function defaultStatusExec() {
-  return execSync('code --status', { encoding: 'utf8', timeout: 5000 });
+  return execFileAsync('code', ['--status'], { encoding: 'utf8', timeout: 5000 })
+    .then(({ stdout }) => stdout);
 }
 
 /**
@@ -100,14 +112,14 @@ function defaultStatusExec() {
  * exit, timeout, unparsable output) and the caller must fall back to window
  * enumeration, while `[]` means the probe ran fine and nothing is open.
  *
- * @param {{ execFn?: () => string }} [options] Injectable executor for tests.
- * @returns {string[] | null} Parsed names, or `null` on any probe failure.
+ * @param {{ execFn?: () => string | Promise<string> }} [options] Injectable executor for tests; may return the output directly or a promise of it.
+ * @returns {Promise<string[] | null>} Parsed names, or `null` on any probe failure.
  */
-export function listOpenVsCodeWorkspaces({ execFn = defaultStatusExec } = {}) {
+export async function listOpenVsCodeWorkspaces({ execFn = defaultStatusExec } = {}) {
   let output;
 
   try {
-    output = execFn();
+    output = await execFn();
   } catch {
     return null;
   }

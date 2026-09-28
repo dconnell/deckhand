@@ -6,11 +6,14 @@ import { launchChromeWindowWithUrl } from './launchers/chrome.js';
 import { closeGhosttyOwnedWindow, launchGhosttyWindow } from './launchers/ghostty.js';
 import { closeIterm2OwnedWindow, launchIterm2Window } from './launchers/iterm2.js';
 import { closeKittyOwnedWindow, launchKittyWindow } from './launchers/kitty.js';
-import { delay } from './lifecycle/waitFor.js';
-import { diffNewWindows, enumerateWindowsByOwnerName, enumerateWindowsByPid } from './macWindows.js';
+import { delay } from './lifecycle/time.js';
+import { diffNewWindows, enumerateWindowsByOwnerName } from './macWindows.js';
 import { resolveOwnedWindowBindings } from './ownedWindows.js';
 
 const APP_SHUTDOWN_GRACE_MS = 2000;
+// Poll cadence while waiting for a SIGTERM'd process group to exit. Short
+// enough that shutdown reacts promptly, sparse enough to not busy-wait.
+const TERMINATION_POLL_INTERVAL_MS = 50;
 
 function isMissingProcessError(error) {
   return error instanceof Error
@@ -26,6 +29,20 @@ function isPromiseLike(value) {
     && typeof value.then === 'function';
 }
 
+/**
+ * Terminate a launched process group: SIGTERM, then poll until the group is
+ * gone, escalating to SIGKILL only if it survives the full grace period.
+ *
+ * Polling (instead of sleeping the whole grace before the first liveness
+ * check) lets shutdown continue immediately when the app exits promptly,
+ * which is the common case.
+ *
+ * @param {number} pid Positive pid whose process group (`-pid`) is terminated.
+ * @param {{ info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void }} logger Logger.
+ * @param {string} sourceId Logical source id for log context.
+ * @param {number} [graceMs] Maximum wall-clock time to wait before escalating to SIGKILL.
+ * @returns {Promise<void>}
+ */
 async function terminateProcessGroup(pid, logger, sourceId, graceMs = APP_SHUTDOWN_GRACE_MS) {
   if (!Number.isInteger(pid) || pid <= 0) {
     return;
@@ -44,19 +61,36 @@ async function terminateProcessGroup(pid, logger, sourceId, graceMs = APP_SHUTDO
     return;
   }
 
-  await delay(graceMs);
+  const deadline = Date.now() + graceMs;
 
-  try {
-    process.kill(-pid, 0);
-  } catch (error) {
-    if (!isMissingProcessError(error)) {
-      logger.warn('Failed to probe owned app process group after SIGTERM', {
-        source: sourceId,
-        pid,
-        error: error instanceof Error ? error.message : String(error),
-      });
+  for (;;) {
+    let alive = false;
+
+    try {
+      process.kill(-pid, 0);
+      alive = true;
+    } catch (error) {
+      if (!isMissingProcessError(error)) {
+        logger.warn('Failed to probe owned app process group after SIGTERM', {
+          source: sourceId,
+          pid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
     }
-    return;
+
+    if (!alive) {
+      return;
+    }
+
+    const remainingMs = deadline - Date.now();
+
+    if (remainingMs <= 0) {
+      break;
+    }
+
+    await delay(Math.min(TERMINATION_POLL_INTERVAL_MS, remainingMs));
   }
 
   try {
@@ -339,7 +373,10 @@ async function closeOwnedAppWindows({
     if (typeof binding.macWindowId === 'number' && typeof binding.pid === 'number') {
       const discardUnsavedChanges = binding.discardUnsavedChanges
         ?? (adapter.discardUnsavedChangesOnClose === true);
-      const closed = closeMacWindowFn(binding.macWindowId, binding.pid, {
+      // Awaited: the real `closeMacWindow` runs its Swift/AX close flow as
+      // async subprocesses; sync fakes (and sync overrides) resolve through
+      // the same await.
+      const closed = await closeMacWindowFn(binding.macWindowId, binding.pid, {
         discardUnsavedChanges,
       });
 
