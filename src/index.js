@@ -20,20 +20,13 @@ import { findBelowMinimumOverlayRects } from './scenes.js';
 import { normalizePort } from './net/ports.js';
 import { loadResumableSlide, persistSlideId } from './recovery/slideResume.js';
 import {
-  buildBootstrapBinding,
   buildObsWindowBindings,
-  closeOwnedAppWindows,
-  createOwnedWindowResolutionEntries,
   defaultResolveOwnedWindowBindings,
-  getSourceOwnerName,
   hasBrowserSources,
-  isPromiseLike,
   listBrowserSourceIds,
   listOwnedAppSourceEntries,
   resolvePresenterTeleprompterBinding,
   seedBrowserMacWindowBindings,
-  shouldDiscardUnsavedChanges,
-  terminateProcessGroup,
 } from './appRuntime.js';
 import { createCdpClient } from './cdpClient.js';
 import { createBrowserSession, createBrowserCommandExecutor } from './browserSession.js';
@@ -41,15 +34,16 @@ import { createWsTransport, discoverCdpEndpoint, launchChromeSession } from './c
 import { waitForFirstDriverPosition, waitForPresentationObserver } from './lifecycle/waitFor.js';
 import { closeMacWindow, enumerateWindowsByOwnerName, getWindowIdsViaCGList } from './macWindows.js';
 import { collectOwnedAppInstanceConflicts } from './preflightOwnedApps.js';
-import { resolveOwnedWindowBindings } from './ownedWindows.js';
 import { runSttObserver } from './presenter/stt/runner.js';
+import { buildManagedWindowBindings, createWindowBindingRegistry } from './runtime/windowBindingRegistry.js';
+import { createPresenterWindowBootstrap } from './runtime/presenterWindows.js';
+import { createShutdownSequence, stopLaunchedChromeSession } from './runtime/shutdownSequence.js';
+import { createSourceRelauncher } from './runtime/sourceRelaunch.js';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 
 const PRESENTATION_SERVER_HOST = '127.0.0.1';
 const PRESENTATION_SERVER_PORT_DEFAULT = 3000;
-const PRESENTER_SOURCE_ID = 'Presenter';
-const CONSOLE_SOURCE_ID = 'Console';
 
 /**
  * Resolve the Chrome profile directory for this run.
@@ -79,27 +73,20 @@ function isMainModule(metaUrl) {
 }
 
 /**
- * Relaunch a single owned app source (`open -a`) and re-resolve its macOS
- * window id by diffing CGWindowList around the launch. This is the default
- * implementation of `options.relaunchAppSourceFn`; inject a stub in tests.
- *
- * @param {{ config: Record<string, unknown>, logger: Record<string, unknown>, sourceId: string }} input
- * @returns {Promise<{ macWindowId?: number, pid?: number } | null>}
- */
-async function defaultRelaunchAppSource({ config, logger, sourceId }) {
-  const entries = createOwnedWindowResolutionEntries({ config, logger });
-  const entry = entries.find((candidate) => candidate.sourceId === sourceId);
-
-  if (entry === undefined) {
-    return null;
-  }
-
-  const result = await resolveOwnedWindowBindings({ entries: [entry], maxAttempts: 30, logger });
-  return result[sourceId] ?? null;
-}
-
-/**
  * Load config, compose adapters, and start the coordinator process.
+ *
+ * `run()` is the runtime composition layer: it wires dependencies, drives the
+ * startup sequence, and returns an exit code. The mutable state it used to own
+ * inline lives with explicit owners now:
+ *
+ * 1. `createWindowBindingRegistry()` — live managed-window bindings plus the
+ *    stale bindings stashed for shutdown (`src/runtime/windowBindingRegistry.js`);
+ * 2. `createPresenterWindowBootstrap()` — teleprompter focus/reopen and the
+ *    presenter console window bootstrap (`src/runtime/presenterWindows.js`);
+ * 3. `createShutdownSequence()` — ordered signal teardown and its timeout
+ *    policy (`src/runtime/shutdownSequence.js`);
+ * 4. `createSourceRelauncher()` — per-source window relaunch and rebinding
+ *    (`src/runtime/sourceRelaunch.js`).
  *
  * @param {import('./contracts/runtime.js').RunOptions} [options] Startup options.
  * @returns {Promise<number>}
@@ -113,7 +100,6 @@ export async function run(options = {}) {
   const installSignalHandlers = options.installSignalHandlers ?? true;
   const presenterAssetsPath = options.presenterAssetsPath ?? path.join(cwd, 'presenter-web');
   const closeMacWindowFn = options.closeMacWindowFn ?? closeMacWindow;
-  const terminateProcessGroupFn = options.terminateProcessGroupFn ?? terminateProcessGroup;
   // Injectable kill/reap hooks so tests can stub the SIGKILL and `pkill`
   // side effects and never fire them against the developer's machine.
   const killProcessGroupFn = options.killProcessGroupFn ?? ((pgid) => { process.kill(-pgid, 'SIGKILL'); });
@@ -208,11 +194,8 @@ export async function run(options = {}) {
   let presentationServer = null;
   let sttAbortController = null;
   let phase = 'starting';
-  const resolvedMacWindowBindings = {};
-  // Last-known bindings for windows whose live cache entry was invalidated
-  // mid-run (e.g. Hammerspoon reported the window unfindable). Shutdown still
-  // needs the stale identity to close windows deckhand itself opened.
-  const shutdownWindowBindings = {};
+
+  const registry = createWindowBindingRegistry();
   // Explicit temp-resource registry: every profile directory this run created
   // under the OS temp root is registered here and removed on shutdown or on
   // the startup-failure path. Configured `chrome.profileDir` values are
@@ -241,139 +224,22 @@ export async function run(options = {}) {
     }
   }
 
-  async function focusPresenterTeleprompter({ reopen = false } = {}) {
-    if (config.presenter === null || browserSession === null || config.presenter.teleprompter.window === null) {
-      return null;
-    }
+  const presenterWindows = createPresenterWindowBootstrap({
+    config,
+    logger,
+    registry,
+    getBrowserSession: () => browserSession,
+    getCoordinator: () => coordinator,
+  });
 
-    const auxWindow = await browserSession.openAuxWindow({
-      key: 'presenter-teleprompter',
-      title: config.presenter.teleprompter.window.titleIncludes ?? 'Deckhand Presenter',
-      url: `http://${config.presenter.http.host}:${config.presenter.http.port}/presenter/teleprompter.html`,
-      reopen,
-    });
-    const chromePid = browserSession.getStatus().chromePid;
-
-    if (typeof auxWindow?.macWindowId === 'number') {
-      resolvedMacWindowBindings[PRESENTER_SOURCE_ID] = {
-        macWindowId: auxWindow.macWindowId,
-        ...(Number.isInteger(chromePid) && chromePid > 0 ? { pid: chromePid } : {}),
-      };
-    } else {
-      delete resolvedMacWindowBindings[PRESENTER_SOURCE_ID];
-    }
-
-    if (coordinator !== undefined && coordinator !== null && typeof coordinator.refreshCurrentPresentationState === 'function') {
-      await coordinator.refreshCurrentPresentationState(reopen ? 'teleprompterReopened' : 'teleprompterFocused');
-    }
-
-    return auxWindow;
-  }
-
-  /**
-   * Relaunch a single managed source window on operator demand (the presenter
-   * console's per-source "relaunch" button). Dispatches by source kind:
-   * browser sources are rebuilt inside the Chrome session; app sources are
-   * re-launched via `open -a` and re-resolved. After the fresh macWindowId lands
-   * the current slide's OBS bindings are re-applied. Relaunch is non-destructive:
-   * it does not close the old window first, matching the chosen "relaunch +
-   * rebind only" behavior.
-   *
-   * @param {{ sourceId: string }} input The source id to relaunch.
-   * @returns {Promise<{ sourceId: string, macWindowId: number | null }>}
-   */
-  async function relaunchSource({ sourceId }) {
-    const source = config.sources[sourceId];
-
-    if (source === undefined) {
-      throw new Error(`unknown source: ${sourceId}`);
-    }
-
-    if (source.kind === 'browser') {
-      if (browserSession === null) {
-        throw new Error('browser session is not started');
-      }
-
-      const result = await browserSession.relaunchBrowserSource(sourceId);
-      resolvedMacWindowBindings[sourceId] = {
-        macWindowId: result.macWindowId,
-        pid: browserSession.getStatus().chromePid ?? undefined,
-      };
-    } else if (source.kind === 'app') {
-      const relaunchAppSource = options.relaunchAppSourceFn ?? defaultRelaunchAppSource;
-      const result = await relaunchAppSource({ config, logger, sourceId });
-
-      if (result?.macWindowId === undefined) {
-        // The launch may have succeeded but the window could not be resolved.
-        // Drop any stale binding: it points at the closed window and would
-        // misdirect both the OBS capture binding and the shutdown close.
-        // Only stash a live binding: when the observer `cleared` event already
-        // stashed the last-known binding, assigning undefined here would
-        // clobber it and shutdown would leak the still-open original window.
-        if (resolvedMacWindowBindings[sourceId] !== undefined) {
-          shutdownWindowBindings[sourceId] = resolvedMacWindowBindings[sourceId];
-        }
-        delete resolvedMacWindowBindings[sourceId];
-        logger.warn('Relaunched app source window could not be resolved; cleared stale binding', { sourceId });
-      } else {
-        // The fresh resolution is authoritative. Adapter identity fields
-        // (sessionId for iTerm2, terminalWindowId for Terminal.app) must
-        // replace — not merge with — the old ones, or shutdown would close
-        // the dead pre-relaunch session and leak the new window.
-        resolvedMacWindowBindings[sourceId] = { ...result };
-      }
-    } else {
-      throw new Error(`source ${sourceId} (kind ${source.kind}) cannot be relaunched`);
-    }
-
-    if (coordinator && typeof coordinator.reapplyCurrentSlide === 'function') {
-      await coordinator.reapplyCurrentSlide('sourceRelaunched');
-    }
-
-    const binding = resolvedMacWindowBindings[sourceId] ?? null;
-    const macWindowId = binding?.macWindowId ?? null;
-    logger.info('Relaunched source window', { sourceId, macWindowId });
-
-    return { sourceId, macWindowId, binding };
-  }
-
-  async function stopLaunchedChrome() {
-    if (chromeLaunch === null) {
-      return;
-    }
-
-    const currentLaunch = chromeLaunch;
-    chromeLaunch = null;
-
-    try {
-      const stopPromise = Promise.resolve(currentLaunch.stop());
-      // A stop that rejects after the timeout wins the race must not surface
-      // as an unhandled rejection.
-      stopPromise.catch(() => {});
-
-      let timedOut = false;
-      let timer = null;
-      try {
-        await Promise.race([
-          stopPromise,
-          new Promise((resolve) => {
-            timer = setTimeout(() => {
-              timedOut = true;
-              resolve(undefined);
-            }, shutdownStopTimeoutMs);
-          }),
-        ]);
-      } finally {
-        clearTimeout(timer);
-      }
-
-      if (timedOut) {
-        logger.warn('Timed out stopping launched Chrome; continuing shutdown', { timeoutMs: shutdownStopTimeoutMs });
-      }
-    } catch {
-      // best-effort cleanup
-    }
-  }
+  const relaunchSource = createSourceRelauncher({
+    config,
+    logger,
+    registry,
+    getBrowserSession: () => browserSession,
+    getCoordinator: () => coordinator,
+    relaunchAppSourceFn: options.relaunchAppSourceFn,
+  });
 
   async function stopBrowserRuntime() {
     sttAbortController?.abort();
@@ -390,179 +256,31 @@ export async function run(options = {}) {
     }
   }
 
-  function installShutdownHandlers() {
-    if (!installSignalHandlers) {
-      return;
-    }
+  async function stopLaunchedChrome() {
+    const currentLaunch = chromeLaunch;
+    chromeLaunch = null;
 
-    const closeOwnedWindowsFn = options.closeOwnedWindowsFn ?? (async ({ bindings }) => {
-      await closeOwnedAppWindows({
-        entries: bindings.map((binding) => ({
-          sourceId: binding.sourceId,
-          source: config.sources[binding.sourceId],
-          binding,
-        })),
-        logger,
-        closeMacWindowFn,
-      });
-    });
-
-    let shuttingDown = false;
-
-    const shutdown = async (signal) => {
-      if (shuttingDown) {
-        return;
-      }
-
-      shuttingDown = true;
-      phase = 'shuttingDown';
-      logger.info('Received shutdown signal', { signal });
-
-      // Why window closing runs LAST: closing an owned app window can kill
-      // deckhand's own host process — deckhand often runs inside a VS Code
-      // integrated terminal that is itself an owned app window. Once that
-      // window closes, this process can die mid-teardown, so everything else
-      // (coordinator stop with its OBS studio-mode restore, the Chrome kill)
-      // must complete BEFORE any window is touched. The later steps read
-      // nothing from the window state, so closing windows first was never a
-      // dependency — only a hazard.
-
-      const stopPromise = Promise.resolve(stopBrowserRuntime());
-      // A stop that rejects after the timeout wins the race must not surface
-      // as an unhandled rejection.
-      stopPromise.catch(() => {});
-
-      let stopTimedOut = false;
-      let stopTimer = null;
-      try {
-        await Promise.race([
-          stopPromise,
-          new Promise((resolve) => {
-            stopTimer = setTimeout(() => {
-              stopTimedOut = true;
-              resolve(undefined);
-            }, shutdownStopTimeoutMs);
-          }),
-        ]);
-      } finally {
-        // A stop that settles before the timeout must not leak the pending
-        // timer into the rest of shutdown.
-        clearTimeout(stopTimer);
-      }
-
-      if (stopTimedOut) {
-        logger.warn('Timed out stopping coordinator/browser runtime; continuing shutdown', { timeoutMs: shutdownStopTimeoutMs });
-      }
-
-      const chromePid = chromeLaunch?.chromePid;
-
-      if (typeof chromePid === 'number' && chromePid > 0) {
-        try {
-          killProcessGroupFn(chromePid);
-        } catch {
-          // process group may have already exited
-        }
-      }
-
-      try {
-        reapChromeProfilesFn('pkill -9 -f "deckhand-chrome-profiles"');
-      } catch {
-        // no matching processes
-      }
-
-      try {
-        reapChromeProfilesFn('pkill -9 -f "deckhand-profile-"');
-      } catch {
-        // no matching processes
-      }
-
-      // Chrome is dead by now, so the temp profile dirs can be removed. This
-      // runs before the window teardown below, which may kill this very
-      // process when it closes deckhand's own host terminal.
-      await removeTempProfileDirs();
-
-      // Windows last (see the why-comment at the top of this handler): a
-      // close that kills the host terminal must not be able to preempt the
-      // OBS restore or the Chrome kill above.
-      for (const [sourceId, source] of Object.entries(config.sources)) {
-        if (source.kind !== 'app') {
-          continue;
-        }
-
-        const cached = resolvedMacWindowBindings[sourceId] ?? shutdownWindowBindings[sourceId];
-        if (cached?.macWindowId === undefined && cached?.sessionId === undefined && cached?.pid === undefined) {
-          logger.warn('No window binding available for owned app source; leaving its window open', { source: sourceId });
-          continue;
-        }
-
-        try {
-          const closeResult = closeOwnedWindowsFn({
-            bindings: [{
-              kind: source.kind,
-              sourceId,
-              discardUnsavedChanges: shouldDiscardUnsavedChanges(source),
-              macWindowId: cached?.macWindowId,
-              ownerName: getSourceOwnerName(config, sourceId),
-              pid: cached?.pid,
-              sessionId: cached?.sessionId,
-            }],
-          });
-
-          if (isPromiseLike(closeResult)) {
-            let timedOut = false;
-            let timer = null;
-            try {
-              await Promise.race([
-                closeResult,
-                new Promise((resolve) => {
-                  timer = setTimeout(() => {
-                    timedOut = true;
-                    resolve(undefined);
-                  }, shutdownCloseTimeoutMs);
-                }),
-              ]);
-            } finally {
-              // A close that rejects before the timeout must not leak the
-              // pending timer into the rest of shutdown.
-              clearTimeout(timer);
-            }
-
-            if (timedOut) {
-              logger.warn('Timed out closing owned app window; continuing shutdown', { source: sourceId, timeoutMs: shutdownCloseTimeoutMs });
-              continue;
-            }
-          }
-
-          logger.info('Closed owned app window', { source: sourceId });
-        } catch (error) {
-          logger.warn('Failed to close owned app window', {
-            source: sourceId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-
-      process.exit(0);
-    };
-
-    function bindShutdownSignal(signal) {
-      process.once(signal, () => {
-        shutdown(signal).catch((error) => {
-          logger.error('Shutdown sequence failed', {
-            signal,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      });
-    }
-
-    bindShutdownSignal('SIGINT');
-    bindShutdownSignal('SIGTERM');
-    // SIGHUP: the host terminal died (e.g. its window was closed) — run the
-    // same teardown flow. The `shuttingDown` flag at the top of `shutdown`
-    // keeps this idempotent when several signals arrive during one teardown.
-    bindShutdownSignal('SIGHUP');
+    await stopLaunchedChromeSession({ launch: currentLaunch, timeoutMs: shutdownStopTimeoutMs, logger });
   }
+
+  const shutdownSequence = createShutdownSequence({
+    config,
+    logger,
+    registry,
+    installSignalHandlers,
+    stopTimeoutMs: shutdownStopTimeoutMs,
+    closeTimeoutMs: shutdownCloseTimeoutMs,
+    closeMacWindowFn,
+    closeOwnedWindowsFn: options.closeOwnedWindowsFn,
+    killProcessGroupFn,
+    reapChromeProfilesFn,
+    stopRuntime: stopBrowserRuntime,
+    getChromePid: () => chromeLaunch?.chromePid,
+    removeTempProfileDirs,
+    onShutdownStart: () => {
+      phase = 'shuttingDown';
+    },
+  });
 
   try {
     hub = (options.createHubFn ?? createHub)({ ...config.hub, logger });
@@ -574,9 +292,7 @@ export async function run(options = {}) {
 
     hub.on('observerWindowBindings', (payload) => {
       for (const source of payload?.cleared ?? []) {
-        if (resolvedMacWindowBindings[source] !== undefined) {
-          shutdownWindowBindings[source] = resolvedMacWindowBindings[source];
-          delete resolvedMacWindowBindings[source];
+        if (registry.stashForShutdown(source)) {
           logger.info('Invalidated cached macWindowId', { source });
         }
       }
@@ -675,80 +391,10 @@ export async function run(options = {}) {
 
     coordinator = (options.createCoordinatorFn ?? createCoordinator)({
       config,
-      focusPresenterTeleprompter,
+      focusPresenterTeleprompter: presenterWindows.focusTeleprompter,
       relaunchSource,
       getManagedWindowBindings() {
-        if (config.presenter === null) {
-          return {};
-        }
-
-        const chromePid = browserSession?.getStatus().chromePid ?? null;
-        const registrySources = browserSession?.getRegistry().sources ?? {};
-        const result = {};
-
-        for (const [sourceId, source] of Object.entries(config.sources)) {
-          const configured = config.presenter.windows?.[sourceId];
-          const cached = resolvedMacWindowBindings[sourceId];
-          const binding = {};
-
-          if (source.kind === 'browser') {
-            binding.app = configured?.app ?? getSourceOwnerName(config, sourceId);
-            binding.titleIncludes = registrySources[sourceId]?.title;
-            if (typeof chromePid === 'number') {
-              binding.pid = chromePid;
-            }
-          } else {
-            Object.assign(binding, buildBootstrapBinding(source, configured));
-            if (typeof cached?.pid === 'number') {
-              binding.pid = cached.pid;
-            }
-          }
-
-          if (cached?.macWindowId !== undefined) {
-            binding.macWindowId = cached.macWindowId;
-          }
-
-          result[sourceId] = binding;
-        }
-
-        if (config.presenter.teleprompter.window !== null) {
-          result[PRESENTER_SOURCE_ID] = {
-            ...config.presenter.teleprompter.window,
-          };
-
-          const cached = resolvedMacWindowBindings[PRESENTER_SOURCE_ID];
-          if (typeof chromePid === 'number') {
-            result[PRESENTER_SOURCE_ID].pid = chromePid;
-          }
-          if (cached?.pid !== undefined) {
-            result[PRESENTER_SOURCE_ID].pid = cached.pid;
-          }
-          if (cached?.macWindowId !== undefined) {
-            result[PRESENTER_SOURCE_ID].macWindowId = cached.macWindowId;
-          }
-        }
-
-        // Unlike the teleprompter there is no config selector gate: the Console
-        // window only exists when deckhand opened it, which is exactly when the
-        // cached binding exists.
-        const consoleCached = resolvedMacWindowBindings[CONSOLE_SOURCE_ID];
-        if (consoleCached !== undefined) {
-          result[CONSOLE_SOURCE_ID] = {
-            app: getSourceOwnerName(config, CONSOLE_SOURCE_ID),
-            titleIncludes: 'Deckhand Console',
-          };
-
-          if (typeof chromePid === 'number') {
-            result[CONSOLE_SOURCE_ID].pid = chromePid;
-          }
-          if (consoleCached.pid !== undefined) {
-            result[CONSOLE_SOURCE_ID].pid = consoleCached.pid;
-          }
-
-          result[CONSOLE_SOURCE_ID].macWindowId = consoleCached.macWindowId;
-        }
-
-        return result;
+        return buildManagedWindowBindings({ config, registry, browserSession });
       },
       getManagedBrowserPid() {
         return browserSession?.getStatus().chromePid ?? null;
@@ -804,7 +450,7 @@ export async function run(options = {}) {
     return 1;
   }
 
-  installShutdownHandlers();
+  shutdownSequence.install();
 
   try {
     await presentationServer.start();
@@ -831,20 +477,8 @@ export async function run(options = {}) {
       await presenterHttp.start();
 
       if (browserSession !== null) {
-        const resolvePresenterTeleprompterBindingFn = options.resolvePresenterTeleprompterBindingFn ?? resolvePresenterTeleprompterBinding;
-
-        await resolvePresenterTeleprompterBindingFn({
-          browserSession,
-          config,
-          logger,
-        }).then((binding) => {
-          if (binding !== null) {
-            resolvedMacWindowBindings[PRESENTER_SOURCE_ID] = binding;
-          }
-        }).catch((error) => {
-          logger.warn('Failed to open presenter window', {
-            error: error instanceof Error ? error.message : String(error),
-          });
+        await presenterWindows.resolveStartupTeleprompterBinding({
+          resolveFn: options.resolvePresenterTeleprompterBindingFn ?? resolvePresenterTeleprompterBinding,
         });
 
         // Warn-only probe: Chrome silently clamps Deckhand-owned overlay
@@ -868,40 +502,7 @@ export async function run(options = {}) {
           }
         }
 
-        try {
-          const auxWindow = await browserSession.openAuxWindow({
-            key: 'presenter-console',
-            title: 'Deckhand Console',
-            url: `http://${config.presenter.http.host}:${config.presenter.http.port}/presenter/`,
-          });
-          const chromePid = browserSession.getStatus().chromePid;
-
-          if (typeof auxWindow?.macWindowId === 'number') {
-            resolvedMacWindowBindings[CONSOLE_SOURCE_ID] = {
-              macWindowId: auxWindow.macWindowId,
-              ...(Number.isInteger(chromePid) && chromePid > 0 ? { pid: chromePid } : {}),
-            };
-          } else {
-            delete resolvedMacWindowBindings[CONSOLE_SOURCE_ID];
-          }
-
-          // The window is already open at this point, so a refresh failure must
-          // not be reported as a failure to open it. Binding registration above
-          // cannot throw, so this catch only sees the refresh.
-          try {
-            if (coordinator !== undefined && coordinator !== null && typeof coordinator.refreshCurrentPresentationState === 'function') {
-              await coordinator.refreshCurrentPresentationState('consoleOpened');
-            }
-          } catch (error) {
-            logger.warn('Failed to refresh presentation state after console open', {
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        } catch (error) {
-          logger.warn('Failed to open presenter console window', {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+        await presenterWindows.openConsoleWindow();
       }
     }
 
@@ -967,9 +568,7 @@ export async function run(options = {}) {
         logger,
       })) ?? {};
 
-      for (const [sourceId, binding] of Object.entries(result)) {
-        resolvedMacWindowBindings[sourceId] = binding;
-      }
+      registry.setMany(result);
 
       const allResolved = browserSourceIds.every((id) => result[id] !== undefined);
       if (allResolved) {
@@ -987,7 +586,7 @@ export async function run(options = {}) {
         config,
         logger,
         obs: typeof obs.getClient === 'function' ? obs.getClient() : obs,
-        windowBindings: buildObsWindowBindings(config, resolvedMacWindowBindings),
+        windowBindings: buildObsWindowBindings(config, registry.snapshot()),
       });
     }
 
@@ -997,9 +596,7 @@ export async function run(options = {}) {
 
       const ownedResult = (await ownedResolutionFn({ config, logger })) ?? {};
 
-      for (const [sourceId, binding] of Object.entries(ownedResult)) {
-        resolvedMacWindowBindings[sourceId] = binding;
-      }
+      registry.setMany(ownedResult);
 
       const resolvedOwnedIds = Object.keys(ownedResult);
       if (resolvedOwnedIds.length > 0) {
@@ -1019,7 +616,7 @@ export async function run(options = {}) {
           config,
           logger,
           obs: typeof obs.getClient === 'function' ? obs.getClient() : obs,
-          windowBindings: buildObsWindowBindings(config, resolvedMacWindowBindings),
+          windowBindings: buildObsWindowBindings(config, registry.snapshot()),
         });
       }
     }
