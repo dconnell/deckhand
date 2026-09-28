@@ -45,7 +45,7 @@ async function awaitWithTimeout(promise, timeoutMs) {
  * @param {{
  *   config: Record<string, any>,
  *   logger: Record<string, any>,
- *   closeMacWindowFn: (macWindowId: number, pid?: number, options?: object) => boolean,
+ *   closeMacWindowFn: (macWindowId: number, pid?: number, options?: object) => boolean | Promise<boolean>,
  * }} input
  * @returns {(input: { bindings: Array<object> }) => Promise<void>} closer
  */
@@ -116,7 +116,7 @@ export async function stopLaunchedChromeSession({ launch, timeoutMs, logger }) {
  *   installSignalHandlers: boolean,
  *   stopTimeoutMs: number,
  *   closeTimeoutMs: number,
- *   closeMacWindowFn: (macWindowId: number, pid?: number, options?: object) => boolean,
+ *   closeMacWindowFn: (macWindowId: number, pid?: number, options?: object) => boolean | Promise<boolean>,
  *   closeOwnedWindowsFn?: (input: { bindings: Array<object> }) => Promise<void> | void,
  *   killProcessGroupFn: (pgid: number) => void,
  *   reapChromeProfilesFn: (command: string) => void,

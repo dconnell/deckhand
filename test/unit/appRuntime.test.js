@@ -533,6 +533,37 @@ test('closeOwnedAppWindows warns and does not escalate when tracked app close do
   assert.match(logger.warns[0].message, /leaving app process running/i);
 });
 
+test('closeOwnedAppWindows awaits closeMacWindowFn implementations that resolve asynchronously', async () => {
+  // The real `closeMacWindow` is async after the Phase B subprocess
+  // conversion; the close flow must wait for the promise and read its
+  // resolved boolean, not treat the promise itself as truthy.
+  const logger = createLogger();
+
+  await closeOwnedAppWindows({
+    entries: [
+      {
+        sourceId: 'Confirmed',
+        source: { id: 'Confirmed', kind: 'app', app: 'Visual Studio Code' },
+        binding: { sourceId: 'Confirmed', macWindowId: 888, pid: 9999 },
+      },
+      {
+        sourceId: 'Unconfirmed',
+        source: { id: 'Unconfirmed', kind: 'app', app: 'Visual Studio Code' },
+        binding: { sourceId: 'Unconfirmed', macWindowId: 777, pid: 8888 },
+      },
+    ],
+    logger,
+    async closeMacWindowFn(macWindowId) {
+      return macWindowId === 888;
+    },
+    closeIterm2OwnedWindowFn() {},
+  });
+
+  assert.equal(logger.warns.length, 1);
+  assert.match(logger.warns[0].message, /leaving app process running/i);
+  assert.equal(logger.warns[0].context.source, 'Unconfirmed');
+});
+
 test('seedBrowserMacWindowBindings seeds macWindowId from the browser-session registry', () => {
   const browserSession = {
     getStatus() { return { chromePid: 47213 }; },

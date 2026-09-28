@@ -1,4 +1,46 @@
-import { execSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+
+/**
+ * Wall-clock budget for one macOS subprocess invocation (`swift`/`osascript`),
+ * matching the `timeout: 5000` the synchronous implementations applied.
+ *
+ * @type {number}
+ */
+const MAC_SUBPROCESS_TIMEOUT_MS = 5000;
+
+/**
+ * Run a macOS subprocess with argv-array arguments (never a shell) and an
+ * explicit timeout.
+ *
+ * Replacement for the `execSync` hot path: the Node event loop stays free
+ * while `swift`/`osascript` run, and the timeout semantics are preserved —
+ * a child that exceeds the budget is killed (SIGTERM) and the returned
+ * promise rejects, exactly as `execSync`'s `timeout` option did.
+ *
+ * @param {string} file Executable to run (resolved via PATH).
+ * @param {string[]} args Argument vector; no shell interpretation.
+ * @param {{ input?: string, env?: NodeJS.ProcessEnv, timeoutMs?: number }} [options] `input` is written to the child's stdin; `env` replaces the child environment; `timeoutMs` defaults to {@link MAC_SUBPROCESS_TIMEOUT_MS}.
+ * @returns {Promise<string>} The child's stdout.
+ */
+function runMacSubprocess(file, args, { input, env, timeoutMs = MAC_SUBPROCESS_TIMEOUT_MS } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(file, args, { encoding: 'utf8', timeout: timeoutMs, env }, (error, stdout) => {
+      if (error !== null) {
+        reject(error);
+        return;
+      }
+
+      resolve(stdout);
+    });
+
+    if (typeof input === 'string') {
+      // The child may exit or be killed before consuming all of stdin; the
+      // resulting EPIPE must not surface as an unhandled 'error' event.
+      child.stdin.on('error', () => {});
+      child.stdin.end(input);
+    }
+  });
+}
 
 const SWIFT_SCRIPT = `
 import CoreGraphics
@@ -98,16 +140,15 @@ print(String(data: jsonData, encoding: .utf8)!)
  * CGWindowListCopyWindowInfo returns empty kCGWindowName for Chrome, but the
  * Accessibility API via osascript CAN see Chrome window titles.
  *
+ * Best-effort: any osascript error resolves to an empty list.
+ *
  * @param {number} pid Process ID.
- * @returns {string[]} Window titles in z-order (frontmost first).
+ * @returns {Promise<string[]>} Window titles in z-order (frontmost first).
  */
-function getWindowTitlesViaAccessibility(pid) {
+async function getWindowTitlesViaAccessibility(pid) {
   try {
     const script = `tell application "System Events" to tell (first process whose unix id is ${pid}) to get title of every window`;
-    const output = execSync(`osascript -e '${script}'`, {
-      encoding: 'utf8',
-      timeout: 5000,
-    }).trim();
+    const output = (await runMacSubprocess('osascript', ['-e', script])).trim();
 
     if (!output || output === 'missing value' || output === '') {
       return [];
@@ -122,34 +163,24 @@ function getWindowTitlesViaAccessibility(pid) {
 /**
  * Get CGWindowIDs for a process via CGWindowListCopyWindowInfo.
  *
- * Returns windows in z-order (frontmost first) with their bounds.
- *
- * @param {number} pid Process ID.
- * @returns {Array<{ windowId: number, x: number, y: number }>}
- */
-/**
- * Get CGWindowIDs for a process via CGWindowListCopyWindowInfo.
- *
  * Returns on-screen, layer-0 windows for a PID with their bounds. Title-free by
  * design: callers that resolve window identity by CGWindowID diff (browser
  * sources) do not need the Accessibility API title fetch that
  * {@link enumerateWindowsByPid} performs, so they avoid the osascript
  * subprocess and Accessibility-permission dependency.
  *
+ * Best-effort: a failed/timeout snapshot resolves to `[]`.
+ *
  * @param {number} pid Process ID.
- * @returns {Array<{ windowId: number, x: number, y: number, width: number, height: number }>}
+ * @returns {Promise<Array<{ windowId: number, x: number, y: number, width: number, height: number }>>}
  */
-export function getWindowIdsViaCGList(pid) {
+export async function getWindowIdsViaCGList(pid) {
   if (process.platform !== 'darwin') {
     return [];
   }
 
   try {
-    const output = execSync(`swift - ${pid}`, {
-      encoding: 'utf8',
-      timeout: 5000,
-      input: SWIFT_SCRIPT,
-    });
+    const output = await runMacSubprocess('swift', ['-', String(pid)], { input: SWIFT_SCRIPT });
 
     return JSON.parse(output.trim()).filter((entry) => entry.windowId > 0);
   } catch {
@@ -157,17 +188,20 @@ export function getWindowIdsViaCGList(pid) {
   }
 }
 
-function getAllWindowIdsViaCGList(pid) {
+/**
+ * Get every layer-0 window (on- and off-screen) for a PID, for presence and
+ * bounds lookups during the close flow.
+ *
+ * @param {number} pid Process ID.
+ * @returns {Promise<Array<{ windowId: number, x: number, y: number, width: number, height: number }>>}
+ */
+async function getAllWindowIdsViaCGList(pid) {
   if (process.platform !== 'darwin') {
     return [];
   }
 
   try {
-    const output = execSync(`swift - ${pid}`, {
-      encoding: 'utf8',
-      timeout: 5000,
-      input: SWIFT_SCRIPT_ALL_BY_PID,
-    });
+    const output = await runMacSubprocess('swift', ['-', String(pid)], { input: SWIFT_SCRIPT_ALL_BY_PID });
 
     return JSON.parse(output.trim()).filter((entry) => entry.windowId > 0);
   } catch {
@@ -175,20 +209,36 @@ function getAllWindowIdsViaCGList(pid) {
   }
 }
 
-function hasWindowIdForPid(macWindowId, pid) {
+/**
+ * Whether the pid currently owns the given CGWindowID.
+ *
+ * @param {number} macWindowId CGWindowID to look for.
+ * @param {number} pid Owning process ID.
+ * @returns {Promise<boolean>}
+ */
+async function hasWindowIdForPid(macWindowId, pid) {
   if (!Number.isInteger(macWindowId) || macWindowId <= 0 || !Number.isInteger(pid) || pid <= 0) {
     return false;
   }
 
-  return getAllWindowIdsViaCGList(pid).some((window) => window.windowId === macWindowId);
+  const windows = await getAllWindowIdsViaCGList(pid);
+
+  return windows.some((window) => window.windowId === macWindowId);
 }
 
-function getWindowDescriptorForPid(macWindowId, pid) {
+/**
+ * Bounds descriptor for a pid-owned CGWindowID, or `null` when absent.
+ *
+ * @param {number} macWindowId CGWindowID to describe.
+ * @param {number} pid Owning process ID.
+ * @returns {Promise<{ windowId: number, x: number, y: number, width: number, height: number } | null>}
+ */
+async function getWindowDescriptorForPid(macWindowId, pid) {
   if (!Number.isInteger(macWindowId) || macWindowId <= 0 || !Number.isInteger(pid) || pid <= 0) {
     return null;
   }
 
-  const windows = getAllWindowIdsViaCGList(pid);
+  const windows = await getAllWindowIdsViaCGList(pid);
   const match = windows.find((window) => window.windowId === macWindowId);
 
   if (match === undefined) {
@@ -211,16 +261,20 @@ function getWindowDescriptorForPid(macWindowId, pid) {
  * API (for window titles, which CGWindowList returns empty for Chrome).
  * Both APIs return windows in z-order for the same PID, so we zip them.
  *
+ * Best-effort: failed enumerations degrade to `[]`.
+ *
  * @param {number} pid Process ID to filter windows by.
- * @returns {Array<{ windowId: number, title: string }>}
+ * @returns {Promise<Array<{ windowId: number, title: string }>>}
  */
-export function enumerateWindowsByPid(pid) {
+export async function enumerateWindowsByPid(pid) {
   if (process.platform !== 'darwin') {
     return [];
   }
 
-  const cgWindows = getWindowIdsViaCGList(pid);
-  const axTitles = getWindowTitlesViaAccessibility(pid);
+  const [cgWindows, axTitles] = await Promise.all([
+    getWindowIdsViaCGList(pid),
+    getWindowTitlesViaAccessibility(pid),
+  ]);
 
   if (cgWindows.length === 0) {
     return [];
@@ -262,17 +316,15 @@ export function enumerateWindowsByPid(pid) {
  * is only a secondary splash-rejection signal, not the identity source of truth.
  *
  * @param {string} ownerName macOS owner (app) name prefix, as in `kCGWindowOwnerName`. Pass an empty string to enumerate all layer-0 windows regardless of owner.
- * @returns {Array<{ windowId: number, title: string, pid?: number, ownerName?: string }> | null} Matching window entries, or `null` when the snapshot itself failed. The distinction matters: the owned-window launch diff (`ownedWindows.js`) reads an empty array as "nothing pre-existed", which would pin the largest pre-existing window as the newly-launched one, while `null` lets callers fail safe and skip binding.
+ * @returns {Promise<Array<{ windowId: number, title: string, pid?: number, ownerName?: string }> | null>} Matching window entries, or `null` when the snapshot itself failed. The distinction matters: the owned-window launch diff (`ownedWindows.js`) reads an empty array as "nothing pre-existed", which would pin the largest pre-existing window as the newly-launched one, while `null` lets callers fail safe and skip binding.
  */
-export function enumerateWindowsByOwnerName(ownerName) {
+export async function enumerateWindowsByOwnerName(ownerName) {
   if (process.platform !== 'darwin') {
     return [];
   }
 
   try {
-    const output = execSync('swift -', {
-      encoding: 'utf8',
-      timeout: 5000,
+    const output = await runMacSubprocess('swift', ['-'], {
       input: SWIFT_SCRIPT_BY_OWNER,
       env: { ...process.env, DECKHAND_OWNER_NAME: ownerName },
     });
@@ -730,9 +782,9 @@ export function findUniqueBoundsFallbackCandidate(samePidWindows, targetWindow, 
  * @param {number} macWindowId The CGWindowID of the window to close.
  * @param {number} pid The process ID owning the window.
  * @param {{ discardUnsavedChanges?: boolean }} [options] Close options.
- * @returns {boolean} True when the target window is no longer present.
+ * @returns {Promise<boolean>} True when the target window is no longer present.
  */
-export function closeMacWindow(macWindowId, pid, options = {}) {
+export async function closeMacWindow(macWindowId, pid, options = {}) {
   // Validate before the platform guard so input validation is testable on Linux CI; both guards return false, so order is behavior-neutral.
   if (typeof macWindowId !== 'number' || typeof pid !== 'number') {
     return false;
@@ -745,9 +797,9 @@ export function closeMacWindow(macWindowId, pid, options = {}) {
   const targetWindowId = Math.floor(macWindowId);
   const targetPid = Math.floor(pid);
 
-  const targetWindow = getWindowDescriptorForPid(targetWindowId, targetPid);
+  const targetWindow = await getWindowDescriptorForPid(targetWindowId, targetPid);
 
-  if (!hasWindowIdForPid(targetWindowId, targetPid)) {
+  if (!(await hasWindowIdForPid(targetWindowId, targetPid))) {
     return true;
   }
 
@@ -755,23 +807,23 @@ export function closeMacWindow(macWindowId, pid, options = {}) {
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      execSync(`swift - ${targetWindowId} ${targetPid}`, {
-        encoding: 'utf8',
-        timeout: 5000,
-        input: buildCloseWindowSwiftScript(options),
-        stdio: ['pipe', 'ignore', 'ignore'],
-      });
+      await runMacSubprocess(
+        'swift',
+        ['-', String(targetWindowId), String(targetPid)],
+        { input: buildCloseWindowSwiftScript(options) },
+      );
     } catch {
       // best-effort close — continue with presence check
     }
 
-    if (!hasWindowIdForPid(targetWindowId, targetPid)) {
+    if (!(await hasWindowIdForPid(targetWindowId, targetPid))) {
       return true;
     }
 
     if (targetWindow !== null) {
+      const allWindows = await getAllWindowIdsViaCGList(targetPid);
       const fallbackCandidate = findUniqueBoundsFallbackCandidate(
-        getAllWindowIdsViaCGList(targetPid),
+        allWindows,
         targetWindow,
       );
 
@@ -783,38 +835,41 @@ export function closeMacWindow(macWindowId, pid, options = {}) {
         // the source and binding.
       } else {
         try {
-          execSync(
-            `swift - ${targetWindow.x} ${targetWindow.y} ${targetWindow.width} ${targetWindow.height} ${targetPid}`,
-            {
-              encoding: 'utf8',
-              timeout: 5000,
-              input: buildCloseWindowByBoundsSwiftScript(options),
-              stdio: ['pipe', 'ignore', 'ignore'],
-            },
+          await runMacSubprocess(
+            'swift',
+            [
+              '-',
+              String(targetWindow.x),
+              String(targetWindow.y),
+              String(targetWindow.width),
+              String(targetWindow.height),
+              String(targetPid),
+            ],
+            { input: buildCloseWindowByBoundsSwiftScript(options) },
           );
         } catch {
           // continue with presence check
         }
       }
 
-      if (!hasWindowIdForPid(targetWindowId, targetPid)) {
+      if (!(await hasWindowIdForPid(targetWindowId, targetPid))) {
         return true;
       }
     }
   }
 
-  return !hasWindowIdForPid(targetWindowId, targetPid);
+  return !(await hasWindowIdForPid(targetWindowId, targetPid));
 }
 
 /**
  * Find the PID of the first on-screen window matching an owner name.
  *
  * @param {string} ownerName macOS owner (app) name.
- * @returns {number | null}
+ * @returns {Promise<number | null>}
  */
-export function findPidByOwnerName(ownerName) {
+export async function findPidByOwnerName(ownerName) {
   // Snapshot failure (`null`) and "no matching windows" both mean: no pid.
-  const windows = enumerateWindowsByOwnerName(ownerName) ?? [];
+  const windows = (await enumerateWindowsByOwnerName(ownerName)) ?? [];
 
   for (const window of windows) {
     if (typeof window.pid === 'number' && window.pid > 0) {

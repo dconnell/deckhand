@@ -29,11 +29,13 @@ export const appleTerminalAdapter = {
       app: 'Terminal',
     };
   },
-  launch(source, { launchTerminalWindow: launchWindowFn = launchTerminalWindow } = {}) {
+  async launch(source, { launchTerminalWindow: launchWindowFn = launchTerminalWindow } = {}) {
     return launchWindowFn({ command: source.command, cwd: source.cwd });
   },
-  close({ binding }, { closeTerminalOwnedWindow: closeWindowFn = closeTerminalOwnedWindow } = {}) {
-    closeWindowFn(binding.terminalWindowId);
+  async close({ binding }, { closeTerminalOwnedWindow: closeWindowFn = closeTerminalOwnedWindow } = {}) {
+    // Awaited so shutdown does not proceed before the best-effort close lands.
+    await closeWindowFn(binding.terminalWindowId);
+
     return true;
   },
   discardUnsavedChangesOnClose: false,

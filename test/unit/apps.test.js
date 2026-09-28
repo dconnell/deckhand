@@ -71,3 +71,50 @@ test('resolveAppAdapter matches kitty and maps to the lowercase kitty CGWindow o
   assert.equal(adapter.cgWindowOwnerName(), 'kitty');
   assert.equal(typeof adapter.close, 'function');
 });
+
+test('terminal adapter close hooks await the async close primitive before resolving', async () => {
+  // The close primitives became async with the Phase B conversion; a
+  // fire-and-forget close here would let shutdown race the close subprocess.
+  const { ghosttyAdapter } = await import('../../src/apps/ghostty.js');
+  const { kittyAdapter } = await import('../../src/apps/kitty.js');
+  const { appleTerminalAdapter } = await import('../../src/apps/appleTerminal.js');
+  const { alacrittyAdapter } = await import('../../src/apps/alacritty.js');
+
+  let settled = false;
+
+  const slowClose = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    settled = true;
+  };
+
+  assert.equal(
+    await ghosttyAdapter.close({ binding: { ghosttyWindowId: 'tab-group-xyz' } }, { closeGhosttyOwnedWindow: slowClose }),
+    true,
+  );
+  assert.equal(settled, true, 'ghostty close must await the close primitive');
+
+  settled = false;
+  assert.equal(
+    await kittyAdapter.close({ binding: { kittyWindowId: '42' } }, { closeKittyOwnedWindow: slowClose }),
+    true,
+  );
+  assert.equal(settled, true, 'kitty close must await the close primitive');
+
+  settled = false;
+  assert.equal(
+    await appleTerminalAdapter.close({ binding: { terminalWindowId: '5001' } }, { closeTerminalOwnedWindow: slowClose }),
+    true,
+  );
+  assert.equal(settled, true, 'appleTerminal close must await the close primitive');
+
+  const slowLaunch = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    settled = true;
+
+    return { pid: 1 };
+  };
+
+  settled = false;
+  await alacrittyAdapter.launch({ command: 'npm run dev', cwd: '/repos/demo' }, { launchAlacrittyWindow: slowLaunch });
+  assert.equal(settled, true, 'alacritty launch must await the launch primitive');
+});

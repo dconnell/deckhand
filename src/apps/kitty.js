@@ -39,11 +39,13 @@ export const kittyAdapter = {
       app: 'kitty',
     };
   },
-  launch(source, { launchKittyWindow: launchWindowFn = launchKittyWindow } = {}) {
+  async launch(source, { launchKittyWindow: launchWindowFn = launchKittyWindow } = {}) {
     return launchWindowFn({ command: source.command, cwd: source.cwd });
   },
-  close({ binding }, { closeKittyOwnedWindow: closeWindowFn = closeKittyOwnedWindow } = {}) {
-    closeWindowFn(binding.kittyWindowId);
+  async close({ binding }, { closeKittyOwnedWindow: closeWindowFn = closeKittyOwnedWindow } = {}) {
+    // Awaited so shutdown does not proceed before the best-effort close lands.
+    await closeWindowFn(binding.kittyWindowId);
+
     return true;
   },
   discardUnsavedChangesOnClose: false,

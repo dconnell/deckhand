@@ -7,7 +7,7 @@ import { closeGhosttyOwnedWindow, launchGhosttyWindow } from './launchers/ghostt
 import { closeIterm2OwnedWindow, launchIterm2Window } from './launchers/iterm2.js';
 import { closeKittyOwnedWindow, launchKittyWindow } from './launchers/kitty.js';
 import { delay } from './lifecycle/time.js';
-import { diffNewWindows, enumerateWindowsByOwnerName, enumerateWindowsByPid } from './macWindows.js';
+import { diffNewWindows, enumerateWindowsByOwnerName } from './macWindows.js';
 import { resolveOwnedWindowBindings } from './ownedWindows.js';
 
 const APP_SHUTDOWN_GRACE_MS = 2000;
@@ -373,7 +373,10 @@ async function closeOwnedAppWindows({
     if (typeof binding.macWindowId === 'number' && typeof binding.pid === 'number') {
       const discardUnsavedChanges = binding.discardUnsavedChanges
         ?? (adapter.discardUnsavedChangesOnClose === true);
-      const closed = closeMacWindowFn(binding.macWindowId, binding.pid, {
+      // Awaited: the real `closeMacWindow` runs its Swift/AX close flow as
+      // async subprocesses; sync fakes (and sync overrides) resolve through
+      // the same await.
+      const closed = await closeMacWindowFn(binding.macWindowId, binding.pid, {
         discardUnsavedChanges,
       });
 

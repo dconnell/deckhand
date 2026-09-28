@@ -1,23 +1,44 @@
-import { execSync } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Default osascript executor: async and event-loop non-blocking.
+ *
+ * The script travels as a single `-e` argv element to `execFile` (no shell).
+ * Timeouts kill the child and reject, mirroring the previous sync `timeout`
+ * semantics.
+ *
+ * @param {string} script AppleScript source to run.
+ * @param {{ timeoutMs: number }} options Run options.
+ * @returns {Promise<string>} Resolves with osascript stdout.
+ */
+function defaultExecOsascript(script, { timeoutMs }) {
+  return execFileAsync('osascript', ['-e', script], {
+    encoding: 'utf8',
+    timeout: timeoutMs,
+  }).then(({ stdout }) => stdout);
+}
 
 /**
  * Spawn a command and resolve only after it exits 0.
  *
  * Rejects on non-zero exit or spawn error. Stdio is ignored — callers that
- * need stdout capture should call `child_process.execSync` directly.
+ * need stdout capture should use the `execFile`-based executor instead.
  *
  * @param {string} command Binary to spawn.
  * @param {string[]} args Argv.
  * @param {string} [cwd] Working directory.
  * @param {string} label Human-readable label for error messages.
+ * @param {typeof spawn} [spawnFn] Injectable spawn for tests.
  * @returns {Promise<void>}
  */
-function spawnAndWaitZero(command, args, cwd, label) {
+function spawnAndWaitZero(command, args, cwd, label, spawnFn = spawn) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawnFn(command, args, {
       cwd: cwd ?? undefined,
       stdio: 'ignore',
     });
@@ -83,19 +104,17 @@ export function buildAlacrittyMsgArgs({ command, cwd, socketPath } = {}) {
  * because the operator must launch Alacritty before Deckhand can own a window
  * in it.
  *
- * @returns {string | null}
+ * @param {{ execOsascriptFn?: typeof defaultExecOsascript, tmpDir?: string }} [options] Injectable executor and tmp dir for tests.
+ * @returns {Promise<string | null>} Resolves `null` on any probe failure instead of rejecting.
  */
-export function findAlacrittySocket() {
+export async function findAlacrittySocket({ execOsascriptFn = defaultExecOsascript, tmpDir = os.tmpdir() } = {}) {
   if (process.platform !== 'darwin') {
     return null;
   }
 
   try {
     const script = 'tell application "System Events" to get unix id of every process whose name is "Alacritty"';
-    const output = execSync(`osascript -e '${script}'`, {
-      encoding: 'utf8',
-      timeout: 5000,
-    }).trim();
+    const output = (await execOsascriptFn(script, { timeoutMs: 5000 })).trim();
 
     if (output === '' || output === 'missing value') {
       return null;
@@ -105,8 +124,6 @@ export function findAlacrittySocket() {
       .split(', ')
       .map((token) => Number.parseInt(token, 10))
       .filter((pid) => Number.isFinite(pid));
-
-    const tmpDir = os.tmpdir();
 
     for (const pid of pids) {
       const candidate = `${tmpDir}/Alacritty-${pid}.sock`;
@@ -134,15 +151,15 @@ export function findAlacrittySocket() {
  * must launch Alacritty separately before Deckhand can bind a window in it —
  * this is the documented prerequisite for the Alacritty adapter.
  *
- * @param {{ command?: string, cwd?: string }} [options] Launch options.
+ * @param {{ command?: string, cwd?: string, execOsascriptFn?: typeof defaultExecOsascript, tmpDir?: string, spawnFn?: typeof spawn }} [options] Launch options; injectable for tests.
  * @returns {Promise<{ pid?: number }>}
  */
-export async function launchAlacrittyWindow({ command, cwd } = {}) {
+export async function launchAlacrittyWindow({ command, cwd, execOsascriptFn = defaultExecOsascript, tmpDir, spawnFn = spawn } = {}) {
   if (process.platform !== 'darwin') {
     return {};
   }
 
-  const socketPath = findAlacrittySocket();
+  const socketPath = await findAlacrittySocket({ execOsascriptFn, tmpDir });
 
   if (socketPath === null) {
     throw new Error(
@@ -152,9 +169,9 @@ export async function launchAlacrittyWindow({ command, cwd } = {}) {
 
   const args = buildAlacrittyMsgArgs({ command, cwd, socketPath });
 
-  await spawnAndWaitZero('alacritty', args, undefined, 'alacritty msg create-window');
+  await spawnAndWaitZero('alacritty', args, undefined, 'alacritty msg create-window', spawnFn);
 
-  const pid = findAlacrittyPid();
+  const pid = await findAlacrittyPid({ execOsascriptFn });
 
   return {
     ...(pid !== null ? { pid } : {}),
@@ -167,19 +184,18 @@ export async function launchAlacrittyWindow({ command, cwd } = {}) {
  * Returned so the diff resolver can target the right PID when enumerating
  * candidate windows.
  *
- * @returns {number | null}
+ * @param {{ execOsascriptFn?: typeof defaultExecOsascript }} [options] Injectable executor for tests.
+ * @returns {Promise<number | null>} Resolves `null` on any probe failure instead of rejecting.
  */
-export function findAlacrittyPid() {
+export async function findAlacrittyPid({ execOsascriptFn = defaultExecOsascript } = {}) {
   if (process.platform !== 'darwin') {
     return null;
   }
 
+  const script = 'tell application "System Events" to get unix id of first process whose name is "Alacritty"';
+
   try {
-    const script = 'tell application "System Events" to get unix id of first process whose name is "Alacritty"';
-    const output = execSync(`osascript -e '${script}'`, {
-      encoding: 'utf8',
-      timeout: 5000,
-    }).trim();
+    const output = (await execOsascriptFn(script, { timeoutMs: 5000 })).trim();
 
     const pid = Number.parseInt(output, 10);
     return Number.isFinite(pid) ? pid : null;

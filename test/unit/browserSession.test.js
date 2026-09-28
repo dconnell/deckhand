@@ -510,6 +510,30 @@ test('start resolves macWindowId per browser source by diffing window ids around
   assert.equal(session.getRegistry().sources.BrowserA.macWindowId, 5000);
 });
 
+test('start resolves macWindowId when the CGWindowList enumerator resolves asynchronously', async () => {
+  // The production `getWindowIdsViaCGList` is async after the Phase B
+  // subprocess conversion; the session must await snapshots instead of
+  // treating the promise as an array of windows.
+  const cdpClient = createFakeCdpClient();
+  const windows = [{ windowId: 100, x: 0, y: 0, width: 800, height: 600 }];
+  const realCreateWindow = cdpClient.createWindow;
+  cdpClient.createWindow = async (details) => {
+    const result = await realCreateWindow(details);
+    windows.push({ windowId: 5000, x: 0, y: 0, width: 1280, height: 800 });
+    return result;
+  };
+  const sources = createSources(createBrowserSource('BrowserA', { home: { url: 'https://example.com/home' } }));
+  const session = createBrowserSession({
+    sources,
+    createCdpClient: () => cdpClient,
+    enumerateWindowIdsByPidFn: () => Promise.resolve([...windows]),
+  });
+
+  await session.start();
+
+  assert.equal(session.getRegistry().sources.BrowserA.macWindowId, 5000);
+});
+
 test('start picks the largest-bounds window when createWindow surfaces several new entries', async () => {
   const cdpClient = createFakeCdpClient();
   const windows = [{ windowId: 100, x: 0, y: 0, width: 800, height: 600 }];

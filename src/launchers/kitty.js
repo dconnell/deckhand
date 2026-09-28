@@ -1,4 +1,45 @@
-import { execFileSync, execSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Default osascript executor: async and event-loop non-blocking.
+ *
+ * The script travels as a single `-e` argv element to `execFile` (no shell).
+ * Timeouts kill the child and reject, mirroring the previous sync `timeout`
+ * semantics.
+ *
+ * @param {string} script AppleScript source to run.
+ * @param {{ timeoutMs: number }} options Run options.
+ * @returns {Promise<string>} Resolves with osascript stdout.
+ */
+function defaultExecOsascript(script, { timeoutMs }) {
+  return execFileAsync('osascript', ['-e', script], {
+    encoding: 'utf8',
+    timeout: timeoutMs,
+  }).then(({ stdout }) => stdout);
+}
+
+/**
+ * Default kitty remote-control executor: async and event-loop non-blocking.
+ *
+ * `execFile` (no shell) keeps the `kitty @` argv — including the operator
+ * command wrapped in `sh -c` — out of any Deckhand-side shell parsing.
+ * Timeouts kill the child and reject, mirroring the previous sync `timeout`
+ * semantics.
+ *
+ * @param {string[]} args Argv for the `kitty` binary.
+ * @param {{ timeoutMs: number, discardOutput?: boolean }} options Run options; `discardOutput` drops stdout/stderr for fire-and-forget calls.
+ * @returns {Promise<string>} Resolves with kitty stdout.
+ */
+function defaultExecKitty(args, { timeoutMs, discardOutput = false }) {
+  return execFileAsync('kitty', args, {
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    ...(discardOutput ? { stdio: ['ignore', 'ignore', 'ignore'] } : {}),
+  }).then(({ stdout }) => stdout);
+}
 
 /**
  * Build the argv for a `kitty @ launch --type os-window` invocation.
@@ -66,19 +107,18 @@ export function findKittyListenAddress() {
  *
  * Note: macOS reports the kitty process name as lowercase `kitty`.
  *
- * @returns {number | null}
+ * @param {{ execOsascriptFn?: typeof defaultExecOsascript }} [options] Injectable executor for tests.
+ * @returns {Promise<number | null>} Resolves `null` on any probe failure instead of rejecting.
  */
-export function findKittyPid() {
+export async function findKittyPid({ execOsascriptFn = defaultExecOsascript } = {}) {
   if (process.platform !== 'darwin') {
     return null;
   }
 
+  const script = 'tell application "System Events" to get unix id of first process whose name is "kitty"';
+
   try {
-    const script = 'tell application "System Events" to get unix id of first process whose name is "kitty"';
-    const output = execSync(`osascript -e '${script}'`, {
-      encoding: 'utf8',
-      timeout: 5000,
-    }).trim();
+    const output = (await execOsascriptFn(script, { timeoutMs: 5000 })).trim();
 
     const pid = Number.parseInt(output, 10);
     return Number.isFinite(pid) ? pid : null;
@@ -98,10 +138,10 @@ export function findKittyPid() {
  * which is distinct from the CGWindowID used by the diff resolver. That id is
  * stable for the lifetime of the window and is the close target.
  *
- * @param {{ command?: string, cwd?: string }} [options] Launch options.
+ * @param {{ command?: string, cwd?: string, execKittyFn?: typeof defaultExecKitty, execOsascriptFn?: typeof defaultExecOsascript }} [options] Launch options.
  * @returns {Promise<{ pid?: number, kittyWindowId?: string }>}
  */
-export async function launchKittyWindow({ command, cwd } = {}) {
+export async function launchKittyWindow({ command, cwd, execKittyFn = defaultExecKitty, execOsascriptFn = defaultExecOsascript } = {}) {
   if (process.platform !== 'darwin') {
     return {};
   }
@@ -114,12 +154,9 @@ export async function launchKittyWindow({ command, cwd } = {}) {
 
   const args = buildKittyAtLaunchArgs({ command, cwd });
 
-  const output = execFileSync('kitty', args, {
-    encoding: 'utf8',
-    timeout: 10000,
-  }).trim();
+  const output = (await execKittyFn(args, { timeoutMs: 10000 })).trim();
 
-  const pid = findKittyPid();
+  const pid = await findKittyPid({ execOsascriptFn });
 
   return {
     ...(pid !== null ? { pid } : {}),
@@ -137,9 +174,10 @@ export async function launchKittyWindow({ command, cwd } = {}) {
  * Best-effort: any error is swallowed so shutdown cannot hang.
  *
  * @param {string} kittyWindowId The kitty window id returned by {@link launchKittyWindow}.
- * @returns {void}
+ * @param {{ execKittyFn?: typeof defaultExecKitty }} [options] Injectable executor for tests.
+ * @returns {Promise<void>}
  */
-export function closeKittyOwnedWindow(kittyWindowId) {
+export async function closeKittyOwnedWindow(kittyWindowId, { execKittyFn = defaultExecKitty } = {}) {
   if (process.platform !== 'darwin') {
     return;
   }
@@ -150,11 +188,7 @@ export function closeKittyOwnedWindow(kittyWindowId) {
   }
 
   try {
-    execFileSync('kitty', args, {
-      encoding: 'utf8',
-      timeout: 5000,
-      stdio: ['ignore', 'ignore', 'ignore'],
-    });
+    await execKittyFn(args, { timeoutMs: 5000, discardOutput: true });
   } catch {
     // best-effort — the window may have already been closed by the user
   }

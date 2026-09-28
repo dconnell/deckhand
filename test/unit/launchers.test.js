@@ -1,12 +1,45 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 import { buildVsCodeLaunchArgs, isVisualStudioCodeApp } from '../../src/apps/vscode.js';
-import { buildIterm2WriteText, buildIterm2AppleScript } from '../../src/launchers/iterm2.js';
-import { buildTerminalWriteText, buildTerminalAppleScript } from '../../src/launchers/appleTerminal.js';
-import { buildGhosttySurfaceConfig, buildGhosttyAppleScript } from '../../src/launchers/ghostty.js';
-import { buildAlacrittyMsgArgs } from '../../src/launchers/alacritty.js';
-import { buildKittyAtLaunchArgs, buildKittyAtCloseArgs } from '../../src/launchers/kitty.js';
+import {
+  buildIterm2WriteText,
+  buildIterm2AppleScript,
+  closeIterm2OwnedWindow,
+  findIterm2Pid,
+  launchIterm2Window,
+} from '../../src/launchers/iterm2.js';
+import {
+  buildTerminalWriteText,
+  buildTerminalAppleScript,
+  closeTerminalOwnedWindow,
+  findTerminalPid,
+  launchTerminalWindow,
+} from '../../src/launchers/appleTerminal.js';
+import {
+  buildGhosttySurfaceConfig,
+  buildGhosttyAppleScript,
+  closeGhosttyOwnedWindow,
+  findGhosttyPid,
+  launchGhosttyWindow,
+} from '../../src/launchers/ghostty.js';
+import {
+  buildAlacrittyMsgArgs,
+  findAlacrittySocket,
+  findAlacrittyPid,
+  launchAlacrittyWindow,
+} from '../../src/launchers/alacritty.js';
+import {
+  buildKittyAtLaunchArgs,
+  buildKittyAtCloseArgs,
+  closeKittyOwnedWindow,
+  findKittyPid,
+  launchKittyWindow,
+} from '../../src/launchers/kitty.js';
+import { buildChromeWindowAppleScript, findChromePid, launchChromeWindowWithUrl } from '../../src/launchers/chrome.js';
 import { buildOpenArgs } from '../../src/launchers/app.js';
 
 test('buildIterm2WriteText composes cd and command for the new session', () => {
@@ -59,6 +92,79 @@ test('buildIterm2AppleScript targets iTerm2 by bundle id so it compiles when iTe
   // `create window with default profile` with a -2741 syntax error.
   assert.ok(script.includes('tell application id "com.googlecode.iterm2"'));
   assert.ok(!script.includes('tell application "iTerm2"'));
+});
+
+test('launchIterm2Window runs osascript asynchronously and resolves pid + sessionId', { skip: process.platform !== 'darwin' }, async () => {
+  const calls = [];
+  const execOsascriptFn = async (script, options) => {
+    calls.push({ script, options });
+
+    return script.includes('System Events') ? '4321\n' : 'session-uuid-1\n';
+  };
+
+  const result = await launchIterm2Window({
+    command: 'npm run dev',
+    cwd: '/repos/demo',
+    execOsascriptFn,
+  });
+
+  assert.deepEqual(result, { pid: 4321, sessionId: 'session-uuid-1' });
+  assert.equal(calls.length, 2);
+
+  // execFile contract: each AppleScript travels as a single `-e` argv element
+  // (never through a shell), with the pre-existing per-call timeout bounds.
+  assert.ok(calls[0].script.includes('create window with default profile'));
+  assert.equal(calls[0].options.timeoutMs, 10000);
+  assert.ok(calls[1].script.includes('System Events'));
+  assert.equal(calls[1].options.timeoutMs, 5000);
+});
+
+test('launchIterm2Window omits pid/sessionId when the probes yield nothing', { skip: process.platform !== 'darwin' }, async () => {
+  const result = await launchIterm2Window({
+    execOsascriptFn: async () => '   ',
+  });
+
+  assert.deepEqual(result, {});
+});
+
+test('launchIterm2Window rejects when the launch AppleScript fails', { skip: process.platform !== 'darwin' }, async () => {
+  // Same failure contract as the previous sync implementation: the runtime
+  // logs and skips the source instead of binding a phantom window.
+  await assert.rejects(
+    launchIterm2Window({
+      command: 'npm run dev',
+      execOsascriptFn: async () => {
+        throw new Error('osascript: window creation failed');
+      },
+    }),
+    /window creation failed/,
+  );
+});
+
+test('closeIterm2OwnedWindow swallows osascript failures and skips empty session ids', { skip: process.platform !== 'darwin' }, async () => {
+  const calls = [];
+  const execOsascriptFn = async (script) => {
+    calls.push(script);
+    throw new Error('window already closed');
+  };
+
+  // Best-effort by contract: a failed close must never hang or reject shutdown.
+  await closeIterm2OwnedWindow('session-1', { execOsascriptFn });
+
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].includes('"session-1"'));
+
+  await closeIterm2OwnedWindow('', { execOsascriptFn });
+  assert.equal(calls.length, 1, 'an empty session id must not spawn osascript');
+});
+
+test('findIterm2Pid returns the parsed unix id, or null on failure or non-numeric output', { skip: process.platform !== 'darwin' }, async () => {
+  assert.equal(await findIterm2Pid({ execOsascriptFn: async () => '4321\n' }), 4321);
+  assert.equal(
+    await findIterm2Pid({ execOsascriptFn: async () => { throw new Error('no iTerm running'); } }),
+    null,
+  );
+  assert.equal(await findIterm2Pid({ execOsascriptFn: async () => 'iTerm2\n' }), null);
 });
 
 test('buildOpenArgs builds an open -n -a invocation with launch args', () => {
@@ -285,4 +391,440 @@ test('buildKittyAtCloseArgs returns null for an invalid kitty window id', () => 
   assert.equal(buildKittyAtCloseArgs(undefined), null);
   assert.equal(buildKittyAtCloseArgs(''), null);
   assert.equal(buildKittyAtCloseArgs(null), null);
+});
+
+test('findTerminalPid returns the parsed unix id, or null on failure or non-numeric output', { skip: process.platform !== 'darwin' }, async () => {
+  const calls = [];
+  const execOsascriptFn = async (script, options) => {
+    calls.push({ script, options });
+    return '4321\n';
+  };
+
+  assert.equal(await findTerminalPid({ execOsascriptFn }), 4321);
+  assert.equal(calls[0].options.timeoutMs, 5000);
+
+  assert.equal(
+    await findTerminalPid({ execOsascriptFn: async () => { throw new Error('no Terminal running'); } }),
+    null,
+  );
+  assert.equal(await findTerminalPid({ execOsascriptFn: async () => 'Terminal\n' }), null);
+});
+
+test('launchTerminalWindow runs osascript asynchronously and resolves pid + terminalWindowId', { skip: process.platform !== 'darwin' }, async () => {
+  const calls = [];
+  const execOsascriptFn = async (script, options) => {
+    calls.push({ script, options });
+
+    return script.includes('System Events') ? '4321\n' : '5001\n';
+  };
+
+  const result = await launchTerminalWindow({
+    command: 'npm run dev',
+    cwd: '/repos/demo',
+    execOsascriptFn,
+  });
+
+  assert.deepEqual(result, { pid: 4321, terminalWindowId: '5001' });
+  assert.equal(calls.length, 2);
+
+  // execFile contract: each AppleScript travels as a single `-e` argv element
+  // (never through a shell), with the pre-existing per-call timeout bounds.
+  assert.ok(calls[0].script.includes('do script'));
+  assert.equal(calls[0].options.timeoutMs, 10000);
+  assert.ok(calls[1].script.includes('System Events'));
+  assert.equal(calls[1].options.timeoutMs, 5000);
+});
+
+test('launchTerminalWindow omits pid/windowId when the probes yield nothing', { skip: process.platform !== 'darwin' }, async () => {
+  const result = await launchTerminalWindow({
+    execOsascriptFn: async () => '   ',
+  });
+
+  assert.deepEqual(result, {});
+});
+
+test('closeTerminalOwnedWindow swallows osascript failures and skips non-numeric window ids', { skip: process.platform !== 'darwin' }, async () => {
+  const calls = [];
+  const execOsascriptFn = async (script, options) => {
+    calls.push({ script, options });
+    throw new Error('window already closed');
+  };
+
+  // Best-effort by contract: a failed close must never hang or reject shutdown.
+  await closeTerminalOwnedWindow('5001', { execOsascriptFn });
+
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].script.includes('id is 5001'));
+  assert.equal(calls[0].options.timeoutMs, 5000);
+  assert.equal(calls[0].options.discardOutput, true);
+
+  await closeTerminalOwnedWindow('', { execOsascriptFn });
+  await closeTerminalOwnedWindow('not-a-number', { execOsascriptFn });
+  assert.equal(calls.length, 1, 'an unusable window id must not spawn osascript');
+});
+
+test('findGhosttyPid returns the parsed unix id, or null on failure or non-numeric output', { skip: process.platform !== 'darwin' }, async () => {
+  const calls = [];
+  const execOsascriptFn = async (script, options) => {
+    calls.push({ script, options });
+    return '4321\n';
+  };
+
+  assert.equal(await findGhosttyPid({ execOsascriptFn }), 4321);
+  assert.equal(calls[0].options.timeoutMs, 5000);
+
+  assert.equal(
+    await findGhosttyPid({ execOsascriptFn: async () => { throw new Error('no Ghostty running'); } }),
+    null,
+  );
+  assert.equal(await findGhosttyPid({ execOsascriptFn: async () => 'Ghostty\n' }), null);
+});
+
+test('launchGhosttyWindow runs osascript asynchronously and resolves pid + ghosttyWindowId', { skip: process.platform !== 'darwin' }, async () => {
+  const calls = [];
+  const execOsascriptFn = async (script, options) => {
+    calls.push({ script, options });
+
+    return script.includes('System Events') ? '4321\n' : 'tab-group-xyz\n';
+  };
+
+  const result = await launchGhosttyWindow({
+    command: 'npm run dev',
+    cwd: '/repos/demo',
+    execOsascriptFn,
+  });
+
+  assert.deepEqual(result, { pid: 4321, ghosttyWindowId: 'tab-group-xyz' });
+  assert.equal(calls.length, 2);
+
+  assert.ok(calls[0].script.includes('new window with configuration'));
+  assert.equal(calls[0].options.timeoutMs, 10000);
+  assert.ok(calls[1].script.includes('System Events'));
+  assert.equal(calls[1].options.timeoutMs, 5000);
+});
+
+test('closeGhosttyOwnedWindow swallows osascript failures and skips empty window ids', { skip: process.platform !== 'darwin' }, async () => {
+  const calls = [];
+  const execOsascriptFn = async (script, options) => {
+    calls.push({ script, options });
+    throw new Error('window already closed');
+  };
+
+  await closeGhosttyOwnedWindow('tab-group-xyz', { execOsascriptFn });
+
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].script.includes('"tab-group-xyz"'));
+  assert.equal(calls[0].options.timeoutMs, 5000);
+  assert.equal(calls[0].options.discardOutput, true);
+
+  await closeGhosttyOwnedWindow('', { execOsascriptFn });
+  assert.equal(calls.length, 1, 'an empty window id must not spawn osascript');
+});
+
+test('findKittyPid returns the parsed unix id, or null on failure or non-numeric output', { skip: process.platform !== 'darwin' }, async () => {
+  const calls = [];
+  const execOsascriptFn = async (script, options) => {
+    calls.push({ script, options });
+    return '4321\n';
+  };
+
+  assert.equal(await findKittyPid({ execOsascriptFn }), 4321);
+  assert.equal(calls[0].options.timeoutMs, 5000);
+
+  assert.equal(
+    await findKittyPid({ execOsascriptFn: async () => { throw new Error('no kitty running'); } }),
+    null,
+  );
+  assert.equal(await findKittyPid({ execOsascriptFn: async () => 'kitty\n' }), null);
+});
+
+test('launchKittyWindow runs the remote-control launch asynchronously and resolves pid + kittyWindowId', { skip: process.platform !== 'darwin' }, async () => {
+  process.env.KITTY_LISTEN_ON = 'unix:/tmp/kitty-test';
+
+  try {
+    const calls = [];
+    const execKittyFn = async (args, options) => {
+      calls.push({ args, options });
+
+      return '42\n';
+    };
+    const execOsascriptFn = async () => '4321\n';
+
+    const result = await launchKittyWindow({
+      command: 'npm run dev',
+      cwd: '/repos/demo',
+      execKittyFn,
+      execOsascriptFn,
+    });
+
+    assert.deepEqual(result, { pid: 4321, kittyWindowId: '42' });
+    assert.equal(calls.length, 1);
+    assert.deepEqual(
+      calls[0].args,
+      ['@', 'launch', '--type', 'os-window', '--cwd', '/repos/demo', 'sh', '-c', 'npm run dev'],
+    );
+    assert.equal(calls[0].options.timeoutMs, 10000);
+  } finally {
+    delete process.env.KITTY_LISTEN_ON;
+  }
+});
+
+test('launchKittyWindow throws before spawning when KITTY_LISTEN_ON is not configured', { skip: process.platform !== 'darwin' }, async () => {
+  const savedValue = process.env.KITTY_LISTEN_ON;
+  delete process.env.KITTY_LISTEN_ON;
+
+  try {
+    let spawned = false;
+
+    await assert.rejects(
+      launchKittyWindow({
+        command: 'npm run dev',
+        execKittyFn: async () => {
+          spawned = true;
+
+          return '';
+        },
+        execOsascriptFn: async () => '4321\n',
+      }),
+      /KITTY_LISTEN_ON is not set/,
+    );
+
+    assert.equal(spawned, false);
+  } finally {
+    if (savedValue !== undefined) {
+      process.env.KITTY_LISTEN_ON = savedValue;
+    }
+  }
+});
+
+test('closeKittyOwnedWindow swallows remote-control failures and skips invalid window ids', { skip: process.platform !== 'darwin' }, async () => {
+  const calls = [];
+  const execKittyFn = async (args, options) => {
+    calls.push({ args, options });
+    throw new Error('window already closed');
+  };
+
+  // Best-effort by contract: a failed close must never hang or reject shutdown.
+  await closeKittyOwnedWindow('42', { execKittyFn });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args, ['@', 'close-window', '--match', 'id:42']);
+  assert.equal(calls[0].options.timeoutMs, 5000);
+  assert.equal(calls[0].options.discardOutput, true);
+
+  await closeKittyOwnedWindow('', { execKittyFn });
+  await closeKittyOwnedWindow(undefined, { execKittyFn });
+  assert.equal(calls.length, 1, 'an invalid window id must not spawn kitty');
+});
+
+test('findAlacrittySocket returns the first existing socket for the enumerated pids, or null', { skip: process.platform !== 'darwin' }, async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-alacritty-'));
+
+  try {
+    const calls = [];
+    const execOsascriptFn = async (script, options) => {
+      calls.push({ script, options });
+
+      return '4711, 4712\n';
+    };
+
+    // Only the second pid gets a socket on disk — discovery must skip the first.
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(path.join(tmpDir, 'Alacritty-4712.sock'), '');
+
+    const socketPath = await findAlacrittySocket({ execOsascriptFn, tmpDir });
+
+    assert.equal(socketPath, path.join(tmpDir, 'Alacritty-4712.sock'));
+    assert.ok(calls[0].script.includes('every process whose name is "Alacritty"'));
+    assert.equal(calls[0].options.timeoutMs, 5000);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('findAlacrittySocket returns null on empty, missing-value, or failed probes', { skip: process.platform !== 'darwin' }, async () => {
+  assert.equal(
+    await findAlacrittySocket({ execOsascriptFn: async () => '', tmpDir: os.tmpdir() }),
+    null,
+  );
+  assert.equal(
+    await findAlacrittySocket({ execOsascriptFn: async () => 'missing value', tmpDir: os.tmpdir() }),
+    null,
+  );
+  assert.equal(
+    await findAlacrittySocket({
+      execOsascriptFn: async () => { throw new Error('no Alacritty running'); },
+      tmpDir: os.tmpdir(),
+    }),
+    null,
+  );
+});
+
+test('findAlacrittyPid returns the parsed unix id, or null on failure or non-numeric output', { skip: process.platform !== 'darwin' }, async () => {
+  assert.equal(await findAlacrittyPid({ execOsascriptFn: async () => '4321\n' }), 4321);
+  assert.equal(
+    await findAlacrittyPid({ execOsascriptFn: async () => { throw new Error('no Alacritty running'); } }),
+    null,
+  );
+  assert.equal(await findAlacrittyPid({ execOsascriptFn: async () => 'Alacritty\n' }), null);
+});
+
+test('launchAlacrittyWindow spawns the IPC create-window call asynchronously and resolves pid', { skip: process.platform !== 'darwin' }, async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-alacritty-'));
+
+  try {
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(path.join(tmpDir, 'Alacritty-4711.sock'), '');
+
+    const spawns = [];
+
+    const spawnFn = (command, args) => {
+      spawns.push({ command, args });
+
+      return {
+        on(event, handler) {
+          if (event === 'close') {
+            handler(0);
+          }
+        },
+      };
+    };
+
+    const result = await launchAlacrittyWindow({
+      command: 'npm run dev',
+      cwd: '/repos/demo',
+      execOsascriptFn: async (script) => (script.includes('every process') ? '4711\n' : '4321\n'),
+      tmpDir,
+      spawnFn,
+    });
+
+    assert.deepEqual(result, { pid: 4321 });
+    assert.equal(spawns.length, 1);
+    assert.equal(spawns[0].command, 'alacritty');
+    assert.deepEqual(
+      spawns[0].args,
+      ['msg', '--socket', path.join(tmpDir, 'Alacritty-4711.sock'), 'create-window', '--working-directory', '/repos/demo', '--command', 'sh', '-c', 'npm run dev'],
+    );
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('launchAlacrittyWindow rejects before spawning when no IPC socket is discoverable', { skip: process.platform !== 'darwin' }, async () => {
+  let spawned = false;
+
+  await assert.rejects(
+    launchAlacrittyWindow({
+      command: 'npm run dev',
+      execOsascriptFn: async () => 'missing value',
+      spawnFn: () => {
+        spawned = true;
+
+        return { on() {} };
+      },
+    }),
+    /Alacritty is not running with an IPC socket/,
+  );
+
+  assert.equal(spawned, false);
+});
+
+test('launchAlacrittyWindow rejects when the create-window call exits non-zero', { skip: process.platform !== 'darwin' }, async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'deckhand-alacritty-'));
+
+  try {
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(path.join(tmpDir, 'Alacritty-4711.sock'), '');
+
+    await assert.rejects(
+      launchAlacrittyWindow({
+        command: 'npm run dev',
+        execOsascriptFn: async () => '4711\n',
+        tmpDir,
+        spawnFn: () => ({
+          on(event, handler) {
+            if (event === 'close') {
+              handler(1);
+            }
+          },
+        }),
+      }),
+      /exited with code 1/,
+    );
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('findChromePid returns the parsed unix id, or null on failure or non-numeric output', { skip: process.platform !== 'darwin' }, async () => {
+  const calls = [];
+  const execOsascriptFn = async (script, options) => {
+    calls.push({ script, options });
+    return '4321\n';
+  };
+
+  assert.equal(await findChromePid({ execOsascriptFn }), 4321);
+  assert.equal(calls[0].options.timeoutMs, 5000);
+
+  assert.equal(
+    await findChromePid({ execOsascriptFn: async () => { throw new Error('no Chrome running'); } }),
+    null,
+  );
+  assert.equal(await findChromePid({ execOsascriptFn: async () => 'Google Chrome\n' }), null);
+});
+
+test('launchChromeWindowWithUrl runs osascript asynchronously and resolves the Chrome pid', { skip: process.platform !== 'darwin' }, async () => {
+  const calls = [];
+  const execOsascriptFn = async (script, options) => {
+    calls.push({ script, options });
+
+    return script.includes('System Events') ? '4321\n' : '';
+  };
+
+  const result = await launchChromeWindowWithUrl('https://app.slack.com/client/T1/C1', { execOsascriptFn });
+
+  assert.deepEqual(result, { pid: 4321 });
+  assert.equal(calls.length, 2);
+
+  // The launch script is built from the pinned builder and travels as a single
+  // `-e` argv element with the pre-existing 10s launch bound.
+  assert.equal(calls[0].script, buildChromeWindowAppleScript('https://app.slack.com/client/T1/C1'));
+  assert.equal(calls[0].options.timeoutMs, 10000);
+  assert.ok(calls[1].script.includes('System Events'));
+  assert.equal(calls[1].options.timeoutMs, 5000);
+});
+
+test('launchChromeWindowWithUrl rejects on a missing URL without spawning', { skip: process.platform !== 'darwin' }, async () => {
+  let spawned = false;
+
+  await assert.rejects(
+    launchChromeWindowWithUrl('', {
+      execOsascriptFn: () => {
+        spawned = true;
+
+        return Promise.resolve('');
+      },
+    }),
+    /requires a non-empty URL/,
+  );
+
+  await assert.rejects(
+    launchChromeWindowWithUrl(undefined, { execOsascriptFn: async () => '' }),
+    /requires a non-empty URL/,
+  );
+
+  assert.equal(spawned, false);
+});
+
+test('launchChromeWindowWithUrl rejects when the launch AppleScript fails', { skip: process.platform !== 'darwin' }, async () => {
+  // Same failure contract as before the conversion: launch failures propagate
+  // so the runtime can log and skip the source.
+  await assert.rejects(
+    launchChromeWindowWithUrl('https://example.com', {
+      execOsascriptFn: async () => {
+        throw new Error('osascript: Chrome not running');
+      },
+    }),
+    /Chrome not running/,
+  );
 });

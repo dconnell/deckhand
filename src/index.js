@@ -154,7 +154,7 @@ export async function run(options = {}) {
   // app open, so refuse to start BEFORE any side effect — no presentation
   // server, hub, OBS reconcile, Chrome, or owned windows.
   if (process.platform === 'darwin') {
-    const ownedAppConflicts = collectOwnedAppInstanceConflicts({
+    const ownedAppConflicts = await collectOwnedAppInstanceConflicts({
       config,
       enumerateWindowsByOwnerNameFn: options.preflightEnumerateWindowsFn ?? enumerateWindowsByOwnerName,
       logger,

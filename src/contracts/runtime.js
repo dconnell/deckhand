@@ -53,7 +53,7 @@
  * @property {(pgid: number) => void} [killProcessGroupFn] Raw SIGKILL override, so tests never signal the developer's machine.
  * @property {(command: string) => void} [reapChromeProfilesFn] Chrome profile reaper (`pkill`) override.
  * @property {(input: { bindings: Array<{ sourceId: string, [key: string]: unknown }> }) => Promise<void> | void} [closeOwnedWindowsFn] Owned-window close override.
- * @property {(pid: number) => Array<{ windowId: number, width?: number, height?: number }>} [enumerateWindowIdsByPidFn] CGWindowList enumerator used to resolve new browser windows.
+ * @property {(pid: number) => Array<{ windowId: number, width?: number, height?: number }> | Promise<Array<{ windowId: number, width?: number, height?: number }>>} [enumerateWindowIdsByPidFn] CGWindowList enumerator used to resolve new browser windows (the default `getWindowIdsViaCGList` resolves asynchronously).
  * @property {typeof import('../appRuntime.js').resolvePresenterTeleprompterBinding} [resolvePresenterTeleprompterBindingFn] Teleprompter binding resolution override.
  * @property {typeof import('../presenter/stt/runner.js').runSttObserver} [runSttObserverFn] STT observer override.
  * @property {typeof import('../appRuntime.js').seedBrowserMacWindowBindings} [resolveMacWindowBindingsFn] Browser window binding seeding override.
