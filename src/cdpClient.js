@@ -8,6 +8,10 @@ function createNoopLogger() {
 
 const DEFAULT_NAVIGATION_LOAD_TIMEOUT_MS = 10000;
 const DEFAULT_TAB_PAINT_TIMEOUT_MS = 2000;
+// Upper bound for any single CDP command. Chrome-level commands are local and
+// fast; a request outliving this bound means the transport is silently stuck,
+// which previously left callers waiting forever.
+const DEFAULT_CDP_REQUEST_TIMEOUT_MS = 30000;
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -19,11 +23,12 @@ function isPlainObject(value) {
  * The discovery and transport factories are injectable so unit tests can drive
  * mocked WebSocket traffic without a real Chrome process.
  *
- * @param {{ discover(): Promise<{ webSocketDebuggerUrl: string, chromePid?: number | null }>, createTransport(url: string): { send(raw: string): void, close(): void, on(event: 'message' | 'close' | 'error', handler: (payload?: string) => void): void, waitUntilReady?(): Promise<void> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void } }} options Client dependencies.
+ * @param {{ discover(): Promise<{ webSocketDebuggerUrl: string, chromePid?: number | null }>, createTransport(url: string): { send(raw: string): void, close(): void, on(event: 'message' | 'close' | 'error', handler: (payload?: string) => void): void, waitUntilReady?(): Promise<void> }, logger?: { info(message: string, context?: Record<string, unknown>): void, warn(message: string, context?: Record<string, unknown>): void, error(message: string, context?: Record<string, unknown>): void }, requestTimeoutMs?: number }} options Client dependencies. `requestTimeoutMs` bounds each pending CDP request (default 30000).
  * @returns {{ connect(): Promise<void>, disconnect(): Promise<void>, isConnected(): boolean, getChromePid(): number | null, on(event: 'disconnected', handler: () => void): void, createWindow(details: { url: string, width?: number, height?: number }): Promise<{ targetId: string, windowId: number }>, measureMinimumWindowSize(details: { targetId: string }): Promise<{ width: number, height: number }>, createTab(details: { url: string }): Promise<{ targetId: string, windowId: number }>, activateTab(details: { targetId: string }): Promise<void>, navigateTab(details: { targetId: string, url: string, loadTimeoutMs?: number }): Promise<void>, waitForTabPaint(details: { targetId: string, paintTimeoutMs?: number }): Promise<void>, setWindowTitle(details: { targetId: string, title: string }): Promise<void>, closeTarget(details: { targetId: string }): Promise<void>, getTargets(): Promise<Array<Record<string, unknown>>> }}
  */
 export function createCdpClient(options) {
   const logger = options.logger ?? createNoopLogger();
+  const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_CDP_REQUEST_TIMEOUT_MS;
   const pending = new Map();
   const sessions = new Map();
   const pageEnabledSessions = new Set();
@@ -38,6 +43,10 @@ export function createCdpClient(options) {
     const error = new Error(message);
 
     for (const waiter of pending.values()) {
+      if (waiter.timer !== null) {
+        clearTimeout(waiter.timer);
+      }
+
       waiter.reject(error);
     }
 
@@ -94,6 +103,10 @@ export function createCdpClient(options) {
 
     pending.delete(parsed.id);
 
+    if (waiter.timer !== null) {
+      clearTimeout(waiter.timer);
+    }
+
     if (parsed.error !== undefined) {
       waiter.reject(new Error(String(parsed.error?.message ?? 'CDP error')));
       return;
@@ -118,11 +131,25 @@ export function createCdpClient(options) {
         message.sessionId = sessionId;
       }
 
-      pending.set(id, { resolve, reject });
+      // Per-request timeout: a pending entry can never outlive
+      // requestTimeoutMs, so a stalled transport cannot hang callers forever.
+      const timer = requestTimeoutMs > 0
+        ? setTimeout(() => {
+          if (pending.delete(id)) {
+            reject(new Error(`CDP request timed out after ${requestTimeoutMs}ms: ${method}`));
+          }
+        }, requestTimeoutMs)
+        : null;
+
+      pending.set(id, { resolve, reject, timer });
 
       try {
         transport.send(JSON.stringify(message));
       } catch (error) {
+        if (timer !== null) {
+          clearTimeout(timer);
+        }
+
         pending.delete(id);
         reject(error instanceof Error ? error : new Error(String(error)));
       }

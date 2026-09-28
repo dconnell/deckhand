@@ -1,4 +1,4 @@
-import { access } from 'node:fs/promises';
+import { access, rm } from 'node:fs/promises';
 import { execSync } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -51,12 +51,27 @@ const PRESENTATION_SERVER_PORT_DEFAULT = 3000;
 const PRESENTER_SOURCE_ID = 'Presenter';
 const CONSOLE_SOURCE_ID = 'Console';
 
+/**
+ * Resolve the Chrome profile directory for this run.
+ *
+ * When `chrome.profileDir` is configured it is used verbatim and is treated as
+ * operator-owned (never cleaned up). Otherwise a unique directory under the OS
+ * temp root is generated for this run and flagged as temporary so shutdown can
+ * remove it.
+ *
+ * @param {{ chrome?: null | { profileDir?: string } }} config Normalized config.
+ * @param {string} presentationName Presentation name scoping the temp dir.
+ * @returns {{ profileDir: string, isTempProfileDir: boolean }} Resolved dir plus whether this run owns it.
+ */
 function resolveProfileDir(config, presentationName) {
   if (config.chrome?.profileDir !== undefined) {
-    return config.chrome.profileDir;
+    return { profileDir: config.chrome.profileDir, isTempProfileDir: false };
   }
 
-  return path.join(os.tmpdir(), 'deckhand-chrome-profiles', presentationName, randomUUID());
+  return {
+    profileDir: path.join(os.tmpdir(), 'deckhand-chrome-profiles', presentationName, randomUUID()),
+    isTempProfileDir: true,
+  };
 }
 
 function isMainModule(metaUrl) {
@@ -198,6 +213,33 @@ export async function run(options = {}) {
   // mid-run (e.g. Hammerspoon reported the window unfindable). Shutdown still
   // needs the stale identity to close windows deckhand itself opened.
   const shutdownWindowBindings = {};
+  // Explicit temp-resource registry: every profile directory this run created
+  // under the OS temp root is registered here and removed on shutdown or on
+  // the startup-failure path. Configured `chrome.profileDir` values are
+  // operator-owned and never registered.
+  const tempProfileDirs = new Set();
+
+  /**
+   * Best-effort removal of every registered temp profile directory. Called
+   * only after the Chrome process group has been killed, so no live Chrome
+   * can still be writing into them.
+   *
+   * @returns {Promise<void>}
+   */
+  async function removeTempProfileDirs() {
+    for (const dir of tempProfileDirs) {
+      tempProfileDirs.delete(dir);
+
+      try {
+        await rm(dir, { recursive: true, force: true });
+      } catch (error) {
+        logger.warn('Failed to remove temp Chrome profile directory', {
+          dir,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
 
   async function focusPresenterTeleprompter({ reopen = false } = {}) {
     if (config.presenter === null || browserSession === null || config.presenter.teleprompter.window === null) {
@@ -434,6 +476,11 @@ export async function run(options = {}) {
         // no matching processes
       }
 
+      // Chrome is dead by now, so the temp profile dirs can be removed. This
+      // runs before the window teardown below, which may kill this very
+      // process when it closes deckhand's own host terminal.
+      await removeTempProfileDirs();
+
       // Windows last (see the why-comment at the top of this handler): a
       // close that kills the host terminal must not be able to preempt the
       // OBS restore or the Chrome kill above.
@@ -548,8 +595,12 @@ export async function run(options = {}) {
       const createCdpClientFn = options.createCdpClientFn ?? createCdpClient;
       const launchChromeSessionFn = options.launchChromeSessionFn ?? launchChromeSession;
       const discoverCdpEndpointFn = options.discoverCdpEndpointFn ?? discoverCdpEndpoint;
-      const profileDir = resolveProfileDir(config, presentationName);
+      const { profileDir, isTempProfileDir } = resolveProfileDir(config, presentationName);
       const chromeOptions = config.chrome ?? {};
+
+      if (isTempProfileDir) {
+        tempProfileDirs.add(profileDir);
+      }
 
       const ensureLaunched = async () => {
         if (chromeLaunch !== null) {
@@ -564,6 +615,14 @@ export async function run(options = {}) {
           extraArgs: chromeOptions.extraArgs,
           logger,
         });
+
+        // A named-profile launch always runs from a fresh mkdtemp working
+        // copy (see chromeLauncher.prepareProfileDir), so the launch result's
+        // profileDir is temporary even when the configured parent dir is not.
+        if (chromeLaunch.profileName !== null && typeof chromeLaunch.profileDir === 'string') {
+          tempProfileDirs.add(chromeLaunch.profileDir);
+        }
+
         return chromeLaunch;
       };
 
@@ -980,6 +1039,7 @@ export async function run(options = {}) {
 
     await stopBrowserRuntime();
     await stopLaunchedChrome();
+    await removeTempProfileDirs();
 
     if (presentationServer !== null && typeof presentationServer.stop === 'function') {
       try {

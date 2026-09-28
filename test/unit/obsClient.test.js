@@ -382,6 +382,74 @@ test('obs client switchProgramScene without event waiting issues a plain SetCurr
   assert.deepEqual(obs.getClient().calls, [{ method: 'SetCurrentProgramScene', payload: { sceneName: 'Full Slide' } }]);
 });
 
+test('obs client switchProgramScene ignores malformed scene-change events instead of reporting success', async () => {
+  const Fake = createEventedFakeObsWebSocket();
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+  const instance = obs.getClient();
+
+  let resolved = false;
+  const pending = obs.switchProgramScene('Target', { waitForEvent: true, timeoutMs: 1000 });
+  pending.then(() => {
+    resolved = true;
+  });
+
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // Malformed payloads must never count as success: an event with no scene
+  // name at all, an explicit null name, and the nested shape with the name
+  // missing all have to be ignored.
+  instance.emit('CurrentProgramSceneChanged', {});
+  instance.emit('CurrentProgramSceneChanged', { sceneName: null });
+  instance.emit('CurrentProgramSceneChanged', { eventData: {} });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(resolved, false, 'malformed scene-change events must not resolve the wait');
+
+  // OBS wraps the payload differently across versions; the nested exact
+  // match must still resolve.
+  instance.emit('CurrentProgramSceneChanged', { eventData: { sceneName: 'Target' } });
+  await pending;
+  assert.equal(resolved, true, 'an exact name match resolves the wait');
+});
+
+test('obs client switchProgramScene falls back to the timeout when no matching event arrives', async () => {
+  const Fake = createEventedFakeObsWebSocket();
+  const warnings = [];
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger: {
+      info() {},
+      error() {},
+      warn(message) {
+        warnings.push(message);
+      },
+    },
+  });
+
+  await obs.connect();
+  const instance = obs.getClient();
+
+  // Only ever emit non-matching scene names; the wait must end via the
+  // timeout fallback, not report success early.
+  instance.emit('CurrentProgramSceneChanged', { sceneName: 'Other' });
+
+  await assert.doesNotReject(obs.switchProgramScene('Target', { waitForEvent: true, timeoutMs: 15 }));
+  assert.ok(
+    warnings.some((message) => /Timed out waiting for OBS scene change event/.test(message)),
+    'the timeout fallback must be logged as a warning',
+  );
+});
+
 test('obs client ensureFreezeAssets creates a missing freeze scene and image source', async () => {
   const Fake = createEventedFakeObsWebSocket((method) => {
     if (method === 'GetSceneList') {
@@ -575,6 +643,35 @@ test('obs client waitForSourceScreenshotStable resolves via timeout fallback whe
     timeoutMs: 10,
   }));
   assert.ok(index > 1);
+});
+
+test('obs client waitForSourceScreenshotStable defaults to a relaxed poll interval', async () => {
+  let index = 0;
+  const Fake = createEventedFakeObsWebSocket((method) => {
+    if (method === 'GetSourceScreenshot') {
+      index += 1;
+      return { imageData: `frame-${index}` };
+    }
+
+    return {};
+  });
+  const obs = createObsClient({
+    url: 'ws://127.0.0.1:4455',
+    password: '',
+    OBSWebSocketClass: Fake,
+    logger: { info() {}, error() {}, warn() {} },
+  });
+
+  await obs.connect();
+
+  // setTimeout never fires early, so the sample count over a short window
+  // bounds the default interval: a 50ms default samples at most 3 times in
+  // 100ms (0/50/100ms), while the old 10ms default would sample ~11 times.
+  await assert.doesNotReject(obs.waitForSourceScreenshotStable('Deckhand_Full Slide', { timeoutMs: 100 }));
+
+  const samples = obs.getClient().calls.filter((call) => call.method === 'GetSourceScreenshot').length;
+  assert.ok(samples >= 1, 'the wait still samples the source');
+  assert.ok(samples <= 3, `expected at most 3 samples with the relaxed default, got ${samples}`);
 });
 
 test('obs client setPreviewScene switches preview and waits until OBS reports it active', async () => {

@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import WebSocket from 'ws';
 
 import { createHub } from '../../src/hub.js';
+import { delay } from '../../src/lifecycle/time.js';
 import { createCaptureLogger as createLogger } from '../helpers/logger.js';
 import { waitForMessages } from '../helpers/waitFor.js';
 
@@ -677,6 +678,44 @@ test('hub snapshot no longer exposes a target catalog', async () => {
     assert.equal(snapshot.targets, undefined);
     assert.equal(snapshot.activeDriver, null);
     assert.equal(snapshot.observers.length, 1);
+  } finally {
+    await observer.close();
+    await hub.stop();
+  }
+});
+
+test('hub.on returns an unsubscribe function that stops future deliveries', async () => {
+  const logger = createLogger();
+  const hub = createHub({ host: '127.0.0.1', port: 0, logger });
+
+  await hub.start();
+  const { port } = hub.getAddress();
+  const observer = await createClient(port);
+  const events = [];
+
+  try {
+    const unsubscribe = hub.on('observerRegistered', (payload) => events.push(payload));
+
+    await observer.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+    await waitForRegistered(observer);
+    await waitForMessages(events, (items) => items.length >= 1, 'the first observerRegistered event');
+    assert.equal(events.length, 1);
+
+    unsubscribe();
+
+    const second = await createClient(port);
+
+    try {
+      await second.send({ type: 'register', role: 'observer', subscriptions: ['presentationState'] });
+      await waitForRegistered(second);
+      // Give the hub a moment to run (or, after unsubscribing, skip) the
+      // observerRegistered handler for the second registration.
+      await delay(50);
+
+      assert.equal(events.length, 1, 'the unsubscribed handler must not receive later events');
+    } finally {
+      await second.close();
+    }
   } finally {
     await observer.close();
     await hub.stop();

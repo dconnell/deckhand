@@ -7,8 +7,137 @@ import {
   closeOwnedAppWindows,
   createOwnedWindowResolutionEntries,
   seedBrowserMacWindowBindings,
+  terminateProcessGroup,
 } from '../../src/appRuntime.js';
 import { createCaptureLogger as createLogger } from '../helpers/logger.js';
+
+/**
+ * Install a stub for `process.kill` that records every call. The ESRCH error
+ * thrown for missing process groups must mirror the real error shape so
+ * `isMissingProcessError` recognizes it.
+ *
+ * @param {(pid: number, signal: number | string) => void} impl Stub body.
+ * @returns {{ calls: Array<{ pid: number, signal: number | string }>, restore: () => void }} Recorded calls and the restore fn.
+ */
+function stubProcessKill(impl) {
+  const original = process.kill;
+  const calls = [];
+
+  process.kill = (pid, signal) => {
+    calls.push({ pid, signal });
+    impl(pid, signal);
+  };
+
+  return {
+    calls,
+    restore() {
+      process.kill = original;
+    },
+  };
+}
+
+/**
+ * Build an ESRCH-shaped error, as Node raises for missing processes.
+ * @returns {Error}
+ */
+function createMissingProcessError() {
+  const error = new Error('no such process');
+  error.code = 'ESRCH';
+  return error;
+}
+
+test('terminateProcessGroup exits early when the process group is already gone', async () => {
+  const logger = createLogger();
+  const { calls: killCalls, restore } = stubProcessKill((pid, signal) => {
+    if (signal === 0) {
+      throw createMissingProcessError();
+    }
+  });
+
+  try {
+    const startedAt = Date.now();
+    await terminateProcessGroup(47213, logger, 'Terminal', 1000);
+    const elapsedMs = Date.now() - startedAt;
+
+    assert.ok(elapsedMs < 500, `early exit must not wait the full grace period (took ${elapsedMs}ms)`);
+    assert.equal(logger.warns.length, 0, 'a clean early exit must not warn');
+    assert.deepEqual(killCalls[0], { pid: -47213, signal: 'SIGTERM' });
+    assert.deepEqual(
+      killCalls.filter((call) => call.signal === 'SIGKILL'),
+      [],
+      'an already-exited group must not be escalated to SIGKILL',
+    );
+    assert.ok(killCalls.some((call) => call.signal === 0), 'probes the group before concluding it is gone');
+  } finally {
+    restore();
+  }
+});
+
+test('terminateProcessGroup escalates to SIGKILL only after the group survives the full grace period', async () => {
+  const logger = createLogger();
+  const { calls: killCalls, restore } = stubProcessKill(() => {
+    // SIGTERM and every probe succeed — the group refuses to die.
+  });
+
+  try {
+    await terminateProcessGroup(47213, logger, 'Terminal', 80);
+  } finally {
+    restore();
+  }
+
+  assert.equal(killCalls[0]?.signal, 'SIGTERM');
+  assert.ok(
+    killCalls.some((call) => call.signal === 0),
+    'polls the process group instead of sleeping the whole grace in one block',
+  );
+  assert.ok(
+    killCalls.some((call) => call.signal === 'SIGKILL'),
+    'a group that survives the grace period is escalated to SIGKILL',
+  );
+  assert.ok(logger.warns.some((entry) => /SIGKILL/.test(entry.message)), 'escalation is logged as a warning');
+});
+
+test('terminateProcessGroup skips the wait entirely when the group vanished before SIGTERM', async () => {
+  const logger = createLogger();
+  const { calls: killCalls, restore } = stubProcessKill(() => {
+    throw createMissingProcessError();
+  });
+
+  try {
+    await terminateProcessGroup(47213, logger, 'Terminal', 1000);
+  } finally {
+    restore();
+  }
+
+  assert.deepEqual(killCalls, [{ pid: -47213, signal: 'SIGTERM' }]);
+  assert.equal(logger.warns.length, 0, 'a vanished group is not an error');
+});
+
+test('terminateProcessGroup warns and does not escalate when the process group cannot be probed', async () => {
+  const logger = createLogger();
+  const { calls: killCalls, restore } = stubProcessKill((pid, signal) => {
+    if (signal === 0) {
+      throw new Error('operation not permitted');
+    }
+  });
+
+  try {
+    await terminateProcessGroup(47213, logger, 'Terminal', 100);
+  } finally {
+    restore();
+  }
+
+  assert.equal(logger.errors.length, 0);
+  assert.ok(
+    logger.warns.some((entry) => /Failed to probe owned app process group/.test(entry.message)),
+    'an opaque probe failure must be logged as a warning',
+  );
+  assert.deepEqual(
+    killCalls.filter((call) => call.signal === 'SIGKILL'),
+    [],
+    'an unreadable process group must never be escalated to SIGKILL',
+  );
+});
 
 /**
  * Assert that `actual` carries at least the properties in `expectedSubset`,
